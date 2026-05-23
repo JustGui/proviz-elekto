@@ -387,7 +387,6 @@ impl CatalogStorage for SqliteStorage {
     }
 }
 
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS pz_brands (
     id          TEXT PRIMARY KEY,
