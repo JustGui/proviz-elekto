@@ -54,6 +54,15 @@ impl Selector {
             .load_models()
             .map_err(ProvizError::Storage)?
             .into_iter()
+            .filter(|m| {
+                // Keep model only if its plan matches the brand's configured plan.
+                // If either side has no plan set, always include the row.
+                let brand_plan = brands.get(&m.brand_id).and_then(|b| b.plan.as_deref());
+                match (brand_plan, m.plan.as_deref()) {
+                    (Some(bp), Some(mp)) => bp == mp,
+                    _ => true,
+                }
+            })
             .map(|m| (m.id, m))
             .collect();
 
