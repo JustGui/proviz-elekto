@@ -1,0 +1,6 @@
+{
+  "slug": "mistral",
+  "name": "Mistral AI",
+  "api_key_env": "MISTRAL_API_KEY",
+  "base_url": null
+}

@@ -1,0 +1,7 @@
+{
+  "slug": "groq",
+  "name": "Groq",
+  "api_key_env": "GROQ_API_KEY",
+  "base_url": null,
+  "plan": "free"
+}

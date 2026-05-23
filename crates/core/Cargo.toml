@@ -1,0 +1,16 @@
+[package]
+name = "proviz-elekto-core"
+description = "Core selection algorithm, traits, and data models for ProvizElekto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+uuid.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+tracing.workspace = true

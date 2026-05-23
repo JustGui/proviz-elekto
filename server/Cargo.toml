@@ -1,0 +1,26 @@
+[package]
+name = "proviz-server"
+description = "ProvizElekto HTTP server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "proviz-server"
+path = "src/main.rs"
+
+[dependencies]
+proviz-elekto-core = { path = "../crates/core" }
+proviz-elekto-storage-sqlite = { path = "../crates/storage-sqlite" }
+proviz-elekto-storage-pg = { path = "../crates/storage-pg" }
+
+axum.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+dotenvy.workspace = true

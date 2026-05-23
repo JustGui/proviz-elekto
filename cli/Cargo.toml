@@ -1,0 +1,23 @@
+[package]
+name = "proviz"
+description = "ProvizElekto CLI - catalog management and dry-run selection"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "proviz"
+path = "src/main.rs"
+
+[dependencies]
+proviz-elekto-core = { path = "../crates/core" }
+proviz-elekto-storage-sqlite = { path = "../crates/storage-sqlite" }
+proviz-elekto-storage-pg = { path = "../crates/storage-pg" }
+
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+reqwest = { workspace = true, features = ["blocking"] }
+dotenvy.workspace = true
