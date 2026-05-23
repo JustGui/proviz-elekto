@@ -20,6 +20,8 @@ impl PostgresStorage {
             client: Mutex::new(client),
         };
         s.init_schema()?;
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
     }
 }
@@ -30,14 +32,6 @@ impl CatalogStorage for PostgresStorage {
         client
             .batch_execute(SCHEMA)
             .map_err(|e| StorageError::Database(e.to_string()))?;
-        // Idempotent migrations for existing databases
-        let _ = client.batch_execute(
-            "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS category VARCHAR(50);
-             ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS plan VARCHAR(50);
-             ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS rpd_limit INT;
-             ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS plan VARCHAR(50);
-             ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS priority SMALLINT NOT NULL DEFAULT 0;",
-        );
         Ok(())
     }
 
@@ -343,13 +337,14 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     base_url    VARCHAR(255),
     is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
     plan        VARCHAR(50),
+    priority    SMALLINT     NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (
     id                        UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     brand_id                  UUID         NOT NULL REFERENCES pz_brands(id) ON DELETE RESTRICT,
-    slug                      VARCHAR(150) UNIQUE NOT NULL,
+    slug                      VARCHAR(150) NOT NULL,
     display_name              VARCHAR(150) NOT NULL,
     max_context_tokens        INT          NOT NULL,
     max_output_tokens         INT,
@@ -392,4 +387,7 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_slug_plan
+    ON pz_models(slug, COALESCE(plan, ''));
 ";

@@ -21,6 +21,8 @@ impl SqliteStorage {
             conn: Mutex::new(conn),
         };
         s.init_schema()?;
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
     }
 
@@ -34,13 +36,6 @@ impl CatalogStorage for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch(SCHEMA)
             .map_err(|e| StorageError::Database(e.to_string()))?;
-        // Idempotent migrations for existing databases
-        let _ = conn.execute_batch("ALTER TABLE pz_models ADD COLUMN category TEXT;");
-        let _ = conn.execute_batch("ALTER TABLE pz_models ADD COLUMN plan TEXT;");
-        let _ = conn.execute_batch("ALTER TABLE pz_models ADD COLUMN rpd_limit INTEGER;");
-        let _ = conn.execute_batch("ALTER TABLE pz_brands ADD COLUMN plan TEXT;");
-        let _ = conn
-            .execute_batch("ALTER TABLE pz_brands ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;");
         Ok(())
     }
 
@@ -392,6 +387,7 @@ impl CatalogStorage for SqliteStorage {
     }
 }
 
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS pz_brands (
     id          TEXT PRIMARY KEY,
@@ -401,13 +397,14 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     base_url    TEXT,
     is_active   INTEGER NOT NULL DEFAULT 1,
     plan        TEXT,
+    priority    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (
     id                        TEXT PRIMARY KEY,
     brand_id                  TEXT NOT NULL REFERENCES pz_brands(id),
-    slug                      TEXT UNIQUE NOT NULL,
+    slug                      TEXT NOT NULL,
     display_name              TEXT NOT NULL,
     max_context_tokens        INTEGER NOT NULL,
     max_output_tokens         INTEGER,
@@ -450,6 +447,9 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_slug_plan
+    ON pz_models(slug, COALESCE(plan, ''));
 ";
 
 #[cfg(test)]
