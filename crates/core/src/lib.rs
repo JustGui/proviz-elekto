@@ -1,3 +1,4 @@
+pub mod builtin_providers;
 pub mod error;
 pub mod models;
 pub mod rate_state;
