@@ -6,19 +6,30 @@ build-backend = "maturin"
 name = "proviz-elekto"
 version = "0.1.0"
 description = "Smart LLM model router - auto-starts proviz-server binary, no Docker required"
+readme = "../README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
+keywords = ["llm", "model-routing", "rate-limit", "ai", "litellm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 # No runtime dependencies - stdlib only
 
 [project.urls]
-Repository = "https://github.com/YOUR_ORG/proviz-elekto"
+Repository = "https://github.com/JustGui/proviz-elekto"
+Issues = "https://github.com/JustGui/proviz-elekto/issues"
 
 [tool.maturin]
-# Ship the proviz-server binary alongside the Python package.
-# maturin will include platform-specific binaries in the wheel.
+# Ship the proviz-server binary via the wheel's scripts directory.
+# _find_binary() locates it via sysconfig.get_path("scripts") after install.
 bindings = "bin"
 manifest-path = "../server/Cargo.toml"
-# The binary lands next to the package __init__.py so _find_binary() can locate it.
-include = [
-    { path = "proviz_elekto/**", format = "sdist" },
-]
+python-packages = ["proviz_elekto"]

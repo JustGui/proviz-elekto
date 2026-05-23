@@ -39,11 +39,22 @@ class ModelCandidate:
 
 def _find_binary() -> str:
     """Locate the proviz-server binary bundled with the package or on PATH."""
+    import sysconfig
+
     pkg_dir = os.path.dirname(__file__)
     for name in ("proviz-server", "proviz-server.exe"):
         bundled = os.path.join(pkg_dir, name)
         if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
             return bundled
+
+    # maturin bindings="bin" installs the binary to the env's scripts directory
+    scripts_dir = sysconfig.get_path("scripts")
+    if scripts_dir:
+        for name in ("proviz-server", "proviz-server.exe"):
+            candidate = os.path.join(scripts_dir, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+
     on_path = shutil.which("proviz-server")
     if on_path:
         return on_path
