@@ -14,6 +14,17 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     pub fn open(path: &str) -> Result<Self, StorageError> {
+        let s = Self::open_bare(path)?;
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(s)
+    }
+
+    pub fn open_in_memory() -> Result<Self, StorageError> {
+        Self::open_bare(":memory:")
+    }
+
+    fn open_bare(path: &str) -> Result<Self, StorageError> {
         let conn = Connection::open(path).map_err(|e| StorageError::Database(e.to_string()))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -21,13 +32,7 @@ impl SqliteStorage {
             conn: Mutex::new(conn),
         };
         s.init_schema()?;
-        proviz_elekto_core::builtin_providers::seed_if_empty(&s)
-            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
-    }
-
-    pub fn open_in_memory() -> Result<Self, StorageError> {
-        Self::open(":memory:")
     }
 }
 
