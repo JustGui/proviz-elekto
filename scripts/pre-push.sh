@@ -20,6 +20,14 @@ fi
 
 cd "$REPO_ROOT"
 
+# Git hooks don't inherit the user's PATH — load cargo explicitly.
+if [[ -f "$HOME/.cargo/env" ]]; then
+    # shellcheck source=/dev/null
+    source "$HOME/.cargo/env"
+else
+    export PATH="$HOME/.cargo/bin:$PATH"
+fi
+
 echo "[pre-push] Checking formatting..."
 cargo fmt --all -- --check
 
