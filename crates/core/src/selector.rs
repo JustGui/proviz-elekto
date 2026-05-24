@@ -12,6 +12,7 @@ use crate::{
     models::{Brand, Model, ModelCandidate, RateLimitErrorType, SelectRequest, SelectionRule},
     rate_state::RateLimitState,
     storage::CatalogStorage,
+    usage_tracker::UsageTracker,
 };
 
 const CACHE_TTL_SECS: u64 = 300; // 5 minutes
@@ -28,6 +29,7 @@ pub struct Selector {
     storage: Arc<dyn CatalogStorage>,
     cache: RwLock<Option<CatalogCache>>,
     rate_state: RateLimitState,
+    usage_tracker: UsageTracker,
 }
 
 impl Selector {
@@ -36,6 +38,7 @@ impl Selector {
             storage,
             cache: RwLock::new(None),
             rate_state: RateLimitState::new(),
+            usage_tracker: UsageTracker::new(),
         }
     }
 
@@ -55,8 +58,6 @@ impl Selector {
             .map_err(ProvizError::Storage)?
             .into_iter()
             .filter(|m| {
-                // Keep model only if its plan matches the brand's configured plan.
-                // If either side has no plan set, always include the row.
                 let brand_plan = brands.get(&m.brand_id).and_then(|b| b.plan.as_deref());
                 match (brand_plan, m.plan.as_deref()) {
                     (Some(bp), Some(mp)) => bp == mp,
@@ -125,8 +126,6 @@ impl Selector {
         let guard = self.cache.read().unwrap();
         let cache = guard.as_ref().unwrap();
 
-        // When no step-specific rules exist, synthesize one per model sorted by brand priority.
-        // This lets brand priority alone drive selection without requiring explicit rules.
         let synthetic_rules: Vec<SelectionRule>;
         let rules: &[SelectionRule] = match cache.rules.get(&req.step) {
             Some(r) if !r.is_empty() => r.as_slice(),
@@ -156,7 +155,20 @@ impl Selector {
         };
 
         let exclude_set: std::collections::HashSet<&Uuid> = req.exclude_ids.iter().collect();
+        let estimated_tokens = req.estimated_tokens as u64;
+
+        // ── Pass 1: collect all hard-filter-eligible candidates ──────────────────
+
+        struct Candidate<'c> {
+            model: &'c Model,
+            brand: &'c Brand,
+            rule_priority: i16,
+            headroom: f32,
+            score: f32,
+        }
+
         let mut tried = 0;
+        let mut candidates: Vec<Candidate<'_>> = Vec::new();
 
         for rule in rules {
             if !rule.is_enabled {
@@ -187,18 +199,12 @@ impl Selector {
                 continue;
             }
 
-            // Context fit
             if model.max_context_tokens < req.estimated_tokens {
-                debug!(
-                    model = %model.slug,
-                    max = model.max_context_tokens,
-                    needed = req.estimated_tokens,
-                    "skipped: context too large"
-                );
+                debug!(model = %model.slug, max = model.max_context_tokens,
+                    needed = req.estimated_tokens, "skipped: context too large");
                 continue;
             }
 
-            // Upper bound: don't waste a large-context model on tiny input
             if let Some(max_ctx) = rule.max_ctx_tokens {
                 if req.estimated_tokens > max_ctx {
                     debug!(model = %model.slug, "skipped: input exceeds rule max_ctx_tokens");
@@ -206,8 +212,6 @@ impl Selector {
                 }
             }
 
-            // Category filter: if caller specified categories, model must match one.
-            // If caller specified no categories, skip models that have a specialized category.
             if !req.categories.is_empty() {
                 let matches = model
                     .category
@@ -224,7 +228,8 @@ impl Selector {
                 .map(|c| !matches!(c, "text" | "code" | "vision"))
                 .unwrap_or(false)
             {
-                debug!(model = %model.slug, category = ?model.category, "skipped: specialized category requires explicit opt-in");
+                debug!(model = %model.slug, category = ?model.category,
+                    "skipped: specialized category requires explicit opt-in");
                 continue;
             }
 
@@ -245,7 +250,8 @@ impl Selector {
                         continue;
                     }
                     Some(q) if q < req.quality_min => {
-                        debug!(model = %model.slug, quality = q, min = req.quality_min, "skipped: quality below min");
+                        debug!(model = %model.slug, quality = q, min = req.quality_min,
+                            "skipped: quality below min");
                         continue;
                     }
                     _ => {}
@@ -263,48 +269,148 @@ impl Selector {
                 continue;
             }
 
-            let estimated_input_cost_usd = model
-                .price_input_per_1m
-                .map(|p| p * (req.estimated_tokens as f64) / 1_000_000.0);
+            let headroom = self
+                .usage_tracker
+                .headroom(model.id, estimated_tokens, model);
+            if headroom < 0.0 {
+                // Negative = strictly over limit. Zero = last slot, still eligible.
+                debug!(model = %model.slug, headroom, "skipped: usage tracker headroom exhausted");
+                tried += 1;
+                continue;
+            }
 
-            debug!(
-                model = %model.slug,
-                brand = %brand.slug,
-                priority = rule.priority,
-                "selected"
-            );
-
-            return Ok(ModelCandidate {
-                model_id: model.id,
-                brand_slug: brand.slug.clone(),
-                model_slug: model.slug.clone(),
-                api_key_env: brand.api_key_env.clone(),
-                max_context_tokens: model.max_context_tokens,
-                supports_function_calling: model.supports_function_calling,
-                supports_json_mode: model.supports_json_mode,
-                estimated_input_cost_usd,
+            candidates.push(Candidate {
+                model,
+                brand,
+                rule_priority: rule.priority,
+                headroom,
+                score: 0.0,
             });
         }
 
-        Err(ProvizError::AllModelsExhausted {
-            step: req.step.clone(),
-            tried,
+        if candidates.is_empty() {
+            return Err(ProvizError::AllModelsExhausted {
+                step: req.step.clone(),
+                tried,
+            });
+        }
+
+        // ── Pass 2: score across the pool with min-max normalization ─────────────
+
+        let prices: Vec<f64> = candidates
+            .iter()
+            .filter_map(|c| c.model.price_input_per_1m)
+            .collect();
+        let min_price = prices.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_price = prices.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+
+        let latencies: Vec<u32> = candidates
+            .iter()
+            .filter_map(|c| c.model.avg_latency_ms)
+            .collect();
+        let min_latency = latencies.iter().cloned().min().unwrap_or(0);
+        let max_latency = latencies.iter().cloned().max().unwrap_or(0);
+
+        for c in &mut candidates {
+            let quality = c.model.quality_score.unwrap_or(0.5);
+
+            let cost_score = match c.model.price_input_per_1m {
+                None => 0.5_f32,
+                Some(_) if (max_price - min_price).abs() < f64::EPSILON => 0.5_f32,
+                Some(p) => 1.0_f32 - ((p - min_price) / (max_price - min_price)) as f32,
+            };
+
+            let latency_score = match c.model.avg_latency_ms {
+                None => 0.5_f32,
+                Some(_) if max_latency == min_latency => 0.5_f32,
+                Some(ms) => {
+                    1.0_f32 - ((ms - min_latency) as f32 / (max_latency - min_latency) as f32)
+                }
+            };
+
+            // Clamp headroom to 0 for scoring (last slot = 0, not negative).
+            c.score = 0.50 * c.headroom.max(0.0)
+                + 0.25 * quality
+                + 0.15 * cost_score
+                + 0.10 * latency_score;
+        }
+
+        // Sort by (score DESC, rule_priority ASC) so priority is the tiebreaker.
+        candidates.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.rule_priority.cmp(&b.rule_priority))
+        });
+
+        let winner = &candidates[0];
+
+        // Atomic reservation — must happen before returning.
+        self.usage_tracker
+            .reserve(winner.model.id, estimated_tokens);
+
+        let estimated_input_cost_usd = winner
+            .model
+            .price_input_per_1m
+            .map(|p| p * estimated_tokens as f64 / 1_000_000.0);
+
+        debug!(
+            model = %winner.model.slug,
+            brand = %winner.brand.slug,
+            score = winner.score,
+            headroom = winner.headroom,
+            "selected"
+        );
+
+        Ok(ModelCandidate {
+            model_id: winner.model.id,
+            brand_slug: winner.brand.slug.clone(),
+            model_slug: winner.model.slug.clone(),
+            api_key_env: winner.brand.api_key_env.clone(),
+            max_context_tokens: winner.model.max_context_tokens,
+            supports_function_calling: winner.model.supports_function_calling,
+            supports_json_mode: winner.model.supports_json_mode,
+            estimated_input_cost_usd,
+            estimated_tokens,
         })
     }
 
-    pub fn report_rate_limit(&self, model_id: Uuid, error_type: RateLimitErrorType) {
+    pub fn report_rate_limit(
+        &self,
+        model_id: Uuid,
+        error_type: RateLimitErrorType,
+        estimated_tokens: u64,
+        actual_tokens: Option<u64>,
+    ) {
         self.rate_state.mark(model_id, &error_type);
+        self.usage_tracker
+            .release(model_id, estimated_tokens, actual_tokens);
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist rate limit event");
         }
     }
 
-    pub fn report_success(&self, model_id: Uuid) {
+    pub fn report_success(
+        &self,
+        model_id: Uuid,
+        estimated_tokens: u64,
+        actual_tokens: Option<u64>,
+    ) {
         self.rate_state.clear(&model_id);
+        self.usage_tracker
+            .release(model_id, estimated_tokens, actual_tokens);
     }
 
-    pub fn report_error(&self, model_id: Uuid, error_type: RateLimitErrorType) {
+    pub fn report_error(
+        &self,
+        model_id: Uuid,
+        error_type: RateLimitErrorType,
+        estimated_tokens: u64,
+        actual_tokens: Option<u64>,
+    ) {
         self.rate_state.mark(model_id, &error_type);
+        self.usage_tracker
+            .release(model_id, estimated_tokens, actual_tokens);
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist error event");
         }

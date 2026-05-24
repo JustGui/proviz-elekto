@@ -141,17 +141,27 @@ async fn handle_report(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ReportRequest>,
 ) -> impl IntoResponse {
-    tokio::task::spawn_blocking(move || match req.outcome {
-        ReportOutcome::Success => {
-            state.selector.report_success(req.model_id);
-        }
-        ReportOutcome::RateLimit => {
-            let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-            state.selector.report_rate_limit(req.model_id, et);
-        }
-        ReportOutcome::Error => {
-            let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-            state.selector.report_error(req.model_id, et);
+    tokio::task::spawn_blocking(move || {
+        let estimated = req.estimated_tokens.unwrap_or(0);
+        let actual = req.actual_tokens;
+        match req.outcome {
+            ReportOutcome::Success => {
+                state
+                    .selector
+                    .report_success(req.model_id, estimated, actual);
+            }
+            ReportOutcome::RateLimit => {
+                let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
+                state
+                    .selector
+                    .report_rate_limit(req.model_id, et, estimated, actual);
+            }
+            ReportOutcome::Error => {
+                let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
+                state
+                    .selector
+                    .report_error(req.model_id, et, estimated, actual);
+            }
         }
     })
     .await

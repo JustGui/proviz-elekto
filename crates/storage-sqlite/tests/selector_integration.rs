@@ -339,7 +339,7 @@ fn exclude_ids_increments_tried() {
 fn rate_limit_skips_model() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, RateLimitErrorType::Tpm);
+    sel.report_rate_limit(mid, RateLimitErrorType::Tpm, 0, None);
     let err = sel.select(&base_req()).unwrap_err();
     assert!(matches!(
         err,
@@ -351,8 +351,8 @@ fn rate_limit_skips_model() {
 fn report_success_clears_limit() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, RateLimitErrorType::Tpm);
-    sel.report_success(mid);
+    sel.report_rate_limit(mid, RateLimitErrorType::Tpm, 0, None);
+    sel.report_success(mid, 0, None);
     assert!(sel.select(&base_req()).is_ok());
 }
 
@@ -422,4 +422,126 @@ fn category_audio_opted_in() {
         ..base_req()
     };
     assert!(selector(db).select(&req).is_ok());
+}
+
+#[test]
+fn select_returns_estimated_tokens() {
+    let (db, _, _, _) = make_world();
+    let c = selector(db).select(&base_req()).unwrap();
+    assert_eq!(c.estimated_tokens, base_req().estimated_tokens as u64);
+}
+
+#[test]
+fn scoring_prefers_cheaper_model() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let cheap = Model {
+        price_input_per_1m: Some(1.0),
+        quality_score: Some(0.80),
+        ..make_model(brand.id, "cheap", 32_000)
+    };
+    let expensive = Model {
+        price_input_per_1m: Some(10.0),
+        quality_score: Some(0.80),
+        ..make_model(brand.id, "expensive", 32_000)
+    };
+    // Same priority — scoring should pick the cheaper one
+    let r_cheap = make_rule("chat", cheap.id, 0);
+    let r_expensive = make_rule("chat", expensive.id, 0);
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&cheap).unwrap();
+    db.insert_model(&expensive).unwrap();
+    db.insert_rule(&r_cheap).unwrap();
+    db.insert_rule(&r_expensive).unwrap();
+    let c = selector(db).select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "cheap");
+}
+
+#[test]
+fn scoring_prefers_higher_quality() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let high_q = Model {
+        price_input_per_1m: Some(5.0),
+        quality_score: Some(0.95),
+        ..make_model(brand.id, "high-quality", 32_000)
+    };
+    let low_q = Model {
+        price_input_per_1m: Some(5.0),
+        quality_score: Some(0.40),
+        ..make_model(brand.id, "low-quality", 32_000)
+    };
+    let r_hq = make_rule("chat", high_q.id, 0);
+    let r_lq = make_rule("chat", low_q.id, 0);
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&high_q).unwrap();
+    db.insert_model(&low_q).unwrap();
+    db.insert_rule(&r_hq).unwrap();
+    db.insert_rule(&r_lq).unwrap();
+    let c = selector(db).select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "high-quality");
+}
+
+#[test]
+fn rpm_limit_single_model_exhausted() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    // rpm_limit=1: last slot is eligible (headroom=0 ≥ 0), then in_flight=1 makes
+    // projected=2 → headroom=-1.0 → filtered.
+    let tight = Model {
+        rpm_limit: Some(1),
+        ..make_model(brand.id, "tight", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&tight).unwrap();
+    db.insert_rule(&make_rule("chat", tight.id, 0)).unwrap();
+
+    let sel = selector(db);
+    // First select: last slot (headroom=0.0), not filtered (< 0.0 check)
+    let c1 = sel.select(&base_req()).unwrap();
+    assert_eq!(c1.model_slug, "tight");
+
+    // Second select: in_flight=1 → projected=2/1 → headroom=-1.0 → AllModelsExhausted
+    let err = sel.select(&base_req()).unwrap_err();
+    assert!(matches!(
+        err,
+        ProvizError::AllModelsExhausted { tried: 1, .. }
+    ));
+}
+
+#[test]
+fn headroom_scoring_causes_fallback_when_loaded() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    // "primary" has high quality (1.0) but rpm_limit=2.
+    // "backup" has low quality (0.0) but is unlimited.
+    // Before load: scores tie (quality offsets headroom gap), priority breaks tie → primary.
+    // After 1 reserve: primary headroom drops to 0.0, backup (headroom=1.0) wins by score.
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let primary = Model {
+        quality_score: Some(1.0),
+        rpm_limit: Some(2),
+        ..make_model(brand.id, "primary", 32_000)
+    };
+    let backup = Model {
+        quality_score: Some(0.0),
+        ..make_model(brand.id, "backup", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&primary).unwrap();
+    db.insert_model(&backup).unwrap();
+    db.insert_rule(&make_rule("chat", primary.id, 0)).unwrap();
+    db.insert_rule(&make_rule("chat", backup.id, 1)).unwrap();
+
+    let sel = selector(db);
+    // Primary and backup tie on score (0.625 each); primary wins via rule priority.
+    let c1 = sel.select(&base_req()).unwrap();
+    assert_eq!(c1.model_slug, "primary");
+
+    // After reserve: primary headroom=0.0, backup headroom=1.0 → backup wins by score.
+    let c2 = sel.select(&base_req()).unwrap();
+    assert_eq!(c2.model_slug, "backup");
 }
