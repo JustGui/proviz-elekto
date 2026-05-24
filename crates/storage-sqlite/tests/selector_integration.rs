@@ -375,17 +375,15 @@ fn priority_ordering() {
 }
 
 #[test]
-fn step_not_found() {
+fn step_not_found_falls_back_to_brand_priority() {
+    // Unknown steps now fall back to brand-priority synthetic rules instead of erroring.
     let (db, _, _, _) = make_world();
     let req = SelectRequest {
         step: "summarize".to_string(),
         ..base_req()
     };
-    let err = selector(db).select(&req).unwrap_err();
-    assert!(matches!(
-        err,
-        ProvizError::AllModelsExhausted { tried: 0, .. }
-    ));
+    let c = selector(db).select(&req).unwrap();
+    assert_eq!(c.model_slug, "acme-7b");
 }
 
 #[test]
