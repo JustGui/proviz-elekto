@@ -39,14 +39,14 @@ try:
         requires_json_mode=True,
         quality_min=0.0,
     )
-    print(f"  Selected: {candidate['brand_slug']}/{candidate['model_slug']}")
-    print(f"  model_id: {candidate['model_id']}")
-    print(f"  max_ctx:  {candidate['max_context_tokens']:,} tokens")
-    print(f"  fn_call:  {candidate['supports_function_calling']}")
-    if candidate.get("estimated_input_cost_usd") is not None:
-        print(f"  est_cost: ${candidate['estimated_input_cost_usd']:.6f}")
+    print(f"  Selected: {candidate.brand_slug}/{candidate.model_slug}")
+    print(f"  model_id: {candidate.model_id}")
+    print(f"  max_ctx:  {candidate.max_context_tokens:,} tokens")
+    print(f"  fn_call:  {candidate.supports_function_calling}")
+    if candidate.estimated_input_cost_usd is not None:
+        print(f"  est_cost: ${candidate.estimated_input_cost_usd:.6f}")
 
-    model_id = candidate["model_id"]
+    model_id = candidate.model_id
 
     # Report success after a real LLM call would go here
     pz.report_success(model_id)
@@ -72,8 +72,8 @@ try:
         estimated_tokens=2500,
         exclude_ids=[model_id],
     )
-    print(f"  Fallback: {fallback['brand_slug']}/{fallback['model_slug']}")
-    pz.report_success(fallback["model_id"])
+    print(f"  Fallback: {fallback.brand_slug}/{fallback.model_slug}")
+    pz.report_success(fallback.model_id)
 except AllModelsExhausted:
     print("  No fallback available (only one model configured — that's fine for demo).")
 
