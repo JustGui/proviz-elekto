@@ -147,6 +147,8 @@ pub struct ModelCandidate {
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
     pub estimated_input_cost_usd: Option<f64>,
+    /// Echoed from SelectRequest so callers can include it in /report for accurate window tracking.
+    pub estimated_tokens: u64,
 }
 
 /// Input to /report
@@ -156,6 +158,14 @@ pub struct ReportRequest {
     pub outcome: ReportOutcome,
     #[serde(default)]
     pub error_type: Option<RateLimitErrorType>,
+    /// Echo of ModelCandidate.estimated_tokens — used to release the in-flight reservation.
+    /// Omitting this (legacy clients) leaves the in-flight counter inflated until expiry,
+    /// which is safe (pessimistic direction).
+    #[serde(default)]
+    pub estimated_tokens: Option<u64>,
+    /// Actual tokens consumed as reported by the provider. Improves TPM window accuracy.
+    #[serde(default)]
+    pub actual_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
