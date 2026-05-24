@@ -441,6 +441,89 @@ PROVIZ_PORT=63130 proviz-server  # force port
 
 In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after binding.
 
+## Docker
+
+### Pull from Docker Hub
+
+```bash
+docker pull justgu1/proviz-elekto:latest
+```
+
+### Run with PostgreSQL
+
+```bash
+docker run -d \
+  --name proviz \
+  -p 63130:63130 \
+  -e PROVIZ_STORAGE=postgres \
+  -e PROVIZ_DATABASE_URL="postgresql://user:pass@host/db" \
+  justgu1/proviz-elekto:latest
+```
+
+### Run with a named Docker volume (PostgreSQL recommended for production)
+
+```bash
+docker run -d \
+  --name proviz \
+  -p 63130:63130 \
+  -e PROVIZ_STORAGE=postgres \
+  -e PROVIZ_DATABASE_URL="postgresql://user:pass@host/db" \
+  justgu1/proviz-elekto:latest
+```
+
+### Docker Compose (recommended)
+
+```yaml
+services:
+  proviz:
+    image: justgu1/proviz-elekto:latest
+    ports:
+      - "63130:63130"
+    environment:
+      PROVIZ_STORAGE: postgres
+      PROVIZ_DATABASE_URL: postgresql://user:pass@db/mydb
+      PROVIZ_PORT: 63130
+    depends_on:
+      - db
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:
+```
+
+### Python client with Docker
+
+Point the Python client at the running container using env vars or constructor args:
+
+```python
+import os
+from proviz_elekto import ProvizElekto
+
+# Via env vars (no code change needed)
+# PROVIZ_HOST=proviz PROVIZ_PORT=63130
+
+# Or via constructor
+pz = ProvizElekto(host="proviz", port=63130)
+```
+
+`PROVIZ_HOST` and `PROVIZ_PORT` env vars are read automatically; a non-localhost host with a
+non-zero port skips subprocess spawning and attaches directly to the running container.
+
+### Build the image locally
+
+```bash
+docker build -t proviz-elekto .
+docker run -p 63130:63130 -e PROVIZ_DATABASE_URL=postgresql://... proviz-elekto
+```
+
 ## Data Model
 
 ### Brands (`pz_brands`)
@@ -493,7 +576,7 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 ## Building from Source
 
 ```bash
-git clone https://github.com/YOUR_ORG/proviz-elekto
+git clone https://github.com/JustGui/proviz-elekto
 cd proviz-elekto
 
 # Build server + CLI
