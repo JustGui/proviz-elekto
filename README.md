@@ -274,7 +274,7 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | UUID | Primary key |
-| `slug` | string | `groq`, `mistral`, `openai`, `gemini`, `together`, `ollama` |
+| `slug` | string | `groq`, `mistral`, `ollama` |
 | `name` | string | Display name |
 | `api_key_env` | string? | Env var holding the API key (`GROQ_API_KEY`) |
 | `base_url` | string? | Optional API base URL override |
