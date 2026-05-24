@@ -21,7 +21,8 @@ classifiers = [
     "Programming Language :: Rust",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-# No runtime dependencies - stdlib only
+[project.optional-dependencies]
+litellm = ["litellm>=1.0"]
 
 [project.urls]
 Repository = "https://github.com/JustGui/proviz-elekto"

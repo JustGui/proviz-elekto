@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Callable, Optional
 
 
 class ProvizError(Exception):
@@ -35,6 +35,52 @@ class ModelCandidate:
     supports_function_calling: bool
     supports_json_mode: bool
     estimated_input_cost_usd: Optional[float]
+
+
+@dataclass
+class CallResult:
+    response: Any
+    candidate: ModelCandidate
+    provider: str
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+
+def _classify_error(exc: Exception) -> tuple[str, str]:
+    status = getattr(exc, "status_code", None)
+    cls = type(exc).__name__
+
+    if status == 429 or "RateLimit" in cls:
+        msg = str(exc).lower()
+        if "day" in msg or "tpd" in msg:
+            return "rate_limit", "tpd"
+        if "token" in msg or "tpm" in msg:
+            return "rate_limit", "tpm"
+        return "rate_limit", "rpm"
+
+    if status in (401, 403) or "Auth" in cls:
+        return "error", "auth"
+
+    if "Timeout" in cls or status == 408:
+        return "error", "timeout"
+
+    return "error", "other"
+
+
+def _extract_usage(response: Any) -> tuple[int, int, int]:
+    try:
+        usage = response.usage
+        prompt = getattr(usage, "prompt_tokens", 0) or 0
+        completion = getattr(usage, "completion_tokens", 0) or 0
+        return prompt, completion, prompt + completion
+    except AttributeError:
+        return 0, 0, 0
+
+
+def _estimate_tokens(messages: list[dict]) -> int:
+    total = sum(len(str(m.get("content", ""))) for m in messages)
+    return max(1, total // 4)
 
 
 def _find_binary() -> str:
@@ -240,6 +286,93 @@ class ProvizElekto:
             "outcome": "error",
             "error_type": error_type,
         })
+
+    def call(
+        self,
+        step: str,
+        fn: Callable[[ModelCandidate], Any],
+        *,
+        estimated_tokens: int = 0,
+        requires_fn_call: bool = False,
+        requires_json_mode: bool = False,
+        quality_min: float = 0.0,
+        exclude_ids: Optional[list[str]] = None,
+        categories: Optional[list[str]] = None,
+        error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
+    ) -> CallResult:
+        """Select a model, call fn(candidate), report the outcome, and retry on failure.
+
+        fn receives a ModelCandidate and must return the raw LLM response.
+        Retries automatically until a model succeeds or AllModelsExhausted is raised.
+        """
+        classifier = error_classifier or _classify_error
+        # Models that won't be blocked server-side (parse errors have TTL=0)
+        permanent_skip: list[str] = list(exclude_ids or [])
+
+        while True:
+            candidate = self.select(
+                step=step,
+                estimated_tokens=estimated_tokens,
+                requires_fn_call=requires_fn_call,
+                requires_json_mode=requires_json_mode,
+                quality_min=quality_min,
+                exclude_ids=permanent_skip,
+                categories=categories,
+            )
+            try:
+                response = fn(candidate)
+                self.report_success(candidate.model_id)
+                prompt, completion, total = _extract_usage(response)
+                return CallResult(
+                    response=response,
+                    candidate=candidate,
+                    provider=candidate.brand_slug,
+                    prompt_tokens=prompt,
+                    completion_tokens=completion,
+                    total_tokens=total,
+                )
+            except AllModelsExhausted:
+                raise
+            except Exception as exc:
+                outcome, error_type = classifier(exc)
+                if outcome == "rate_limit":
+                    self.report_rate_limit(candidate.model_id, error_type)
+                else:
+                    self.report_error(candidate.model_id, error_type)
+                if error_type == "parse":
+                    permanent_skip.append(candidate.model_id)
+
+    def call_litellm(
+        self,
+        step: str,
+        messages: list[dict],
+        *,
+        estimated_tokens: Optional[int] = None,
+        **litellm_kwargs: Any,
+    ) -> CallResult:
+        """call() with built-in LiteLLM integration.
+
+        Requires: pip install proviz-elekto[litellm]
+        Model string and API key are derived automatically from the selected candidate.
+        Any extra kwargs are forwarded to litellm.completion().
+        """
+        try:
+            import litellm
+        except ImportError:
+            raise ProvizError(
+                "litellm is not installed. Run: pip install proviz-elekto[litellm]"
+            ) from None
+
+        def fn(candidate: ModelCandidate) -> Any:
+            return litellm.completion(
+                model=f"{candidate.brand_slug}/{candidate.model_slug}",
+                messages=messages,
+                api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                **litellm_kwargs,
+            )
+
+        tokens = estimated_tokens if estimated_tokens is not None else _estimate_tokens(messages)
+        return self.call(step, fn, estimated_tokens=tokens)
 
     def health(self) -> dict:
         req = urllib.request.Request(f"{self._base}/health")
