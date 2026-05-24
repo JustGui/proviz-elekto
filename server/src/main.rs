@@ -62,19 +62,32 @@ async fn main() {
                 .database_url
                 .expect("PROVIZ_DATABASE_URL required for postgres storage");
             info!("using PostgreSQL storage");
-            Arc::new(PostgresStorage::connect(&url).expect("failed to connect to PostgreSQL"))
+            // postgres::Client uses block_on internally; must connect outside the async context.
+            let pg = tokio::task::spawn_blocking(move || {
+                PostgresStorage::connect(&url).expect("failed to connect to PostgreSQL")
+            })
+            .await
+            .expect("postgres connect task panicked");
+            Arc::new(pg) as Arc<dyn CatalogStorage>
         }
         _ => {
             info!(path = %args.db_path, "using SQLite storage");
             Arc::new(SqliteStorage::open(&args.db_path).expect("failed to open SQLite"))
+                as Arc<dyn CatalogStorage>
         }
     };
 
-    let selector = Selector::new(storage);
-    match selector.reload() {
-        Ok((models, rules)) => info!(models, rules, "catalog loaded"),
-        Err(e) => error!("catalog load failed: {e}"),
-    }
+    // Initial catalog load — run in a blocking thread so postgres storage can call block_on.
+    let selector = tokio::task::spawn_blocking(move || {
+        let sel = Selector::new(storage);
+        match sel.reload() {
+            Ok((models, rules)) => info!(models, rules, "catalog loaded"),
+            Err(e) => error!("catalog load failed: {e}"),
+        }
+        sel
+    })
+    .await
+    .expect("catalog load task panicked");
 
     let state = Arc::new(AppState {
         selector,
@@ -102,7 +115,10 @@ async fn handle_select(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SelectRequest>,
 ) -> impl IntoResponse {
-    match state.selector.select(&req) {
+    let result = tokio::task::spawn_blocking(move || state.selector.select(&req))
+        .await
+        .expect("select task panicked");
+    match result {
         Ok(candidate) => (StatusCode::OK, Json(json!(candidate))).into_response(),
         Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted { step, tried }) => (
             StatusCode::CONFLICT,
@@ -125,7 +141,7 @@ async fn handle_report(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ReportRequest>,
 ) -> impl IntoResponse {
-    match req.outcome {
+    tokio::task::spawn_blocking(move || match req.outcome {
         ReportOutcome::Success => {
             state.selector.report_success(req.model_id);
         }
@@ -137,7 +153,9 @@ async fn handle_report(
             let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
             state.selector.report_error(req.model_id, et);
         }
-    }
+    })
+    .await
+    .expect("report task panicked");
     (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
 }
 
@@ -155,7 +173,10 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 }
 
 async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.selector.reload() {
+    let result = tokio::task::spawn_blocking(move || state.selector.reload())
+        .await
+        .expect("reload task panicked");
+    match result {
         Ok((models, rules)) => (
             StatusCode::OK,
             Json(json!({ "status": "ok", "models_loaded": models, "rules_loaded": rules })),
