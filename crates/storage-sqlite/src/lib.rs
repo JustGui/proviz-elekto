@@ -113,10 +113,7 @@ impl CatalogStorage for SqliteStorage {
     fn load_selection_rules(&self, step: &str) -> StorageResult<Vec<SelectionRule>> {
         let conn = self.conn.lock().unwrap();
         let (query, use_param) = if step == "*" {
-            (
-                format!("{Q_RULES} ORDER BY priority ASC"),
-                false,
-            )
+            (format!("{Q_RULES} ORDER BY priority ASC"), false)
         } else {
             (
                 format!("{Q_RULES} WHERE step=?1 ORDER BY priority ASC"),

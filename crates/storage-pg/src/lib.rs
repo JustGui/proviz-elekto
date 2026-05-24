@@ -92,10 +92,7 @@ impl CatalogStorage for PostgresStorage {
     fn load_selection_rules(&self, step: &str) -> StorageResult<Vec<SelectionRule>> {
         let mut client = self.client.lock().unwrap();
         let rows = if step == "*" {
-            client.query(
-                &format!("{Q_RULES} ORDER BY priority ASC"),
-                &[],
-            )
+            client.query(&format!("{Q_RULES} ORDER BY priority ASC"), &[])
         } else {
             client.query(
                 &format!("{Q_RULES} WHERE step=$1 ORDER BY priority ASC"),
@@ -109,10 +106,7 @@ impl CatalogStorage for PostgresStorage {
     fn load_model(&self, model_id: Uuid) -> StorageResult<Option<Model>> {
         let mut client = self.client.lock().unwrap();
         let row = client
-            .query_opt(
-                &format!("{Q_MODELS} WHERE id=$1"),
-                &[&model_id],
-            )
+            .query_opt(&format!("{Q_MODELS} WHERE id=$1"), &[&model_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.map(|row| model_from_row(&PgRow(&row))))
     }
@@ -120,10 +114,7 @@ impl CatalogStorage for PostgresStorage {
     fn load_brand(&self, brand_id: Uuid) -> StorageResult<Option<Brand>> {
         let mut client = self.client.lock().unwrap();
         let row = client
-            .query_opt(
-                &format!("{Q_BRANDS} WHERE id=$1"),
-                &[&brand_id],
-            )
+            .query_opt(&format!("{Q_BRANDS} WHERE id=$1"), &[&brand_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(row.map(|row| brand_from_row(&PgRow(&row))))
     }
