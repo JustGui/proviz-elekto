@@ -1,14 +1,18 @@
 # ProvizElekto
 
-Smart LLM model router. Picks the best model for each call based on context size, rate limits, and capabilities - before the call happens.
+Smart LLM model router. Picks the best model for each call based on context size, rate limits, and capabilities — and retries automatically on failure.
 
 ```
-Your app → ProvizElekto.select() → ModelCandidate → LiteLLM → Provider
-                ↑                                        ↓
-           report_success / report_rate_limit / report_error
+Your app → pz.call(step, fn)               → CallResult
+           pz.call_litellm(step, messages) → CallResult
+                    ↕  (automatic)
+           select → LLM call → report → retry on failure
+                    ↕
+              proviz-server (Rust)
+          rate-limit state · catalog
 ```
 
-**Key difference from LiteLLM fallback:** LiteLLM retries *after* failure. ProvizElekto picks the right model *before* the call - skipping models that are rate-limited, can't fit the context, or lack required capabilities.
+**Key difference from LiteLLM fallback:** LiteLLM retries *after* failure. ProvizElekto picks the right model *before* the call — skipping models that are rate-limited, can't fit the context, or lack required capabilities — then retries with the next eligible model automatically.
 
 ## Features
 
@@ -24,7 +28,8 @@ Your app → ProvizElekto.select() → ModelCandidate → LiteLLM → Provider
 ## Installation
 
 ```bash
-pip install proviz-elekto
+pip install proviz-elekto          # core only
+pip install proviz-elekto[litellm] # + built-in LiteLLM integration
 ```
 
 The `proviz-server` binary is bundled in the wheel.
@@ -37,40 +42,59 @@ proviz --help
 
 ## Quickstart
 
+### With LiteLLM (recommended)
+
 ```python
-import os
 from proviz_elekto import ProvizElekto
 
-# Auto-starts proviz-server on first use. Stops on process exit.
-pz = ProvizElekto(database_url=os.environ["DATABASE_URL"])
-# or SQLite: pz = ProvizElekto(db_path="./proviz.db")
+pz = ProvizElekto(db_path="./proviz.db")
+# or PostgreSQL: pz = ProvizElekto(database_url=os.environ["DATABASE_URL"])
 
-# Seed brands and models once
-# proviz seed --brands --models
+result = pz.call_litellm(
+    step="verdict",
+    messages=[{"role": "user", "content": "Summarize this document..."}],
+    estimated_tokens=2500,
+    requires_json_mode=True,
+)
+print(result.provider, result.candidate.model_slug, result.total_tokens)
+# → mistral mistral-small-latest 312
+```
 
-tried = []
-while True:
-    candidate = pz.select(
-        step="verdict",
-        estimated_tokens=2500,
-        requires_json_mode=True,
-        exclude_ids=tried,
+`call_litellm()` selects the best available model, calls it, reports the outcome, and retries with the next eligible model on any failure — automatically.
+
+### With a custom LLM caller
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+def my_llm(candidate):
+    return client.messages.create(
+        model=candidate.model_slug,
+        max_tokens=1024,
+        messages=[{"role": "user", "content": "Hello"}],
     )
-    try:
-        import litellm, os
-        result = litellm.completion(
-            model=f"{candidate.brand_slug}/{candidate.model_slug}",
-            messages=[{"role": "user", "content": "..."}],
-            api_key=os.environ.get(candidate.api_key_env, ""),
-        )
-        pz.report_success(candidate.model_id)
-        break
-    except litellm.RateLimitError:
-        pz.report_rate_limit(candidate.model_id, "tpm")
-        tried.append(candidate.model_id)
-    except Exception:
-        pz.report_error(candidate.model_id, "other")
-        tried.append(candidate.model_id)
+
+result = pz.call("verdict", my_llm, estimated_tokens=100)
+print(result.candidate.brand_slug, result.prompt_tokens)
+```
+
+Pass any callable that accepts a `ModelCandidate` and returns a response. ProvizElekto wraps it with the same select → report → retry loop.
+
+### Low-level API
+
+If you need direct control over selection and reporting:
+
+```python
+candidate = pz.select(step="verdict", estimated_tokens=2500)
+try:
+    response = my_llm_call(candidate)
+    pz.report_success(candidate.model_id)
+except RateLimitError:
+    pz.report_rate_limit(candidate.model_id, "tpm")
+except Exception:
+    pz.report_error(candidate.model_id, "other")
 ```
 
 ## Catalog Setup
