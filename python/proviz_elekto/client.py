@@ -192,6 +192,7 @@ class ProvizElekto:
         requires_json_mode: bool = False,
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
+        categories: Optional[list[str]] = None,
     ) -> ModelCandidate:
         r = self._post("/select", {
             "step": step,
@@ -200,6 +201,7 @@ class ProvizElekto:
             "requires_json_mode": requires_json_mode,
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
+            "categories": categories or [],
         })
         return ModelCandidate(
             model_id=r["model_id"],
