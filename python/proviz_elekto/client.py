@@ -124,28 +124,41 @@ class ProvizElekto:
     """
     Smart LLM model router.
 
-    Automatically starts the proviz-server binary as a subprocess on first use.
-    The subprocess is shut down cleanly when the Python process exits.
+    Automatically starts the proviz-server binary as a subprocess on first use,
+    unless `host` is set to a non-localhost value (e.g. a Docker service name) — in
+    that case it attaches to the already-running remote server without spawning.
 
     Usage:
         pz = ProvizElekto(database_url="postgresql://...")
         candidate = pz.select(step="verdict", estimated_tokens=2500)
         ...
         pz.report_success(candidate.model_id)
+
+    Docker / remote usage:
+        pz = ProvizElekto(host="proviz", port=63130)
+        # or: PROVIZ_HOST=proviz PROVIZ_PORT=63130 in environment
     """
 
     def __init__(
         self,
         database_url: Optional[str] = None,
         db_path: str = "proviz.db",
+        host: str = "localhost",
         port: int = 0,
         timeout: float = 5.0,
         startup_timeout: float = 10.0,
     ):
         self._proc: Optional[subprocess.Popen] = None
+        host = os.environ.get("PROVIZ_HOST", host)
+        port = int(os.environ.get("PROVIZ_PORT", port))
+        self._host = host
         self._port = port
-        self._base = f"http://localhost:{port}"
+        self._base = f"http://{host}:{port}"
         self._timeout = timeout
+
+        # If pointing at a remote host (not localhost), never spawn — just attach.
+        if host != "localhost" and port > 0:
+            return
 
         if port > 0 and self._is_running():
             return
@@ -161,7 +174,7 @@ class ProvizElekto:
 
     def _is_running(self) -> bool:
         try:
-            with socket.create_connection(("localhost", self._port), timeout=0.5):
+            with socket.create_connection((self._host, self._port), timeout=0.5):
                 return True
         except OSError:
             return False
@@ -206,7 +219,7 @@ class ProvizElekto:
 
         actual_port = int(text.split("=", 1)[1])
         self._port = actual_port
-        self._base = f"http://localhost:{actual_port}"
+        self._base = f"http://{self._host}:{actual_port}"
 
     def _stop(self) -> None:
         if self._proc and self._proc.poll() is None:
