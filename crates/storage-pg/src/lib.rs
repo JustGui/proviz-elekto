@@ -5,6 +5,9 @@ use proviz_elekto_core::{
     models::{Brand, Model, RateLimitErrorType, SelectionRule},
     storage::{CatalogStorage, StorageResult},
 };
+use proviz_elekto_storage_common::{
+    brand_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_MODELS, Q_RULES,
+};
 use std::sync::Mutex;
 use uuid::Uuid;
 
@@ -26,6 +29,41 @@ impl PostgresStorage {
     }
 }
 
+struct PgRow<'a>(&'a postgres::Row);
+
+impl RowReader for PgRow<'_> {
+    fn uuid(&self, idx: usize) -> Uuid {
+        self.0.get(idx)
+    }
+    fn string(&self, idx: usize) -> String {
+        self.0.get(idx)
+    }
+    fn opt_string(&self, idx: usize) -> Option<String> {
+        self.0.get(idx)
+    }
+    fn bool_val(&self, idx: usize) -> bool {
+        self.0.get(idx)
+    }
+    fn i16_val(&self, idx: usize) -> i16 {
+        self.0.get(idx)
+    }
+    fn i32_val(&self, idx: usize) -> i32 {
+        self.0.get(idx)
+    }
+    fn opt_i32(&self, idx: usize) -> Option<i32> {
+        self.0.get(idx)
+    }
+    fn opt_i64(&self, idx: usize) -> Option<i64> {
+        self.0.get(idx)
+    }
+    fn opt_f64(&self, idx: usize) -> Option<f64> {
+        self.0.get(idx)
+    }
+    fn datetime(&self, idx: usize) -> DateTime<Utc> {
+        self.0.get(idx)
+    }
+}
+
 impl CatalogStorage for PostgresStorage {
     fn init_schema(&self) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
@@ -38,152 +76,56 @@ impl CatalogStorage for PostgresStorage {
     fn load_brands(&self) -> StorageResult<Vec<Brand>> {
         let mut client = self.client.lock().unwrap();
         let rows = client
-            .query(
-                "SELECT id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at FROM pz_brands",
-                &[],
-            )
+            .query(Q_BRANDS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
-        Ok(rows
-            .iter()
-            .map(|row| Brand {
-                id: row.get::<_, Uuid>(0),
-                slug: row.get(1),
-                name: row.get(2),
-                api_key_env: row.get(3),
-                base_url: row.get(4),
-                is_active: row.get(5),
-                plan: row.get(6),
-                priority: row.get::<_, i16>(7),
-                created_at: row.get::<_, DateTime<Utc>>(8),
-            })
-            .collect())
+        Ok(rows.iter().map(|row| brand_from_row(&PgRow(row))).collect())
     }
 
     fn load_models(&self) -> StorageResult<Vec<Model>> {
         let mut client = self.client.lock().unwrap();
-        let rows = client.query(
-            "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
-             supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
-             tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-             is_enabled,notes,category,plan,created_at FROM pz_models",
-            &[],
-        ).map_err(|e| StorageError::Database(e.to_string()))?;
-
-        Ok(rows
-            .iter()
-            .map(|row| Model {
-                id: row.get::<_, Uuid>(0),
-                brand_id: row.get::<_, Uuid>(1),
-                slug: row.get(2),
-                display_name: row.get(3),
-                max_context_tokens: row.get::<_, i32>(4) as u32,
-                max_output_tokens: row.get::<_, Option<i32>>(5).map(|v| v as u32),
-                supports_function_calling: row.get(6),
-                supports_json_mode: row.get(7),
-                price_input_per_1m: row.get(8),
-                price_output_per_1m: row.get(9),
-                tpm_limit: row.get::<_, Option<i32>>(10).map(|v| v as u32),
-                rpm_limit: row.get::<_, Option<i32>>(11).map(|v| v as u32),
-                rpd_limit: row.get::<_, Option<i32>>(12).map(|v| v as u32),
-                tpd_limit: row.get::<_, Option<i64>>(13).map(|v| v as u64),
-                tpm_limit_month: row.get::<_, Option<i64>>(14).map(|v| v as u64),
-                rps_limit: row.get::<_, Option<f64>>(15).map(|v| v as f32),
-                quality_score: row.get::<_, Option<f64>>(16).map(|v| v as f32),
-                avg_latency_ms: row.get::<_, Option<i32>>(17).map(|v| v as u32),
-                is_enabled: row.get(18),
-                notes: row.get(19),
-                category: row.get(20),
-                plan: row.get(21),
-                created_at: row.get::<_, DateTime<Utc>>(22),
-            })
-            .collect())
+        let rows = client
+            .query(Q_MODELS, &[])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows.iter().map(|row| model_from_row(&PgRow(row))).collect())
     }
 
     fn load_selection_rules(&self, step: &str) -> StorageResult<Vec<SelectionRule>> {
         let mut client = self.client.lock().unwrap();
         let rows = if step == "*" {
             client.query(
-                "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled
-                 FROM pz_selection_rules ORDER BY priority ASC",
+                &format!("{Q_RULES} ORDER BY priority ASC"),
                 &[],
             )
         } else {
             client.query(
-                "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled
-                 FROM pz_selection_rules WHERE step=$1 ORDER BY priority ASC",
+                &format!("{Q_RULES} WHERE step=$1 ORDER BY priority ASC"),
                 &[&step],
             )
         }
         .map_err(|e| StorageError::Database(e.to_string()))?;
-
-        Ok(rows
-            .iter()
-            .map(|row| SelectionRule {
-                id: row.get::<_, Uuid>(0),
-                step: row.get(1),
-                model_id: row.get::<_, Uuid>(2),
-                priority: row.get::<_, i16>(3),
-                max_ctx_tokens: row.get::<_, Option<i32>>(4).map(|v| v as u32),
-                requires_fn_call: row.get(5),
-                is_enabled: row.get(6),
-            })
-            .collect())
+        Ok(rows.iter().map(|row| rule_from_row(&PgRow(row))).collect())
     }
 
     fn load_model(&self, model_id: Uuid) -> StorageResult<Option<Model>> {
         let mut client = self.client.lock().unwrap();
-        let row = client.query_opt(
-            "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
-             supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
-             tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-             is_enabled,notes,category,plan,created_at FROM pz_models WHERE id=$1",
-            &[&model_id],
-        ).map_err(|e| StorageError::Database(e.to_string()))?;
-
-        Ok(row.map(|row| Model {
-            id: row.get::<_, Uuid>(0),
-            brand_id: row.get::<_, Uuid>(1),
-            slug: row.get(2),
-            display_name: row.get(3),
-            max_context_tokens: row.get::<_, i32>(4) as u32,
-            max_output_tokens: row.get::<_, Option<i32>>(5).map(|v| v as u32),
-            supports_function_calling: row.get(6),
-            supports_json_mode: row.get(7),
-            price_input_per_1m: row.get(8),
-            price_output_per_1m: row.get(9),
-            tpm_limit: row.get::<_, Option<i32>>(10).map(|v| v as u32),
-            rpm_limit: row.get::<_, Option<i32>>(11).map(|v| v as u32),
-            rpd_limit: row.get::<_, Option<i32>>(12).map(|v| v as u32),
-            tpd_limit: row.get::<_, Option<i64>>(13).map(|v| v as u64),
-            tpm_limit_month: row.get::<_, Option<i64>>(14).map(|v| v as u64),
-            rps_limit: row.get::<_, Option<f64>>(15).map(|v| v as f32),
-            quality_score: row.get::<_, Option<f64>>(16).map(|v| v as f32),
-            avg_latency_ms: row.get::<_, Option<i32>>(17).map(|v| v as u32),
-            is_enabled: row.get(18),
-            notes: row.get(19),
-            category: row.get(20),
-            plan: row.get(21),
-            created_at: row.get::<_, DateTime<Utc>>(22),
-        }))
+        let row = client
+            .query_opt(
+                &format!("{Q_MODELS} WHERE id=$1"),
+                &[&model_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(row.map(|row| model_from_row(&PgRow(&row))))
     }
 
     fn load_brand(&self, brand_id: Uuid) -> StorageResult<Option<Brand>> {
         let mut client = self.client.lock().unwrap();
-        let row = client.query_opt(
-            "SELECT id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at FROM pz_brands WHERE id=$1",
-            &[&brand_id],
-        ).map_err(|e| StorageError::Database(e.to_string()))?;
-        Ok(row.map(|row| Brand {
-            id: row.get::<_, Uuid>(0),
-            slug: row.get(1),
-            name: row.get(2),
-            api_key_env: row.get(3),
-            base_url: row.get(4),
-            is_active: row.get(5),
-            plan: row.get(6),
-            priority: row.get::<_, i16>(7),
-            created_at: row.get::<_, DateTime<Utc>>(8),
-        }))
+        let row = client
+            .query_opt(
+                &format!("{Q_BRANDS} WHERE id=$1"),
+                &[&brand_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(row.map(|row| brand_from_row(&PgRow(&row))))
     }
 
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
