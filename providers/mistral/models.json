@@ -8,7 +8,9 @@
     "supports_json_mode": false,
     "tpm_limit": 1000000,
     "tpm_limit_month": null,
-    "rps_limit": 8.33
+    "rps_limit": 8.33,
+    "price_input_per_1m": 0.3,
+    "price_output_per_1m": 0.9
   },
   {
     "slug": "codestral-embed",
@@ -31,7 +33,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.78
+    "quality_score": 0.78,
+    "price_input_per_1m": 0.4,
+    "price_output_per_1m": 0.9
   },
   {
     "slug": "devstral-medium-2507",
@@ -43,7 +47,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.75
+    "quality_score": 0.75,
+    "price_input_per_1m": 0.4,
+    "price_output_per_1m": 2.0
   },
   {
     "slug": "devstral-small-2507",
@@ -55,7 +61,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.72
+    "quality_score": 0.72,
+    "price_input_per_1m": 0.07,
+    "price_output_per_1m": 0.28
   },
   {
     "slug": "labs-leanstral-2603",
@@ -67,7 +75,9 @@
     "tpm_limit": 15000000,
     "tpm_limit_month": null,
     "rps_limit": 2.5,
-    "quality_score": 0.75
+    "quality_score": 0.75,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "magistral-medium-2509",
@@ -79,7 +89,9 @@
     "tpm_limit": 120000,
     "tpm_limit_month": null,
     "rps_limit": 0.17,
-    "quality_score": 0.78
+    "quality_score": 0.78,
+    "price_input_per_1m": 2.0,
+    "price_output_per_1m": 5.0
   },
   {
     "slug": "magistral-small-2509",
@@ -103,7 +115,9 @@
     "tpm_limit": 1500000,
     "tpm_limit_month": null,
     "rps_limit": 2.0,
-    "quality_score": 0.85
+    "quality_score": 0.85,
+    "price_input_per_1m": 0.2,
+    "price_output_per_1m": 0.2
   },
   {
     "slug": "ministral-3b-2512",
@@ -115,7 +129,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 50.0,
-    "quality_score": 0.75
+    "quality_score": 0.75,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.1
   },
   {
     "slug": "ministral-8b-2512",
@@ -127,7 +143,9 @@
     "tpm_limit": 1000000,
     "tpm_limit_month": null,
     "rps_limit": 12.5,
-    "quality_score": 0.8
+    "quality_score": 0.8,
+    "price_input_per_1m": 0.15,
+    "price_output_per_1m": 0.15
   },
   {
     "slug": "mistral-embed-2312",
@@ -161,8 +179,8 @@
     "max_context_tokens": 131072,
     "supports_function_calling": true,
     "supports_json_mode": true,
-    "price_input_per_1m": 2.0,
-    "price_output_per_1m": 6.0,
+    "price_input_per_1m": 0.5,
+    "price_output_per_1m": 1.5,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
@@ -178,7 +196,9 @@
     "tpm_limit": 600000,
     "tpm_limit_month": null,
     "rps_limit": 1.67,
-    "quality_score": 0.83
+    "quality_score": 0.83,
+    "price_input_per_1m": 0.4,
+    "price_output_per_1m": 2.0
   },
   {
     "slug": "mistral-medium-2508",
@@ -190,7 +210,9 @@
     "tpm_limit": 570000,
     "tpm_limit_month": null,
     "rps_limit": 1.58,
-    "quality_score": 0.85
+    "quality_score": 0.85,
+    "price_input_per_1m": 0.4,
+    "price_output_per_1m": 2.0
   },
   {
     "slug": "mistral-medium-3-5",
@@ -202,7 +224,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.88
+    "quality_score": 0.88,
+    "price_input_per_1m": 1.5,
+    "price_output_per_1m": 7.5
   },
   {
     "slug": "mistral-moderation-2411",
@@ -225,6 +249,20 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 8.33
+  },
+  {
+    "slug": "mistral-nemo-2407",
+    "display_name": "Mistral Nemo",
+    "category": "text",
+    "max_context_tokens": 131072,
+    "supports_function_calling": true,
+    "supports_json_mode": true,
+    "tpm_limit": 1500000,
+    "tpm_limit_month": null,
+    "rps_limit": 2.0,
+    "quality_score": 0.93,
+    "price_input_per_1m": 0.02,
+    "price_output_per_1m": 0.03
   },
   {
     "slug": "mistral-ocr-2505",
@@ -269,8 +307,8 @@
     "max_context_tokens": 32768,
     "supports_function_calling": true,
     "supports_json_mode": true,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3,
+    "price_input_per_1m": 0.15,
+    "price_output_per_1m": 0.6,
     "tpm_limit": 100000,
     "tpm_limit_month": null,
     "rps_limit": 1.67,
@@ -298,7 +336,23 @@
     "tpm_limit": 1500000,
     "tpm_limit_month": null,
     "rps_limit": 2.0,
-    "quality_score": 0.93
+    "quality_score": 0.93,
+    "price_input_per_1m": 0.02,
+    "price_output_per_1m": 0.03
+  },
+  {
+    "slug": "pixtral-12b-2409",
+    "display_name": "Pixtral 12B",
+    "category": "vision",
+    "max_context_tokens": 128000,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "tpm_limit": 2000000,
+    "tpm_limit_month": null,
+    "rps_limit": 6.0,
+    "quality_score": 0.75,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.1
   },
   {
     "slug": "pixtral-large-2411",
@@ -310,7 +364,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.8
+    "quality_score": 0.8,
+    "price_input_per_1m": 2.0,
+    "price_output_per_1m": 6.0
   },
   {
     "slug": "voxtral-mini-2507",
@@ -321,7 +377,9 @@
     "supports_json_mode": false,
     "tpm_limit": 400000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
   },
   {
     "slug": "voxtral-mini-2602",
@@ -332,7 +390,9 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
   },
   {
     "slug": "voxtral-mini-transcribe-2507",
@@ -343,7 +403,9 @@
     "supports_json_mode": false,
     "tpm_limit": 400000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
   },
   {
     "slug": "voxtral-mini-transcribe-realtime-2602",
@@ -354,7 +416,9 @@
     "supports_json_mode": false,
     "tpm_limit": 600000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
   },
   {
     "slug": "voxtral-mini-tts-2603",
@@ -365,7 +429,9 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
   },
   {
     "slug": "voxtral-small-2507",
@@ -375,6 +441,19 @@
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 200000,
+    "tpm_limit_month": null,
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.1,
+    "price_output_per_1m": 0.3
+  },
+  {
+    "slug": "voxtral-tts-2603",
+    "display_name": "Voxtral TTS",
+    "category": "audio",
+    "max_context_tokens": 32768,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0
   }
