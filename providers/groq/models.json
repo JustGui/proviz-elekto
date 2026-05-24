@@ -10,7 +10,9 @@
     "rpm_limit": 30,
     "rpd_limit": 7000,
     "tpm_limit": 6000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "allam-2-7b",
@@ -34,7 +36,9 @@
     "rpm_limit": 10,
     "rpd_limit": 100,
     "tpm_limit": 1200,
-    "tpd_limit": 3600
+    "tpd_limit": 3600,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "canopylabs/orpheus-arabic-saudi",
@@ -59,7 +63,9 @@
     "rpm_limit": 10,
     "rpd_limit": 100,
     "tpm_limit": 1200,
-    "tpd_limit": 3600
+    "tpd_limit": 3600,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "canopylabs/orpheus-v1-english",
@@ -83,7 +89,9 @@
     "plan": "free",
     "rpm_limit": 30,
     "rpd_limit": 250,
-    "tpm_limit": 70000
+    "tpm_limit": 70000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "groq/compound",
@@ -107,7 +115,9 @@
     "plan": "free",
     "rpm_limit": 30,
     "rpd_limit": 250,
-    "tpm_limit": 70000
+    "tpm_limit": 70000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "groq/compound-mini",
@@ -133,7 +143,9 @@
     "rpd_limit": 14400,
     "tpm_limit": 6000,
     "tpd_limit": 500000,
-    "quality_score": 0.80
+    "quality_score": 0.8,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "llama-3.1-8b-instant",
@@ -146,7 +158,7 @@
     "rpm_limit": 1000,
     "rpd_limit": 500000,
     "tpm_limit": 250000,
-    "quality_score": 0.80
+    "quality_score": 0.8
   },
   {
     "slug": "llama-3.3-70b-versatile",
@@ -160,7 +172,9 @@
     "rpd_limit": 1000,
     "tpm_limit": 12000,
     "tpd_limit": 100000,
-    "quality_score": 0.92
+    "quality_score": 0.92,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "llama-3.3-70b-versatile",
@@ -186,7 +200,9 @@
     "rpm_limit": 30,
     "rpd_limit": 1000,
     "tpm_limit": 30000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -211,7 +227,9 @@
     "rpm_limit": 30,
     "rpd_limit": 14400,
     "tpm_limit": 15000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "meta-llama/llama-prompt-guard-2-22m",
@@ -236,7 +254,9 @@
     "rpm_limit": 30,
     "rpd_limit": 14400,
     "tpm_limit": 15000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "meta-llama/llama-prompt-guard-2-86m",
@@ -261,7 +281,9 @@
     "rpm_limit": 30,
     "rpd_limit": 1000,
     "tpm_limit": 8000,
-    "tpd_limit": 200000
+    "tpd_limit": 200000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "openai/gpt-oss-120b",
@@ -286,7 +308,9 @@
     "rpm_limit": 30,
     "rpd_limit": 1000,
     "tpm_limit": 8000,
-    "tpd_limit": 200000
+    "tpd_limit": 200000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "openai/gpt-oss-20b",
@@ -311,7 +335,9 @@
     "rpm_limit": 30,
     "rpd_limit": 1000,
     "tpm_limit": 8000,
-    "tpd_limit": 200000
+    "tpd_limit": 200000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "openai/gpt-oss-safeguard-20b",
@@ -336,7 +362,9 @@
     "rpm_limit": 60,
     "rpd_limit": 1000,
     "tpm_limit": 6000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "qwen/qwen3-32b",
@@ -359,7 +387,9 @@
     "supports_json_mode": false,
     "plan": "free",
     "rpm_limit": 20,
-    "rpd_limit": 2000
+    "rpd_limit": 2000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "whisper-large-v3",
@@ -381,7 +411,9 @@
     "supports_json_mode": false,
     "plan": "free",
     "rpm_limit": 20,
-    "rpd_limit": 2000
+    "rpd_limit": 2000,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 0
   },
   {
     "slug": "whisper-large-v3-turbo",
