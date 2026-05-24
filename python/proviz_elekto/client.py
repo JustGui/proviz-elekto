@@ -361,13 +361,21 @@ class ProvizElekto:
         messages: list[dict],
         *,
         estimated_tokens: Optional[int] = None,
+        requires_fn_call: bool = False,
+        requires_json_mode: bool = False,
+        quality_min: float = 0.0,
+        exclude_ids: Optional[list[str]] = None,
+        categories: Optional[list[str]] = None,
+        error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         **litellm_kwargs: Any,
     ) -> CallResult:
         """call() with built-in LiteLLM integration.
 
         Requires: pip install proviz-elekto[litellm]
         Model string and API key are derived automatically from the selected candidate.
-        Any extra kwargs are forwarded to litellm.completion().
+        Selection parameters (categories, requires_fn_call, etc.) are used for model
+        selection and are NOT forwarded to litellm.completion(). Any remaining kwargs
+        are forwarded to litellm.completion().
         """
         try:
             import litellm
@@ -385,7 +393,16 @@ class ProvizElekto:
             )
 
         tokens = estimated_tokens if estimated_tokens is not None else _estimate_tokens(messages)
-        return self.call(step, fn, estimated_tokens=tokens)
+        return self.call(
+            step, fn,
+            estimated_tokens=tokens,
+            requires_fn_call=requires_fn_call,
+            requires_json_mode=requires_json_mode,
+            quality_min=quality_min,
+            exclude_ids=exclude_ids,
+            categories=categories,
+            error_classifier=error_classifier,
+        )
 
     def health(self) -> dict:
         req = urllib.request.Request(f"{self._base}/health")
