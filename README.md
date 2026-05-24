@@ -86,7 +86,13 @@ proviz seed --brands --models --storage postgres --database-url $DATABASE_URL
 proviz seed --brands --models --storage sqlite --db-path ./proviz.db
 ```
 
-### 2. Add selection rules per step
+### 2. Add selection rules per step (optional)
+
+Rules are optional. When no rules are defined for a step, ProvizElekto falls back to
+all active models sorted by brand priority (see [Priority System](#priority-system)).
+
+Rules give you fine-grained control: route small inputs to cheap models, require
+function calling on a specific step, or cap context to avoid overkill.
 
 ```bash
 # verdict step: cheap model for small inputs, quality model for large
@@ -143,16 +149,17 @@ proviz select --step verdict --tokens 2500 --json-mode
 
 On every `select()` call (in-memory, ~microseconds):
 
-1. Load rules for step from cache (refreshed every 5 min or on `/catalog/reload`)
+1. Load step-specific rules from cache (sorted by `(brand.priority, rule.priority) ASC`).
+   If no rules exist for the step, synthesize one rule per active model sorted by
+   `brand.priority ASC` — no configuration required for generic steps.
 2. Filter: `rule.is_enabled AND model.is_enabled AND brand.is_active`
 3. Filter: `model.max_context_tokens >= estimated_tokens`
 4. Filter: if `rule.max_ctx_tokens` set → `estimated_tokens <= rule.max_ctx_tokens` (avoid overkill)
 5. Filter: capability requirements (function calling, JSON mode)
-6. Filter: `quality_score >= quality_min` (if set)
+6. Filter: `quality_score >= quality_min` (skips models with unknown score when `quality_min > 0`)
 7. Filter: `model_id NOT IN exclude_ids` (already tried this call)
 8. Filter: not rate-limited (in-memory DashMap, O(1), TTL per error type)
-9. Sort by `priority ASC`
-10. Return first match or `409 AllModelsExhausted`
+9. Return first match or `409 AllModelsExhausted`
 
 ### Rate limit TTLs
 
@@ -165,6 +172,82 @@ On every `select()` call (in-memory, ~microseconds):
 | `timeout` | 30s |
 | `parse` | 0s (logged, model not blocked) |
 | `other` | 60s |
+
+## Priority System
+
+Two independent priority axes control selection order. Both use **lower = preferred**.
+
+### Brand priority (`pz_brands.priority`)
+
+Set when adding a brand. Determines which provider is tried first globally.
+
+```bash
+proviz brand add --slug mistral --name "Mistral AI" --priority 1
+proviz brand add --slug groq    --name "Groq"        --priority 2
+```
+
+With priority 1, Mistral models are always tried before Groq models when both are eligible.
+
+### Rule priority (`pz_selection_rules.priority`)
+
+Set per rule. Within a step, rules are sorted by `(brand.priority, rule.priority)`.
+Brand priority is the primary sort — two rules with the same rule priority but different
+brands will still respect brand order.
+
+```bash
+# Rule priority 1 on brand.priority=2 loses to rule priority 99 on brand.priority=1
+proviz rule add --step verdict --model llama-3.1-8b-instant  --priority 1  # groq (brand prio 2)
+proviz rule add --step verdict --model mistral-small-latest  --priority 1  # mistral (brand prio 1) ← tried first
+```
+
+### Fallback order (no rules)
+
+When a step has no rules, ProvizElekto falls back to all active models sorted by
+`brand.priority`. Rule priority is irrelevant — only brand priority applies.
+This means you can start using a new step name in your code without any catalog
+changes as long as your brands are already configured.
+
+## Quality Scores
+
+`quality_score` is a float from `0.0` to `1.0` representing general text-reasoning
+capability. It is used by callers to set a floor with `quality_min`:
+
+```python
+pz.select(step="verdict", estimated_tokens=2500, quality_min=0.7)
+```
+
+Models with a `NULL` score are excluded whenever `quality_min > 0`.
+
+### Scoring rubric
+
+| Range | Meaning | Examples |
+|-------|---------|---------|
+| 0.9 – 1.0 | Frontier-class: complex multi-step reasoning, high accuracy | Mistral Large, Llama 70B |
+| 0.8 – 0.89 | Strong mid-tier: reliable for most tasks, good instruction following | Mistral Medium, Llama 8B instruct |
+| 0.7 – 0.79 | Solid: works for structured tasks, weaker on open reasoning | Mistral Small, smaller instruct models |
+| 0.6 – 0.69 | Minimal viable: classification, extraction, simple JSON | 3B–7B models |
+| 0.0 | Not applicable | Embedding, audio, moderation, OCR, TTS |
+
+Scores reflect public benchmarks (MMLU, MT-Bench) and community reputation.
+Specialized models (audio, embedding, moderation) always score `0.0` — they are
+excluded automatically when any `quality_min > 0` is requested.
+
+### Built-in scores
+
+The `providers/*/models.json` files in this repo are the source of truth for
+built-in quality scores. They are loaded by `proviz providers` and `proviz seed`.
+Scores in those files are reviewed periodically as new model versions are released.
+
+To set or override a score on an existing model:
+
+```bash
+# Re-import after editing providers/groq/models.json
+proviz providers --dir ./providers --storage postgres --database-url $DATABASE_URL
+
+# Or set directly when adding a model
+proviz model add --brand groq --slug llama-3.3-70b-versatile --max-ctx 131072 \
+  --json-mode --function-calling --quality 0.85
+```
 
 ## HTTP API
 
@@ -278,7 +361,8 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 | `name` | string | Display name |
 | `api_key_env` | string? | Env var holding the API key (`GROQ_API_KEY`) |
 | `base_url` | string? | Optional API base URL override |
-| `plan` | string? | Plan for a provider if exists, for example free or dev for groq (default free) |
+| `plan` | string? | Plan tier for this provider (e.g. `free`, `developer`). Models whose plan doesn't match are excluded from the cache. |
+| `priority` | int16 | Selection order across brands — lower = tried first (default 0). Primary sort key in the [Priority System](#priority-system). |
 | `is_active` | bool | Disable an entire provider without deleting |
 
 ### Models (`pz_models`)
@@ -300,7 +384,7 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 | `tpd_limit` | int? | Provider tokens/day limit |
 | `tpm_limit_month` | int? | Provider tokens/month limit |
 | `rps_limit` | float? | Provider requests/second limit |
-| `quality_score` | float? | 0.0–1.0 internal benchmark |
+| `quality_score` | float? | 0.0–1.0 general text-reasoning capability. `NULL` models are excluded when `quality_min > 0`. See [Quality Scores](#quality-scores). |
 | `avg_latency_ms` | int? | Known/estimated median latency |
 | `is_enabled` | bool | Disable a model without deleting |
 
@@ -310,8 +394,8 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 |-------|------|-------------|
 | `step` | string | Pipeline step name |
 | `model_id` | UUID | FK → `pz_models` |
-| `priority` | int16 | Lower = preferred |
-| `max_ctx_tokens` | int? | Only eligible when `estimated_tokens ≤ this` |
+| `priority` | int16 | Secondary sort key within a step — lower = preferred. Brand priority takes precedence. |
+| `max_ctx_tokens` | int? | Upper bound: skip this rule when `estimated_tokens > this` (avoids using a large-context model on a tiny input) |
 | `requires_fn_call` | bool | Safety check (also filtered by model capability) |
 | `is_enabled` | bool | Disable rule without deleting |
 
