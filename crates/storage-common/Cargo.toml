@@ -1,0 +1,11 @@
+[package]
+name = "proviz-elekto-storage-common"
+description = "Shared row-mapping and query constants for ProvizElekto storage adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+proviz-elekto-core = { path = "../core" }
+uuid.workspace = true
+chrono.workspace = true

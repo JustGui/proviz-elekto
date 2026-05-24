@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/storage-common",
     "crates/storage-sqlite",
     "crates/storage-pg",
     "server",
