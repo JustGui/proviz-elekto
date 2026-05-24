@@ -4,6 +4,9 @@ use proviz_elekto_core::{
     models::{Brand, Model, RateLimitErrorType, SelectionRule},
     storage::{CatalogStorage, StorageResult},
 };
+use proviz_elekto_storage_common::{
+    brand_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_MODELS, Q_RULES,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -36,6 +39,45 @@ impl SqliteStorage {
     }
 }
 
+struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
+
+impl RowReader for SqliteRow<'_> {
+    fn uuid(&self, idx: usize) -> Uuid {
+        self.0.get::<_, String>(idx).unwrap().parse().unwrap()
+    }
+    fn string(&self, idx: usize) -> String {
+        self.0.get(idx).unwrap()
+    }
+    fn opt_string(&self, idx: usize) -> Option<String> {
+        self.0.get(idx).unwrap()
+    }
+    fn bool_val(&self, idx: usize) -> bool {
+        self.0.get(idx).unwrap()
+    }
+    fn i16_val(&self, idx: usize) -> i16 {
+        self.0.get::<_, i64>(idx).unwrap() as i16
+    }
+    fn i32_val(&self, idx: usize) -> i32 {
+        self.0.get::<_, i64>(idx).unwrap() as i32
+    }
+    fn opt_i32(&self, idx: usize) -> Option<i32> {
+        self.0.get::<_, Option<i64>>(idx).unwrap().map(|v| v as i32)
+    }
+    fn opt_i64(&self, idx: usize) -> Option<i64> {
+        self.0.get(idx).unwrap()
+    }
+    fn opt_f64(&self, idx: usize) -> Option<f64> {
+        self.0.get(idx).unwrap()
+    }
+    fn datetime(&self, idx: usize) -> DateTime<Utc> {
+        self.0
+            .get::<_, String>(idx)
+            .unwrap()
+            .parse()
+            .unwrap_or_else(|_| Utc::now())
+    }
+}
+
 impl CatalogStorage for SqliteStorage {
     fn init_schema(&self) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
@@ -47,27 +89,10 @@ impl CatalogStorage for SqliteStorage {
     fn load_brands(&self) -> StorageResult<Vec<Brand>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
-            .prepare(
-                "SELECT id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at FROM pz_brands",
-            )
+            .prepare(Q_BRANDS)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         let rows = stmt
-            .query_map([], |row| {
-                Ok(Brand {
-                    id: row.get::<_, String>(0)?.parse::<Uuid>().unwrap(),
-                    slug: row.get(1)?,
-                    name: row.get(2)?,
-                    api_key_env: row.get(3)?,
-                    base_url: row.get(4)?,
-                    is_active: row.get(5)?,
-                    plan: row.get(6)?,
-                    priority: row.get::<_, i64>(7)? as i16,
-                    created_at: row
-                        .get::<_, String>(8)?
-                        .parse::<DateTime<Utc>>()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            })
+            .query_map([], |row| Ok(brand_from_row(&SqliteRow(row))))
             .map_err(|e| StorageError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| StorageError::Database(e.to_string()))
@@ -75,46 +100,12 @@ impl CatalogStorage for SqliteStorage {
 
     fn load_models(&self) -> StorageResult<Vec<Model>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
-             supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
-             tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-             is_enabled,notes,category,plan,created_at FROM pz_models",
-        ).map_err(|e| StorageError::Database(e.to_string()))?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Model {
-                    id: row.get::<_, String>(0)?.parse::<Uuid>().unwrap(),
-                    brand_id: row.get::<_, String>(1)?.parse::<Uuid>().unwrap(),
-                    slug: row.get(2)?,
-                    display_name: row.get(3)?,
-                    max_context_tokens: row.get::<_, i64>(4)? as u32,
-                    max_output_tokens: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
-                    supports_function_calling: row.get(6)?,
-                    supports_json_mode: row.get(7)?,
-                    price_input_per_1m: row.get(8)?,
-                    price_output_per_1m: row.get(9)?,
-                    tpm_limit: row.get::<_, Option<i64>>(10)?.map(|v| v as u32),
-                    rpm_limit: row.get::<_, Option<i64>>(11)?.map(|v| v as u32),
-                    rpd_limit: row.get::<_, Option<i64>>(12)?.map(|v| v as u32),
-                    tpd_limit: row.get::<_, Option<i64>>(13)?.map(|v| v as u64),
-                    tpm_limit_month: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
-                    rps_limit: row.get::<_, Option<f64>>(15)?.map(|v| v as f32),
-                    quality_score: row.get::<_, Option<f64>>(16)?.map(|v| v as f32),
-                    avg_latency_ms: row.get::<_, Option<i64>>(17)?.map(|v| v as u32),
-                    is_enabled: row.get(18)?,
-                    notes: row.get(19)?,
-                    category: row.get(20)?,
-                    plan: row.get(21)?,
-                    created_at: row
-                        .get::<_, String>(22)?
-                        .parse::<DateTime<Utc>>()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            })
+        let mut stmt = conn
+            .prepare(Q_MODELS)
             .map_err(|e| StorageError::Database(e.to_string()))?;
-
+        let rows = stmt
+            .query_map([], |row| Ok(model_from_row(&SqliteRow(row))))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| StorageError::Database(e.to_string()))
     }
@@ -123,113 +114,50 @@ impl CatalogStorage for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         let (query, use_param) = if step == "*" {
             (
-                "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled \
-                 FROM pz_selection_rules ORDER BY priority ASC",
+                format!("{Q_RULES} ORDER BY priority ASC"),
                 false,
             )
         } else {
             (
-                "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled \
-                 FROM pz_selection_rules WHERE step=?1 ORDER BY priority ASC",
+                format!("{Q_RULES} WHERE step=?1 ORDER BY priority ASC"),
                 true,
             )
         };
-
         let mut stmt = conn
-            .prepare(query)
+            .prepare(&query)
             .map_err(|e| StorageError::Database(e.to_string()))?;
-
-        let mapper = |row: &rusqlite::Row<'_>| {
-            Ok(SelectionRule {
-                id: row.get::<_, String>(0)?.parse::<Uuid>().unwrap(),
-                step: row.get(1)?,
-                model_id: row.get::<_, String>(2)?.parse::<Uuid>().unwrap(),
-                priority: row.get::<_, i64>(3)? as i16,
-                max_ctx_tokens: row.get::<_, Option<i64>>(4)?.map(|v| v as u32),
-                requires_fn_call: row.get(5)?,
-                is_enabled: row.get(6)?,
-            })
-        };
-
+        let mapper = |row: &rusqlite::Row<'_>| Ok(rule_from_row(&SqliteRow(row)));
         let rows = if use_param {
             stmt.query_map(params![step], mapper)
         } else {
             stmt.query_map([], mapper)
         }
         .map_err(|e| StorageError::Database(e.to_string()))?;
-
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| StorageError::Database(e.to_string()))
     }
 
     fn load_model(&self, model_id: Uuid) -> StorageResult<Option<Model>> {
         let conn = self.conn.lock().unwrap();
-        let result = conn.query_row(
-            "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
-             supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
-             tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-             is_enabled,notes,category,plan,created_at FROM pz_models WHERE id=?1",
-            params![model_id.to_string()],
-            |row| {
-                Ok(Model {
-                    id: row.get::<_, String>(0)?.parse::<Uuid>().unwrap(),
-                    brand_id: row.get::<_, String>(1)?.parse::<Uuid>().unwrap(),
-                    slug: row.get(2)?,
-                    display_name: row.get(3)?,
-                    max_context_tokens: row.get::<_, i64>(4)? as u32,
-                    max_output_tokens: row.get::<_, Option<i64>>(5)?.map(|v| v as u32),
-                    supports_function_calling: row.get(6)?,
-                    supports_json_mode: row.get(7)?,
-                    price_input_per_1m: row.get(8)?,
-                    price_output_per_1m: row.get(9)?,
-                    tpm_limit: row.get::<_, Option<i64>>(10)?.map(|v| v as u32),
-                    rpm_limit: row.get::<_, Option<i64>>(11)?.map(|v| v as u32),
-                    rpd_limit: row.get::<_, Option<i64>>(12)?.map(|v| v as u32),
-                    tpd_limit: row.get::<_, Option<i64>>(13)?.map(|v| v as u64),
-                    tpm_limit_month: row.get::<_, Option<i64>>(14)?.map(|v| v as u64),
-                    rps_limit: row.get::<_, Option<f64>>(15)?.map(|v| v as f32),
-                    quality_score: row.get::<_, Option<f64>>(16)?.map(|v| v as f32),
-                    avg_latency_ms: row.get::<_, Option<i64>>(17)?.map(|v| v as u32),
-                    is_enabled: row.get(18)?,
-                    notes: row.get(19)?,
-                    category: row.get(20)?,
-                    plan: row.get(21)?,
-                    created_at: row
-                        .get::<_, String>(22)?
-                        .parse::<DateTime<Utc>>()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let query = format!("{Q_MODELS} WHERE id=?1");
+        let result = conn
+            .query_row(&query, params![model_id.to_string()], |row| {
+                Ok(model_from_row(&SqliteRow(row)))
+            })
+            .optional()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(result)
     }
 
     fn load_brand(&self, brand_id: Uuid) -> StorageResult<Option<Brand>> {
         let conn = self.conn.lock().unwrap();
-        let result = conn.query_row(
-            "SELECT id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at FROM pz_brands WHERE id=?1",
-            params![brand_id.to_string()],
-            |row| {
-                Ok(Brand {
-                    id: row.get::<_, String>(0)?.parse::<Uuid>().unwrap(),
-                    slug: row.get(1)?,
-                    name: row.get(2)?,
-                    api_key_env: row.get(3)?,
-                    base_url: row.get(4)?,
-                    is_active: row.get(5)?,
-                    plan: row.get(6)?,
-                    priority: row.get::<_, i64>(7)? as i16,
-                    created_at: row
-                        .get::<_, String>(8)?
-                        .parse::<DateTime<Utc>>()
-                        .unwrap_or_else(|_| Utc::now()),
-                })
-            },
-        )
-        .optional()
-        .map_err(|e| StorageError::Database(e.to_string()))?;
+        let query = format!("{Q_BRANDS} WHERE id=?1");
+        let result = conn
+            .query_row(&query, params![brand_id.to_string()], |row| {
+                Ok(brand_from_row(&SqliteRow(row)))
+            })
+            .optional()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(result)
     }
 
