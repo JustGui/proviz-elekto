@@ -125,20 +125,34 @@ impl Selector {
         let guard = self.cache.read().unwrap();
         let cache = guard.as_ref().unwrap();
 
-        let rules = match cache.rules.get(&req.step) {
-            None => {
-                return Err(ProvizError::AllModelsExhausted {
-                    step: req.step.clone(),
-                    tried: 0,
-                })
+        // When no step-specific rules exist, synthesize one per model sorted by brand priority.
+        // This lets brand priority alone drive selection without requiring explicit rules.
+        let synthetic_rules: Vec<SelectionRule>;
+        let rules: &[SelectionRule] = match cache.rules.get(&req.step) {
+            Some(r) if !r.is_empty() => r.as_slice(),
+            _ => {
+                debug!(step = %req.step, "no rules for step, falling back to brand-priority order");
+                let mut entries: Vec<(i16, Uuid)> = cache
+                    .models
+                    .values()
+                    .filter_map(|m| cache.brands.get(&m.brand_id).map(|b| (b.priority, m.id)))
+                    .collect();
+                entries.sort_unstable();
+                synthetic_rules = entries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (_, model_id))| SelectionRule {
+                        id: Uuid::nil(),
+                        step: req.step.clone(),
+                        model_id,
+                        priority: i as i16,
+                        max_ctx_tokens: None,
+                        requires_fn_call: false,
+                        is_enabled: true,
+                    })
+                    .collect();
+                &synthetic_rules
             }
-            Some(r) if r.is_empty() => {
-                return Err(ProvizError::AllModelsExhausted {
-                    step: req.step.clone(),
-                    tried: 0,
-                })
-            }
-            Some(r) => r,
         };
 
         let exclude_set: std::collections::HashSet<&Uuid> = req.exclude_ids.iter().collect();
