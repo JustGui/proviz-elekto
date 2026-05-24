@@ -1327,12 +1327,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "proviz-elekto-storage-common"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "proviz-elekto-core",
+ "uuid",
+]
+
+[[package]]
 name = "proviz-elekto-storage-pg"
 version = "0.1.0"
 dependencies = [
  "chrono",
  "postgres",
  "proviz-elekto-core",
+ "proviz-elekto-storage-common",
  "serde",
  "thiserror",
  "uuid",
@@ -1344,6 +1354,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "proviz-elekto-core",
+ "proviz-elekto-storage-common",
  "rusqlite",
  "serde",
  "thiserror",
