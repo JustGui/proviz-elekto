@@ -12,12 +12,13 @@ Your app → pz.call(step, fn)               → CallResult
           rate-limit state · catalog
 ```
 
-**Key difference from LiteLLM fallback:** LiteLLM retries *after* failure. ProvizElekto picks the right model *before* the call — skipping models that are rate-limited, can't fit the context, or lack required capabilities — then retries with the next eligible model automatically.
+**Key difference from LiteLLM fallback:** LiteLLM retries *after* failure. ProvizElekto picks the right model *before* the call — skipping models that are rate-limited or near their quota, can't fit the context, or lack required capabilities — then retries with the next eligible model automatically.
 
 ## Features
 
 - **Context-aware selection** - don't waste a 128k model on a 1k prompt
-- **Rate-limit avoidance** - skips models hit by TPM/RPM limits (in-memory, O(1))
+- **Proactive quota tracking** - sliding-window counters (RPM/TPM/RPD/TPD) plus atomic in-flight reservations; avoids over-booking before any 429 fires
+- **Scored selection** - picks the best model across all eligible candidates: headroom (50%), quality (25%), cost (15%), latency (10%)
 - **Capability filtering** - hard requirements for function calling, JSON mode
 - **Quality floor** - reject models below a quality threshold per step
 - **Your keys, your models** - curated catalog, no vendor proxy
@@ -90,12 +91,24 @@ If you need direct control over selection and reporting:
 candidate = pz.select(step="verdict", estimated_tokens=2500)
 try:
     response = my_llm_call(candidate)
-    pz.report_success(candidate.model_id)
+    pz.report_success(
+        candidate.model_id,
+        estimated_tokens=candidate.estimated_tokens,  # echo back for accurate quota tracking
+        actual_tokens=response.usage.total_tokens,    # improves TPM window accuracy
+    )
 except RateLimitError:
-    pz.report_rate_limit(candidate.model_id, "tpm")
+    pz.report_rate_limit(
+        candidate.model_id, "tpm",
+        estimated_tokens=candidate.estimated_tokens,
+    )
 except Exception:
-    pz.report_error(candidate.model_id, "other")
+    pz.report_error(
+        candidate.model_id, "other",
+        estimated_tokens=candidate.estimated_tokens,
+    )
 ```
+
+`estimated_tokens` in each report call releases the in-flight reservation made at selection time. Omitting it is safe (legacy clients work unchanged) but leaves the in-flight counter inflated until the next selection clears it.
 
 ## Catalog Setup
 
@@ -173,6 +186,8 @@ proviz select --step verdict --tokens 2500 --json-mode
 
 On every `select()` call (in-memory, ~microseconds):
 
+### Pass 1 — Hard filters (eliminate ineligible candidates)
+
 1. Load step-specific rules from cache (sorted by `(brand.priority, rule.priority) ASC`).
    If no rules exist for the step, synthesize one rule per active model sorted by
    `brand.priority ASC` — no configuration required for generic steps.
@@ -182,10 +197,31 @@ On every `select()` call (in-memory, ~microseconds):
 5. Filter: capability requirements (function calling, JSON mode)
 6. Filter: `quality_score >= quality_min` (skips models with unknown score when `quality_min > 0`)
 7. Filter: `model_id NOT IN exclude_ids` (already tried this call)
-8. Filter: not rate-limited (in-memory DashMap, O(1), TTL per error type)
-9. Return first match or `409 AllModelsExhausted`
+8. Filter: not blocked by reactive rate-limit state (in-memory DashMap, O(1), TTL per error type)
+9. Filter: proactive headroom check — `headroom(model) >= 0` where headroom uses sliding-window
+   counters (RPM/TPM/RPD/TPD) plus atomic in-flight reservations. Negative headroom = over quota.
 
-### Rate limit TTLs
+### Pass 2 — Score and pick best
+
+All candidates that pass the filters are scored:
+
+```
+score = 0.50 × headroom       (0 = last slot, 1 = fully unconstrained)
+      + 0.25 × quality_score   (model.quality_score, default 0.5 if unknown)
+      + 0.15 × cost_score      (min-max normalized across candidates; cheaper = higher)
+      + 0.10 × latency_score   (min-max normalized across candidates; faster = higher)
+```
+
+The highest-scoring candidate wins. When scores tie, **rule priority breaks the tie** (lower
+number = preferred), preserving your explicit ordering for equal-quality models.
+
+Before returning, the winner's in-flight slot is atomically reserved so concurrent
+`select()` calls spread load across models rather than all grabbing the same one.
+
+### Rate-limit TTLs (reactive blocking)
+
+Reactive blocking (from `/report rate_limit`) coexists with the proactive headroom system.
+A model can be reactive-blocked even when its quota counters show headroom.
 
 | Error type | Cooldown |
 |------------|----------|
@@ -196,6 +232,22 @@ On every `select()` call (in-memory, ~microseconds):
 | `timeout` | 30s |
 | `parse` | 0s (logged, model not blocked) |
 | `other` | 60s |
+
+### Quota sliding windows
+
+Proactive quota tracking uses four per-model sliding windows:
+
+| Dimension | Window | Limit field |
+|-----------|--------|-------------|
+| RPM | 60 s | `rpm_limit` |
+| TPM | 60 s | `tpm_limit` |
+| RPD | 24 h | `rpd_limit` |
+| TPD | 24 h | `tpd_limit` |
+
+Windows are updated on every `/report` call. In-flight reservations
+(made at selection time, released on report) are counted on top of the
+window sums when computing headroom — preventing over-booking under
+concurrent load.
 
 ## Priority System
 
@@ -319,9 +371,13 @@ Response `200`:
   "max_context_tokens": 128000,
   "supports_function_calling": true,
   "supports_json_mode": true,
-  "estimated_input_cost_usd": 0.00148
+  "estimated_input_cost_usd": 0.00148,
+  "estimated_tokens": 2500
 }
 ```
+
+`estimated_tokens` echoes the value from the request. Echo it back in `/report` so the
+server can release the in-flight reservation and keep quota windows accurate.
 
 Response `409` (all candidates exhausted):
 ```json
@@ -334,12 +390,23 @@ Response `409` (all candidates exhausted):
 {
   "model_id": "b3f1...",
   "outcome": "rate_limit",
-  "error_type": "tpm"
+  "error_type": "tpm",
+  "estimated_tokens": 2500,
+  "actual_tokens": 1843
 }
 ```
 
-`outcome`: `success` | `rate_limit` | `error`
-`error_type`: `tpm` | `rpm` | `tpd` | `auth` | `timeout` | `parse` | `other`
+| Field | Required | Description |
+|-------|----------|-------------|
+| `model_id` | yes | UUID from `/select` response |
+| `outcome` | yes | `success` \| `rate_limit` \| `error` |
+| `error_type` | for `rate_limit`/`error` | `tpm` \| `rpm` \| `tpd` \| `auth` \| `timeout` \| `parse` \| `other` |
+| `estimated_tokens` | recommended | Echo of `ModelCandidate.estimated_tokens` — releases the in-flight reservation |
+| `actual_tokens` | optional | Real token count from provider — improves TPM window accuracy |
+
+`estimated_tokens` and `actual_tokens` are optional for backward compatibility. Omitting
+`estimated_tokens` leaves the in-flight counter inflated, which is safe (pessimistic) but
+causes the model to appear more loaded than it is until the in-flight window clears.
 
 ### `GET /health`
 
