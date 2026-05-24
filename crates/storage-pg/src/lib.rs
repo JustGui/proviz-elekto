@@ -124,8 +124,8 @@ impl CatalogStorage for PostgresStorage {
         client.execute(
             "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-             ON CONFLICT (id) DO UPDATE SET
-               slug=EXCLUDED.slug, name=EXCLUDED.name, api_key_env=EXCLUDED.api_key_env,
+             ON CONFLICT (slug) DO UPDATE SET
+               name=EXCLUDED.name, api_key_env=EXCLUDED.api_key_env,
                base_url=EXCLUDED.base_url, is_active=EXCLUDED.is_active, plan=EXCLUDED.plan,
                priority=EXCLUDED.priority",
             &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.plan, &brand.priority, &brand.created_at],

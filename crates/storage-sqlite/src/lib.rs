@@ -161,8 +161,12 @@ impl CatalogStorage for SqliteStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR REPLACE INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+             ON CONFLICT(slug) DO UPDATE SET
+               name=excluded.name, api_key_env=excluded.api_key_env,
+               base_url=excluded.base_url, is_active=excluded.is_active,
+               plan=excluded.plan, priority=excluded.priority",
             params![
                 brand.id.to_string(),
                 brand.slug,
