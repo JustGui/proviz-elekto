@@ -132,7 +132,8 @@
     "rpm_limit": 30,
     "rpd_limit": 14400,
     "tpm_limit": 6000,
-    "tpd_limit": 500000
+    "tpd_limit": 500000,
+    "quality_score": 0.80
   },
   {
     "slug": "llama-3.1-8b-instant",
@@ -144,7 +145,8 @@
     "plan": "developer",
     "rpm_limit": 1000,
     "rpd_limit": 500000,
-    "tpm_limit": 250000
+    "tpm_limit": 250000,
+    "quality_score": 0.80
   },
   {
     "slug": "llama-3.3-70b-versatile",
@@ -157,7 +159,8 @@
     "rpm_limit": 30,
     "rpd_limit": 1000,
     "tpm_limit": 12000,
-    "tpd_limit": 100000
+    "tpd_limit": 100000,
+    "quality_score": 0.92
   },
   {
     "slug": "llama-3.3-70b-versatile",
@@ -169,7 +172,8 @@
     "plan": "developer",
     "rpm_limit": 1000,
     "rpd_limit": 500000,
-    "tpm_limit": 300000
+    "tpm_limit": 300000,
+    "quality_score": 0.92
   },
   {
     "slug": "meta-llama/llama-4-scout-17b-16e-instruct",
