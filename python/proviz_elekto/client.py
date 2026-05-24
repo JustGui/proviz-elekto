@@ -58,6 +58,16 @@ def _find_binary() -> str:
     on_path = shutil.which("proviz-server")
     if on_path:
         return on_path
+
+    # Dev fallback: walk up from the package dir looking for a Cargo workspace build output
+    check = os.path.dirname(__file__)
+    for _ in range(6):
+        for rel in ("target/release/proviz-server", "target/debug/proviz-server"):
+            candidate = os.path.join(check, rel)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+        check = os.path.dirname(check)
+
     raise ProvizError(
         "proviz-server binary not found. "
         "Reinstall the package or build from source: cargo build --release --bin proviz-server"
