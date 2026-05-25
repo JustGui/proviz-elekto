@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{Brand, Model, RateLimitErrorType, SelectionRule},
+    models::{Brand, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
 };
 
 pub type StorageResult<T> = std::result::Result<T, StorageError>;
@@ -21,6 +21,15 @@ pub trait CatalogStorage: Send + Sync {
     fn delete_rule(&self, rule_id: Uuid) -> StorageResult<()>;
     fn set_model_enabled(&self, model_id: Uuid, enabled: bool) -> StorageResult<()>;
     fn set_brand_active(&self, brand_id: Uuid, active: bool) -> StorageResult<()>;
+
+    // Groups
+    fn load_groups(&self) -> StorageResult<Vec<Group>>;
+    fn load_all_group_members(&self) -> StorageResult<Vec<GroupMember>>;
+    fn insert_group(&self, group: &Group) -> StorageResult<()>;
+    fn delete_group(&self, group_id: Uuid) -> StorageResult<()>;
+    fn set_group_active(&self, group_id: Uuid, active: bool) -> StorageResult<()>;
+    fn insert_group_member(&self, member: &GroupMember) -> StorageResult<()>;
+    fn remove_group_member(&self, group_id: Uuid, model_id: Uuid) -> StorageResult<()>;
 
     // Rate events
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()>;
