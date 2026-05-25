@@ -221,7 +221,6 @@ mod tests {
             is_enabled: true,
             notes: None,
             category: None,
-            plan: None,
             created_at: Utc::now(),
         }
     }
