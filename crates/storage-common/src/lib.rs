@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use proviz_elekto_core::models::{Brand, Model, SelectionRule};
+use proviz_elekto_core::models::{Brand, Group, GroupMember, Model, SelectionRule};
 use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
@@ -17,6 +17,12 @@ pub const Q_MODELS: &str =
 pub const Q_RULES: &str =
     "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled \
      FROM pz_selection_rules";
+
+pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at \
+     FROM pz_groups";
+
+pub const Q_GROUP_MEMBERS: &str = "SELECT id,group_id,model_id,priority,is_enabled \
+     FROM pz_group_members";
 
 /// Uniform read interface over a single result row.
 /// Implementations must match column indices to the constants above.
@@ -85,5 +91,26 @@ pub fn rule_from_row(row: &impl RowReader) -> SelectionRule {
         max_ctx_tokens: row.opt_i32(4).map(|v| v as u32),
         requires_fn_call: row.bool_val(5),
         is_enabled: row.bool_val(6),
+    }
+}
+
+pub fn group_from_row(row: &impl RowReader) -> Group {
+    Group {
+        id: row.uuid(0),
+        slug: row.string(1),
+        name: row.string(2),
+        description: row.opt_string(3),
+        is_active: row.bool_val(4),
+        created_at: row.datetime(5),
+    }
+}
+
+pub fn group_member_from_row(row: &impl RowReader) -> GroupMember {
+    GroupMember {
+        id: row.uuid(0),
+        group_id: row.uuid(1),
+        model_id: row.uuid(2),
+        priority: row.i16_val(3),
+        is_enabled: row.bool_val(4),
     }
 }

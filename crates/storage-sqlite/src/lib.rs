@@ -1,11 +1,12 @@
 use chrono::{DateTime, Utc};
 use proviz_elekto_core::{
     error::StorageError,
-    models::{Brand, Model, RateLimitErrorType, SelectionRule},
+    models::{Brand, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
-    brand_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_MODELS, Q_RULES,
+    brand_from_row, group_from_row, group_member_from_row, model_from_row, rule_from_row,
+    RowReader, Q_BRANDS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_RULES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Mutex;
@@ -272,6 +273,99 @@ impl CatalogStorage for SqliteStorage {
         Ok(())
     }
 
+    fn load_groups(&self) -> StorageResult<Vec<Group>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(Q_GROUPS)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok(group_from_row(&SqliteRow(row))))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
+    fn load_all_group_members(&self) -> StorageResult<Vec<GroupMember>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(Q_GROUP_MEMBERS)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok(group_member_from_row(&SqliteRow(row))))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
+    fn insert_group(&self, group: &Group) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(slug) DO UPDATE SET
+               name=excluded.name, description=excluded.description, is_active=excluded.is_active",
+            params![
+                group.id.to_string(),
+                group.slug,
+                group.name,
+                group.description,
+                group.is_active,
+                group.created_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_group(&self, group_id: Uuid) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM pz_groups WHERE id=?1",
+            params![group_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_group_active(&self, group_id: Uuid, active: bool) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pz_groups SET is_active=?1 WHERE id=?2",
+            params![active, group_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn insert_group_member(&self, member: &GroupMember) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pz_group_members (id,group_id,model_id,priority,is_enabled)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(group_id,model_id) DO UPDATE SET
+               priority=excluded.priority, is_enabled=excluded.is_enabled",
+            params![
+                member.id.to_string(),
+                member.group_id.to_string(),
+                member.model_id.to_string(),
+                member.priority as i64,
+                member.is_enabled,
+            ],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn remove_group_member(&self, group_id: Uuid, model_id: Uuid) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM pz_group_members WHERE group_id=?1 AND model_id=?2",
+            params![group_id.to_string(), model_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -370,6 +464,27 @@ CREATE TABLE IF NOT EXISTS pz_selection_rules (
     is_enabled       INTEGER NOT NULL DEFAULT 1,
     UNIQUE(step, model_id)
 );
+
+CREATE TABLE IF NOT EXISTS pz_groups (
+    id          TEXT PRIMARY KEY,
+    slug        TEXT UNIQUE NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS pz_group_members (
+    id         TEXT PRIMARY KEY,
+    group_id   TEXT NOT NULL REFERENCES pz_groups(id) ON DELETE CASCADE,
+    model_id   TEXT NOT NULL REFERENCES pz_models(id) ON DELETE CASCADE,
+    priority   INTEGER NOT NULL DEFAULT 0,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(group_id, model_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pz_group_members_group
+    ON pz_group_members(group_id);
 
 CREATE TABLE IF NOT EXISTS pz_rate_events (
     id          TEXT PRIMARY KEY,
