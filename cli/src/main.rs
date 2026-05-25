@@ -98,9 +98,6 @@ enum ProvidersCmd {
         /// Update rate-limit fields of models that already exist in the DB
         #[arg(long)]
         update_limits: bool,
-        /// Override plan for all providers (e.g. "developer"). Defaults to each brand's configured plan.
-        #[arg(long)]
-        plan: Option<String>,
     },
     /// List provider directories found in a directory
     List {
@@ -115,8 +112,6 @@ struct ProviderBrandDef {
     name: String,
     api_key_env: Option<String>,
     base_url: Option<String>,
-    /// Default plan recorded in the brand (e.g. "free", "developer")
-    plan: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -142,8 +137,6 @@ struct ProviderModelDef {
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
-    /// Plan tier these limits apply to (e.g. "free", "developer")
-    plan: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -157,9 +150,6 @@ enum BrandCmd {
         api_key_env: Option<String>,
         #[arg(long)]
         base_url: Option<String>,
-        /// Your plan with this provider (e.g. "free", "developer")
-        #[arg(long)]
-        plan: Option<String>,
         /// Selection priority — lower = tried first (default 0)
         #[arg(long, default_value = "0")]
         priority: i16,
@@ -172,14 +162,6 @@ enum BrandCmd {
     Enable {
         #[arg(long)]
         slug: String,
-    },
-    /// Set or update the plan for an existing brand
-    SetPlan {
-        #[arg(long)]
-        slug: String,
-        /// Plan name, e.g. "free", "developer", "enterprise"
-        #[arg(long)]
-        plan: String,
     },
     /// Set selection priority (lower = tried first, default 0)
     SetPriority {
@@ -388,7 +370,6 @@ fn main() {
                 name,
                 api_key_env,
                 base_url,
-                plan,
                 priority,
             } => {
                 let brand = Brand {
@@ -398,7 +379,6 @@ fn main() {
                     api_key_env,
                     base_url,
                     is_active: true,
-                    plan,
                     priority,
                     created_at: chrono::Utc::now(),
                 };
@@ -409,19 +389,14 @@ fn main() {
                 let mut brands = storage.load_brands().unwrap();
                 brands.sort_by_key(|b| b.priority);
                 println!(
-                    "{:<36}  {:<15}  {:<20}  {:<12}  {:>4}  active",
-                    "id", "slug", "name", "plan", "prio"
+                    "{:<36}  {:<15}  {:<20}  {:>4}  active",
+                    "id", "slug", "name", "prio"
                 );
-                println!("{}", "-".repeat(102));
+                println!("{}", "-".repeat(88));
                 for b in brands {
                     println!(
-                        "{:<36}  {:<15}  {:<20}  {:<12}  {:>4}  {}",
-                        b.id,
-                        b.slug,
-                        b.name,
-                        b.plan.as_deref().unwrap_or("-"),
-                        b.priority,
-                        b.is_active
+                        "{:<36}  {:<15}  {:<20}  {:>4}  {}",
+                        b.id, b.slug, b.name, b.priority, b.is_active
                     );
                 }
             }
@@ -429,12 +404,6 @@ fn main() {
                 let b = find_brand(&storage, &slug);
                 storage.set_brand_active(b.id, false).unwrap();
                 println!("brand '{slug}' disabled");
-            }
-            BrandCmd::SetPlan { slug, plan } => {
-                let mut b = find_brand(&storage, &slug);
-                b.plan = Some(plan.clone());
-                storage.insert_brand(&b).unwrap();
-                println!("brand '{slug}' plan set to '{plan}'");
             }
             BrandCmd::SetPriority { slug, priority } => {
                 let mut b = find_brand(&storage, &slug);
@@ -491,7 +460,6 @@ fn main() {
                     is_enabled: true,
                     notes,
                     category,
-                    plan: None,
                     created_at: chrono::Utc::now(),
                 };
                 storage.insert_model(&model).unwrap();
@@ -579,7 +547,6 @@ fn main() {
                         is_enabled: v["is_enabled"].as_bool().unwrap_or(true),
                         notes: v["notes"].as_str().map(|s| s.to_string()),
                         category: v["category"].as_str().map(|s| s.to_string()),
-                        plan: v["plan"].as_str().map(|s| s.to_string()),
                         created_at: chrono::Utc::now(),
                     };
                     storage.insert_model(&model).unwrap();
@@ -824,12 +791,8 @@ fn main() {
         }
 
         Command::Providers { action } => match action {
-            ProvidersCmd::Load {
-                dir,
-                update_limits,
-                plan,
-            } => {
-                load_providers(&storage, &dir, update_limits, plan.as_deref());
+            ProvidersCmd::Load { dir, update_limits } => {
+                load_providers(&storage, &dir, update_limits);
             }
             ProvidersCmd::List { dir } => {
                 list_providers(&dir);
@@ -865,12 +828,7 @@ fn list_providers(dir: &str) {
     }
 }
 
-fn load_providers(
-    storage: &Arc<dyn CatalogStorage>,
-    dir: &str,
-    update_limits: bool,
-    plan_override: Option<&str>,
-) {
+fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: bool) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
@@ -885,11 +843,11 @@ fn load_providers(
         .into_iter()
         .map(|b| (b.slug.clone(), b))
         .collect();
-    let existing_models: std::collections::HashMap<String, Model> = storage
+    let existing_models: std::collections::HashMap<(Uuid, String), Model> = storage
         .load_models()
         .unwrap()
         .into_iter()
-        .map(|m| (m.slug.clone(), m))
+        .map(|m| ((m.brand_id, m.slug.clone()), m))
         .collect();
 
     for entry in entries.flatten() {
@@ -933,24 +891,6 @@ fn load_providers(
             }
         };
 
-        // Determine which plan to load for this provider:
-        // 1. CLI --plan flag overrides everything
-        // 2. Existing brand's configured plan
-        // 3. brand.json default plan
-        // 4. None = load all rows (models with no plan field pass through)
-        let effective_plan: Option<String> = plan_override
-            .map(|s| s.to_string())
-            .or_else(|| {
-                existing_brands
-                    .get(&brand_def.slug)
-                    .and_then(|b| b.plan.clone())
-            })
-            .or_else(|| brand_def.plan.clone());
-
-        if let Some(ref p) = effective_plan {
-            println!("[{provider_name}] using plan '{p}'");
-        }
-
         // Upsert brand: reuse existing UUID if slug already exists
         let brand_id = if let Some(existing) = existing_brands.get(&brand_def.slug) {
             println!(
@@ -966,7 +906,6 @@ fn load_providers(
                 api_key_env: brand_def.api_key_env.clone(),
                 base_url: brand_def.base_url.clone(),
                 is_active: true,
-                plan: effective_plan.clone(),
                 priority: 0,
                 created_at: chrono::Utc::now(),
             };
@@ -978,21 +917,9 @@ fn load_providers(
         let mut inserted = 0usize;
         let mut updated = 0usize;
         let mut skipped = 0usize;
-        let mut filtered = 0usize;
 
         for def in &model_defs {
-            // Plan filter: if an effective plan is set, skip rows for other plans.
-            // Rows without a plan field are always included.
-            if let Some(ref ep) = effective_plan {
-                if let Some(ref mp) = def.plan {
-                    if mp != ep {
-                        filtered += 1;
-                        continue;
-                    }
-                }
-            }
-
-            if let Some(existing) = existing_models.get(&def.slug) {
+            if let Some(existing) = existing_models.get(&(brand_id, def.slug.clone())) {
                 if update_limits {
                     let model = Model {
                         tpm_limit: def.tpm_limit.or(existing.tpm_limit),
@@ -1001,7 +928,6 @@ fn load_providers(
                         tpd_limit: def.tpd_limit.or(existing.tpd_limit),
                         tpm_limit_month: def.tpm_limit_month.or(existing.tpm_limit_month),
                         rps_limit: def.rps_limit.map(|v| v as f32).or(existing.rps_limit),
-                        plan: def.plan.clone().or_else(|| existing.plan.clone()),
                         ..existing.clone()
                     };
                     storage.insert_model(&model).unwrap();
@@ -1033,7 +959,6 @@ fn load_providers(
                     is_enabled: true,
                     notes: def.notes.clone(),
                     category: def.category.clone(),
-                    plan: def.plan.clone(),
                     created_at: chrono::Utc::now(),
                 };
                 storage.insert_model(&model).unwrap();
@@ -1042,8 +967,8 @@ fn load_providers(
         }
 
         println!(
-            "[{}] models: {} inserted, {} updated, {} skipped, {} filtered (wrong plan)",
-            provider_name, inserted, updated, skipped, filtered
+            "[{}] models: {} inserted, {} updated, {} skipped",
+            provider_name, inserted, updated, skipped
         );
     }
 }
@@ -1062,7 +987,6 @@ fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
             api_key_env: api_key_env.map(|s| s.to_string()),
             base_url: base_url.map(|s| s.to_string()),
             is_active: true,
-            plan: None,
             priority: 0,
             created_at: chrono::Utc::now(),
         };
@@ -1227,7 +1151,6 @@ fn seed_models(storage: &Arc<dyn CatalogStorage>) {
             is_enabled: true,
             notes: None,
             category: None,
-            plan: None,
             created_at: chrono::Utc::now(),
         };
         storage.insert_model(&model).unwrap();
