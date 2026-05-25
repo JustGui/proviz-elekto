@@ -21,6 +21,7 @@ Your app → pz.call(step, fn)               → CallResult
 - **Scored selection** - picks the best model across all eligible candidates: headroom (50%), quality (25%), cost (15%), latency (10%)
 - **Capability filtering** - hard requirements for function calling, JSON mode
 - **Quality floor** - reject models below a quality threshold per step
+- **Model groups** - define named pools of models (e.g. `"fast-chat"`, `"coding-tier1"`) and restrict selection to that pool
 - **Your keys, your models** - curated catalog, no vendor proxy
 - **Zero-infra** - `pip install proviz-elekto` auto-starts the Rust server as a subprocess
 - **Any language** - HTTP API, not a library binding
@@ -180,6 +181,74 @@ proviz select --step verdict --tokens 2500 --json-mode
 #   api_key_env:GROQ_API_KEY
 #   max_ctx:    128000
 #   est_cost:   $0.000125
+```
+
+## Model Groups
+
+Groups let you define named pools of models and select from them by name instead of configuring per-step rules. The group restricts the candidate pool; the normal brand-priority + scoring algorithm picks the winner within it.
+
+### Create and populate a group
+
+```bash
+proviz group add --slug fast-chat --name "Fast Chat Models"
+proviz group member add --group fast-chat --model llama-3.1-8b-instant --priority 0
+proviz group member add --group fast-chat --model mistral-small-latest  --priority 1
+
+# List groups
+proviz group list
+
+# List members of a group
+proviz group member list --group fast-chat
+
+# Remove a model from a group
+proviz group member remove --group fast-chat --model mistral-small-latest
+
+# Disable / enable a group
+proviz group disable --slug fast-chat
+proviz group enable  --slug fast-chat
+
+# Delete a group (also deletes all members)
+proviz group delete --slug fast-chat
+```
+
+### Select from a group
+
+```bash
+# By slug
+proviz select --step default --tokens 1000 --group-name fast-chat
+
+# By UUID
+proviz select --step default --tokens 1000 --group-id <uuid>
+```
+
+Python:
+```python
+candidate = pz.select("default", 1000, group_name="fast-chat")
+# or
+candidate = pz.select("default", 1000, group_id="<uuid>")
+```
+
+HTTP:
+```json
+POST /select
+{
+  "step": "default",
+  "estimated_tokens": 1000,
+  "group_name": "fast-chat"
+}
+```
+
+### How groups interact with rules
+
+When `group_id` or `group_name` is provided:
+- The group defines the **candidate pool** — only models in the group are eligible
+- Step rules are **bypassed entirely**
+- The normal scoring formula (headroom + quality + cost + latency) still applies within the pool
+- All other filters (capabilities, rate limits, context size, quality floor) still apply
+
+Response `404` when group slug/UUID is unknown or the group is inactive:
+```json
+{ "error": "group_not_found", "group": "fast-chat" }
 ```
 
 ## Selection Algorithm
@@ -357,9 +426,22 @@ parse port → use http://localhost:<n>/...
   "requires_fn_call": false,
   "requires_json_mode": true,
   "quality_min": 0.6,
-  "exclude_ids": []
+  "exclude_ids": [],
+  "group_name": "fast-chat"
 }
 ```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `step` | yes | Routing step name (used for error messages; rules are bypassed when group is set) |
+| `estimated_tokens` | yes | Estimated input token count |
+| `requires_fn_call` | no | Must support function calling |
+| `requires_json_mode` | no | Must support JSON mode |
+| `quality_min` | no | Minimum quality score (0.0 = no filter) |
+| `exclude_ids` | no | Model UUIDs to skip (already-tried list) |
+| `categories` | no | Restrict to specific model categories |
+| `group_id` | no | Restrict candidates to this group (UUID). Takes priority over rules. |
+| `group_name` | no | Restrict candidates to this group (slug). Takes priority over rules. |
 
 Response `200`:
 ```json
@@ -572,6 +654,25 @@ docker run -p 63130:63130 -e PROVIZ_DATABASE_URL=postgresql://... proviz-elekto
 | `max_ctx_tokens` | int? | Upper bound: skip this rule when `estimated_tokens > this` (avoids using a large-context model on a tiny input) |
 | `requires_fn_call` | bool | Safety check (also filtered by model capability) |
 | `is_enabled` | bool | Disable rule without deleting |
+
+### Groups (`pz_groups`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `slug` | string | Human-readable key, e.g. `fast-chat` |
+| `name` | string | Display name |
+| `description` | string? | Optional description |
+| `is_active` | bool | Disabled groups return `group_not_found` on select |
+
+### Group Members (`pz_group_members`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `group_id` | UUID | FK → `pz_groups` (cascades on delete) |
+| `model_id` | UUID | FK → `pz_models` (cascades on delete) |
+| `priority` | int16 | Tiebreaker within group — lower = preferred (alongside brand priority) |
+| `is_enabled` | bool | Disable a member without removing it |
 
 ## Building from Source
 
