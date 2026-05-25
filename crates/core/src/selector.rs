@@ -340,7 +340,7 @@ impl Selector {
                         debug!(model = %model.slug, "skipped: quality unknown, min required");
                         continue;
                     }
-                    Some(q) if q < req.quality_min => {
+                    Some(q) if q < req.quality_min as f64 => {
                         debug!(model = %model.slug, quality = q, min = req.quality_min,
                             "skipped: quality below min");
                         continue;
@@ -421,7 +421,7 @@ impl Selector {
 
             // Clamp headroom to 0 for scoring (last slot = 0, not negative).
             c.score = 0.50 * c.headroom.max(0.0)
-                + 0.25 * quality
+                + 0.25 * quality as f32
                 + 0.15 * cost_score
                 + 0.10 * latency_score;
         }

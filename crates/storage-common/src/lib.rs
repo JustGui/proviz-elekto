@@ -71,7 +71,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         tpd_limit: row.opt_i64(13).map(|v| v as u64),
         tpm_limit_month: row.opt_i64(14).map(|v| v as u64),
         rps_limit: row.opt_f64(15).map(|v| v as f32),
-        quality_score: row.opt_f64(16).map(|v| v as f32),
+        quality_score: row.opt_f64(16),
         avg_latency_ms: row.opt_i32(17).map(|v| v as u32),
         is_enabled: row.bool_val(18),
         notes: row.opt_string(19),

@@ -133,7 +133,7 @@ struct ProviderModelDef {
     tpd_limit: Option<u64>,
     tpm_limit_month: Option<u64>,
     rps_limit: Option<f64>,
-    quality_score: Option<f32>,
+    quality_score: Option<f64>,
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
@@ -198,7 +198,7 @@ enum ModelCmd {
         #[arg(long)]
         function_calling: bool,
         #[arg(long)]
-        quality: Option<f32>,
+        quality: Option<f64>,
         #[arg(long)]
         latency_ms: Option<u32>,
         #[arg(long)]
@@ -542,7 +542,7 @@ fn main() {
                         tpd_limit: v["tpd_limit"].as_u64(),
                         tpm_limit_month: v["tpm_limit_month"].as_u64(),
                         rps_limit: v["rps_limit"].as_f64().map(|v| v as f32),
-                        quality_score: v["quality_score"].as_f64().map(|v| v as f32),
+                        quality_score: v["quality_score"].as_f64(),
                         avg_latency_ms: v["avg_latency_ms"].as_u64().map(|v| v as u32),
                         is_enabled: v["is_enabled"].as_bool().unwrap_or(true),
                         notes: v["notes"].as_str().map(|s| s.to_string()),
@@ -1017,7 +1017,7 @@ fn seed_models(storage: &Arc<dyn CatalogStorage>) {
         Option<f64>,
         Option<u32>,
         Option<u32>,
-        Option<f32>,
+        Option<f64>,
         Option<u32>,
     )] = &[
         // Groq

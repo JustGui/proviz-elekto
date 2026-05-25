@@ -34,7 +34,7 @@ struct ModelDef {
     tpd_limit: Option<u64>,
     tpm_limit_month: Option<u64>,
     rps_limit: Option<f64>,
-    quality_score: Option<f32>,
+    quality_score: Option<f64>,
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
