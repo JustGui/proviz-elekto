@@ -13,7 +13,6 @@ struct BrandDef {
     name: String,
     api_key_env: Option<String>,
     base_url: Option<String>,
-    plan: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -39,7 +38,6 @@ struct ModelDef {
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
-    plan: Option<String>,
 }
 
 static PROVIDERS: &[(&str, &str)] = &[
@@ -72,7 +70,6 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
             api_key_env: brand_def.api_key_env.clone(),
             base_url: brand_def.base_url.clone(),
             is_active: true,
-            plan: brand_def.plan.clone(),
             priority: 0,
             created_at: Utc::now(),
         };
@@ -102,7 +99,6 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
                 is_enabled: true,
                 notes: def.notes.clone(),
                 category: def.category.clone(),
-                plan: def.plan.clone(),
                 created_at: Utc::now(),
             };
             storage.insert_model(&model)?;

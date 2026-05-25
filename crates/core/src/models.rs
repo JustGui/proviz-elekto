@@ -10,8 +10,6 @@ pub struct Brand {
     pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub is_active: bool,
-    /// User's configured plan for this provider (e.g. "free", "developer", "enterprise")
-    pub plan: Option<String>,
     /// Lower = tried first. Brands with same priority compete by rule.priority. Default 0.
     pub priority: i16,
     pub created_at: DateTime<Utc>,
@@ -42,9 +40,6 @@ pub struct Model {
     /// Coarse capability tag: "text", "code", "embedding", "vision", "audio", "moderation"
     /// If set, callers must explicitly request this category to receive this model.
     pub category: Option<String>,
-    /// The provider plan these rate limits came from (e.g. "free", "developer").
-    /// Informational — records which plan's limits are stored in this row.
-    pub plan: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

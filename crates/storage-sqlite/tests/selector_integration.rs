@@ -18,7 +18,6 @@ fn make_brand(slug: &str, priority: i16) -> Brand {
         api_key_env: Some(format!("{}_API_KEY", slug.to_uppercase())),
         base_url: None,
         is_active: true,
-        plan: None,
         priority,
         created_at: Utc::now(),
     }
@@ -47,7 +46,6 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         is_enabled: true,
         notes: None,
         category: None,
-        plan: None,
         created_at: Utc::now(),
     }
 }
