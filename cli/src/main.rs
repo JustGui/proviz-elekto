@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use proviz_elekto_core::{
-    models::{Brand, Model, SelectRequest, SelectionRule},
+    models::{Brand, Group, GroupMember, Model, SelectRequest, SelectionRule},
     selector::Selector,
     storage::CatalogStorage,
 };
@@ -48,6 +48,11 @@ enum Command {
         #[command(subcommand)]
         action: RuleCmd,
     },
+    /// Manage model groups
+    Group {
+        #[command(subcommand)]
+        action: GroupCmd,
+    },
     /// Dry-run selection (no state change)
     Select {
         #[arg(long)]
@@ -60,6 +65,12 @@ enum Command {
         fn_call: bool,
         #[arg(long, default_value = "0.0")]
         quality_min: f32,
+        /// Restrict selection to a group (by UUID)
+        #[arg(long)]
+        group_id: Option<Uuid>,
+        /// Restrict selection to a group (by slug)
+        #[arg(long)]
+        group_name: Option<String>,
     },
     /// Hot-reload catalog in running server
     Reload,
@@ -254,6 +265,69 @@ enum RuleCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum GroupCmd {
+    /// Create a new group
+    Add {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    /// List all groups
+    List,
+    /// Enable a group (by slug)
+    Enable {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Disable a group (by slug)
+    Disable {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Delete a group (by slug; also removes all its members)
+    Delete {
+        #[arg(long)]
+        slug: String,
+    },
+    /// Manage models within a group
+    Member {
+        #[command(subcommand)]
+        action: GroupMemberCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupMemberCmd {
+    /// Add a model to a group
+    Add {
+        /// Group slug or UUID
+        #[arg(long)]
+        group: String,
+        /// Model slug
+        #[arg(long)]
+        model: String,
+        /// Lower = tried first within group (default 0)
+        #[arg(long, default_value = "0")]
+        priority: i16,
+    },
+    /// Remove a model from a group
+    Remove {
+        #[arg(long)]
+        group: String,
+        #[arg(long)]
+        model: String,
+    },
+    /// List members of a group
+    List {
+        #[arg(long)]
+        group: String,
+    },
+}
+
 fn open_storage(cli: &Cli) -> Arc<dyn CatalogStorage> {
     match cli.storage.as_str() {
         "postgres" | "postgresql" => {
@@ -283,6 +357,23 @@ fn find_model(storage: &Arc<dyn CatalogStorage>, slug: &str) -> Model {
         .into_iter()
         .find(|m| m.slug == slug)
         .unwrap_or_else(|| panic!("model '{slug}' not found - add it first with: proviz model add"))
+}
+
+fn find_group(storage: &Arc<dyn CatalogStorage>, slug_or_id: &str) -> Group {
+    let groups = storage.load_groups().unwrap();
+    if let Ok(id) = slug_or_id.parse::<Uuid>() {
+        groups
+            .into_iter()
+            .find(|g| g.id == id)
+            .unwrap_or_else(|| panic!("group '{slug_or_id}' not found"))
+    } else {
+        groups
+            .into_iter()
+            .find(|g| g.slug == slug_or_id)
+            .unwrap_or_else(|| {
+                panic!("group '{slug_or_id}' not found - add it with: proviz group add")
+            })
+    }
 }
 
 fn main() {
@@ -555,12 +646,116 @@ fn main() {
             }
         },
 
+        Command::Group { action } => match action {
+            GroupCmd::Add {
+                slug,
+                name,
+                description,
+            } => {
+                let group = Group {
+                    id: Uuid::new_v4(),
+                    slug: slug.clone(),
+                    name: name.clone(),
+                    description,
+                    is_active: true,
+                    created_at: chrono::Utc::now(),
+                };
+                storage.insert_group(&group).unwrap();
+                println!("group '{slug}' added (id={})", group.id);
+            }
+            GroupCmd::List => {
+                let groups = storage.load_groups().unwrap();
+                println!("{:<36}  {:<20}  {:<30}  active", "id", "slug", "name");
+                println!("{}", "-".repeat(95));
+                for g in groups {
+                    println!(
+                        "{:<36}  {:<20}  {:<30}  {}",
+                        g.id, g.slug, g.name, g.is_active
+                    );
+                }
+            }
+            GroupCmd::Enable { slug } => {
+                let g = find_group(&storage, &slug);
+                storage.set_group_active(g.id, true).unwrap();
+                println!("group '{slug}' enabled");
+            }
+            GroupCmd::Disable { slug } => {
+                let g = find_group(&storage, &slug);
+                storage.set_group_active(g.id, false).unwrap();
+                println!("group '{slug}' disabled");
+            }
+            GroupCmd::Delete { slug } => {
+                let g = find_group(&storage, &slug);
+                storage.delete_group(g.id).unwrap();
+                println!("group '{slug}' deleted");
+            }
+            GroupCmd::Member { action } => match action {
+                GroupMemberCmd::Add {
+                    group,
+                    model,
+                    priority,
+                } => {
+                    let g = find_group(&storage, &group);
+                    let m = find_model(&storage, &model);
+                    let member = GroupMember {
+                        id: Uuid::new_v4(),
+                        group_id: g.id,
+                        model_id: m.id,
+                        priority,
+                        is_enabled: true,
+                    };
+                    storage.insert_group_member(&member).unwrap();
+                    println!("model '{model}' added to group '{group}' (priority={priority})");
+                }
+                GroupMemberCmd::Remove { group, model } => {
+                    let g = find_group(&storage, &group);
+                    let m = find_model(&storage, &model);
+                    storage.remove_group_member(g.id, m.id).unwrap();
+                    println!("model '{model}' removed from group '{group}'");
+                }
+                GroupMemberCmd::List { group } => {
+                    let g = find_group(&storage, &group);
+                    let all_members = storage.load_all_group_members().unwrap();
+                    let members: Vec<_> = all_members
+                        .into_iter()
+                        .filter(|m| m.group_id == g.id)
+                        .collect();
+                    let models: std::collections::HashMap<Uuid, String> = storage
+                        .load_models()
+                        .unwrap()
+                        .into_iter()
+                        .map(|m| (m.id, m.slug))
+                        .collect();
+                    println!(
+                        "{:<36}  {:<35}  {:>4}  en",
+                        "model_id", "model_slug", "prio"
+                    );
+                    println!("{}", "-".repeat(85));
+                    for member in members {
+                        let slug = models
+                            .get(&member.model_id)
+                            .map(|s| s.as_str())
+                            .unwrap_or("?");
+                        println!(
+                            "{:<36}  {:<35}  {:>4}  {}",
+                            member.model_id,
+                            slug,
+                            member.priority,
+                            if member.is_enabled { "✓" } else { "✗" }
+                        );
+                    }
+                }
+            },
+        },
+
         Command::Select {
             step,
             tokens,
             json_mode,
             fn_call,
             quality_min,
+            group_id,
+            group_name,
         } => {
             let selector = Selector::new(storage);
             selector.reload().unwrap();
@@ -572,6 +767,8 @@ fn main() {
                 quality_min,
                 exclude_ids: vec![],
                 categories: vec![],
+                group_id,
+                group_name,
             };
             match selector.select(&req) {
                 Ok(c) => {
