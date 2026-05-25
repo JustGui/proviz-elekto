@@ -129,6 +129,11 @@ async fn handle_select(
             })),
         )
             .into_response(),
+        Err(proviz_elekto_core::error::ProvizError::GroupNotFound(name)) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "group_not_found", "group": name })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
