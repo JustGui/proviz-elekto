@@ -13,6 +13,9 @@ pub enum ProvizError {
 
     #[error("brand not found: {0}")]
     BrandNotFound(String),
+
+    #[error("group not found: {0}")]
+    GroupNotFound(String),
 }
 
 #[derive(Debug, Error)]
