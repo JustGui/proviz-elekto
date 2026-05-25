@@ -90,7 +90,7 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 50.0,
-    "quality_score": 0.75,
+    "quality_score": 0.25,
     "price_input_per_1m": 0.1,
     "price_output_per_1m": 0.1
   },
