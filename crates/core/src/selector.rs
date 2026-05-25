@@ -9,7 +9,10 @@ use uuid::Uuid;
 
 use crate::{
     error::{ProvizError, Result},
-    models::{Brand, Model, ModelCandidate, RateLimitErrorType, SelectRequest, SelectionRule},
+    models::{
+        Brand, Group, GroupMember, Model, ModelCandidate, RateLimitErrorType, SelectRequest,
+        SelectionRule,
+    },
     rate_state::RateLimitState,
     storage::CatalogStorage,
     usage_tracker::UsageTracker,
@@ -22,6 +25,10 @@ struct CatalogCache {
     brands: HashMap<Uuid, Brand>,
     /// step → sorted rules (priority ASC)
     rules: HashMap<String, Vec<SelectionRule>>,
+    groups: HashMap<Uuid, Group>,
+    group_slugs: HashMap<String, Uuid>,
+    /// group_id → members sorted by (brand.priority, member.priority)
+    group_members: HashMap<Uuid, Vec<GroupMember>>,
     loaded_at: Instant,
 }
 
@@ -84,16 +91,52 @@ impl Selector {
             });
         }
 
+        let all_groups = self.storage.load_groups().map_err(ProvizError::Storage)?;
+        let group_slugs: HashMap<String, Uuid> =
+            all_groups.iter().map(|g| (g.slug.clone(), g.id)).collect();
+        let groups: HashMap<Uuid, Group> = all_groups.into_iter().map(|g| (g.id, g)).collect();
+
+        let all_members = self
+            .storage
+            .load_all_group_members()
+            .map_err(ProvizError::Storage)?;
+        let mut group_members: HashMap<Uuid, Vec<GroupMember>> = HashMap::new();
+        for member in all_members {
+            group_members
+                .entry(member.group_id)
+                .or_default()
+                .push(member);
+        }
+        for (group_id, members) in &mut group_members {
+            members.sort_by_key(|m| {
+                let brand_prio = models
+                    .get(&m.model_id)
+                    .and_then(|model| brands.get(&model.brand_id))
+                    .map(|b| b.priority)
+                    .unwrap_or(0);
+                (brand_prio, m.priority)
+            });
+            let _ = group_id;
+        }
+
         let model_count = models.len();
         let rule_count: usize = rules.values().map(|v| v.len()).sum();
 
-        info!(models = model_count, rules = rule_count, "catalog reloaded");
+        info!(
+            models = model_count,
+            rules = rule_count,
+            groups = groups.len(),
+            "catalog reloaded"
+        );
 
         let mut guard = self.cache.write().unwrap();
         *guard = Some(CatalogCache {
             models,
             brands,
             rules,
+            groups,
+            group_slugs,
+            group_members,
             loaded_at: Instant::now(),
         });
 
@@ -127,30 +170,77 @@ impl Selector {
         let cache = guard.as_ref().unwrap();
 
         let synthetic_rules: Vec<SelectionRule>;
-        let rules: &[SelectionRule] = match cache.rules.get(&req.step) {
-            Some(r) if !r.is_empty() => r.as_slice(),
-            _ => {
-                debug!(step = %req.step, "no rules for step, falling back to brand-priority order");
-                let mut entries: Vec<(i16, Uuid)> = cache
-                    .models
-                    .values()
-                    .filter_map(|m| cache.brands.get(&m.brand_id).map(|b| (b.priority, m.id)))
-                    .collect();
-                entries.sort_unstable();
-                synthetic_rules = entries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (_, model_id))| SelectionRule {
-                        id: Uuid::nil(),
-                        step: req.step.clone(),
-                        model_id,
-                        priority: i as i16,
-                        max_ctx_tokens: None,
-                        requires_fn_call: false,
-                        is_enabled: true,
-                    })
-                    .collect();
-                &synthetic_rules
+        let rules: &[SelectionRule] = if req.group_id.is_some() || req.group_name.is_some() {
+            // Group-based selection: restrict candidates to group members.
+            let group_id = if let Some(id) = req.group_id {
+                if cache.groups.contains_key(&id) {
+                    id
+                } else {
+                    return Err(ProvizError::GroupNotFound(id.to_string()));
+                }
+            } else {
+                let slug = req.group_name.as_deref().unwrap();
+                match cache.group_slugs.get(slug) {
+                    Some(&id) => id,
+                    None => return Err(ProvizError::GroupNotFound(slug.to_string())),
+                }
+            };
+
+            let group = cache.groups.get(&group_id).unwrap();
+            if !group.is_active {
+                return Err(ProvizError::GroupNotFound(group.slug.clone()));
+            }
+
+            debug!(group = %group.slug, "group-based selection");
+            let members = cache
+                .group_members
+                .get(&group_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            synthetic_rules = members
+                .iter()
+                .enumerate()
+                .map(|(i, m)| SelectionRule {
+                    id: Uuid::nil(),
+                    step: req.step.clone(),
+                    model_id: m.model_id,
+                    priority: if m.priority != 0 {
+                        m.priority
+                    } else {
+                        i as i16
+                    },
+                    max_ctx_tokens: None,
+                    requires_fn_call: false,
+                    is_enabled: m.is_enabled,
+                })
+                .collect();
+            &synthetic_rules
+        } else {
+            match cache.rules.get(&req.step) {
+                Some(r) if !r.is_empty() => r.as_slice(),
+                _ => {
+                    debug!(step = %req.step, "no rules for step, falling back to brand-priority order");
+                    let mut entries: Vec<(i16, Uuid)> = cache
+                        .models
+                        .values()
+                        .filter_map(|m| cache.brands.get(&m.brand_id).map(|b| (b.priority, m.id)))
+                        .collect();
+                    entries.sort_unstable();
+                    synthetic_rules = entries
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (_, model_id))| SelectionRule {
+                            id: Uuid::nil(),
+                            step: req.step.clone(),
+                            model_id,
+                            priority: i as i16,
+                            max_ctx_tokens: None,
+                            requires_fn_call: false,
+                            is_enabled: true,
+                        })
+                        .collect();
+                    &synthetic_rules
+                }
             }
         };
 
