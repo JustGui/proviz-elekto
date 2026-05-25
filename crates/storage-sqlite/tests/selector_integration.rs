@@ -88,6 +88,8 @@ fn base_req() -> SelectRequest {
         quality_min: 0.0,
         exclude_ids: vec![],
         categories: vec![],
+        group_id: None,
+        group_name: None,
     }
 }
 
