@@ -1,9 +1,10 @@
 use std::io::Write;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::{
-    extract::State,
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -20,7 +21,7 @@ use proviz_elekto_storage_sqlite::SqliteStorage;
 use serde::Serialize;
 use serde_json::json;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 #[derive(Parser)]
 #[command(name = "proviz-server", about = "ProvizElekto LLM model router")]
@@ -46,12 +47,19 @@ struct AppState {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+    let log_filter = match std::env::var("LOG_LEVEL")
+        .unwrap_or_default()
+        .to_uppercase()
+        .as_str()
+    {
+        "DEBUG" | "TRACE" => "proviz_server=debug,proviz_elekto_core=debug".to_string(),
+        _ => tracing_subscriber::EnvFilter::try_from_default_env()
+            .map(|f| f.to_string())
+            .unwrap_or_else(|_| "proviz_server=info,proviz_elekto_core=debug".to_string()),
+    };
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "proviz_server=info,proviz_elekto_core=debug".into()),
-        )
+        .with_env_filter(log_filter)
         .init();
 
     let args = Args::parse();
@@ -108,32 +116,65 @@ async fn main() {
     println!("PROVIZ_PORT={actual_port}");
     std::io::stdout().flush().ok();
     info!(port = actual_port, "listening");
-    axum::serve(listener, app).await.unwrap();
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .unwrap();
 }
 
 async fn handle_select(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(req): Json<SelectRequest>,
 ) -> impl IntoResponse {
+    debug!(
+        peer = %peer,
+        step = %req.step,
+        estimated_tokens = req.estimated_tokens,
+        group_name = ?req.group_name,
+        group_id = ?req.group_id,
+        requires_fn_call = req.requires_fn_call,
+        requires_json_mode = req.requires_json_mode,
+        quality_min = req.quality_min,
+        "select request"
+    );
     let result = tokio::task::spawn_blocking(move || state.selector.select(&req))
         .await
         .expect("select task panicked");
     match result {
-        Ok(candidate) => (StatusCode::OK, Json(json!(candidate))).into_response(),
-        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted { step, tried }) => (
-            StatusCode::CONFLICT,
-            Json(json!({
-                "error": "all_models_exhausted",
-                "step": step,
-                "tried": tried
-            })),
-        )
-            .into_response(),
-        Err(proviz_elekto_core::error::ProvizError::GroupNotFound(name)) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "group_not_found", "group": name })),
-        )
-            .into_response(),
+        Ok(candidate) => {
+            debug!(
+                peer = %peer,
+                model = %candidate.model_slug,
+                brand = %candidate.brand_slug,
+                estimated_tokens = candidate.estimated_tokens,
+                cost_usd = ?candidate.estimated_input_cost_usd,
+                "select response"
+            );
+            (StatusCode::OK, Json(json!(candidate))).into_response()
+        }
+        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted { step, tried }) => {
+            debug!(peer = %peer, step = %step, tried, "select exhausted");
+            (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "all_models_exhausted",
+                    "step": step,
+                    "tried": tried
+                })),
+            )
+                .into_response()
+        }
+        Err(proviz_elekto_core::error::ProvizError::GroupNotFound(name)) => {
+            debug!(peer = %peer, group = %name, "select group not found");
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "group_not_found", "group": name })),
+            )
+                .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -143,9 +184,18 @@ async fn handle_select(
 }
 
 async fn handle_report(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     State(state): State<Arc<AppState>>,
     Json(req): Json<ReportRequest>,
 ) -> impl IntoResponse {
+    debug!(
+        peer = %peer,
+        model_id = %req.model_id,
+        outcome = ?req.outcome,
+        error_type = ?req.error_type,
+        actual_tokens = ?req.actual_tokens,
+        "report"
+    );
     tokio::task::spawn_blocking(move || {
         let estimated = req.estimated_tokens.unwrap_or(0);
         let actual = req.actual_tokens;

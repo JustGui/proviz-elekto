@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import json
+import logging
 import os
 import select as _select
 import shutil
@@ -12,6 +13,24 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
+
+_logger = logging.getLogger("proviz_elekto")
+
+
+def _setup_logging() -> None:
+    if os.environ.get("LOG_LEVEL", "").upper() in ("DEBUG", "TRACE"):
+        _logger.setLevel(logging.DEBUG)
+        if not _logger.handlers:
+            _h = logging.StreamHandler()
+            _h.setFormatter(
+                logging.Formatter("%(asctime)s proviz_elekto %(levelname)s %(message)s")
+            )
+            _logger.addHandler(_h)
+    else:
+        _logger.addHandler(logging.NullHandler())
+
+
+_setup_logging()
 
 
 class ProvizError(Exception):
@@ -280,8 +299,12 @@ class ProvizElekto:
             payload["group_id"] = group_id
         if group_name is not None:
             payload["group_name"] = group_name
+        _logger.debug(
+            "select request: step=%s estimated_tokens=%d group_name=%s group_id=%s",
+            step, estimated_tokens, group_name, group_id,
+        )
         r = self._post("/select", payload)
-        return ModelCandidate(
+        candidate = ModelCandidate(
             model_id=r["model_id"],
             brand_slug=r["brand_slug"],
             model_slug=r["model_slug"],
@@ -291,11 +314,18 @@ class ProvizElekto:
             supports_json_mode=r["supports_json_mode"],
             estimated_input_cost_usd=r.get("estimated_input_cost_usd"),
         )
+        _logger.debug(
+            "select response: model=%s brand=%s cost_usd=%s",
+            candidate.model_slug, candidate.brand_slug, candidate.estimated_input_cost_usd,
+        )
+        return candidate
 
     def report_success(self, model_id: str) -> None:
+        _logger.debug("report: model_id=%s outcome=success", model_id)
         self._post("/report", {"model_id": model_id, "outcome": "success"})
 
     def report_rate_limit(self, model_id: str, error_type: str = "tpm") -> None:
+        _logger.debug("report: model_id=%s outcome=rate_limit error_type=%s", model_id, error_type)
         self._post("/report", {
             "model_id": model_id,
             "outcome": "rate_limit",
@@ -303,6 +333,7 @@ class ProvizElekto:
         })
 
     def report_error(self, model_id: str, error_type: str = "other") -> None:
+        _logger.debug("report: model_id=%s outcome=error error_type=%s", model_id, error_type)
         self._post("/report", {
             "model_id": model_id,
             "outcome": "error",
@@ -331,7 +362,9 @@ class ProvizElekto:
         # Models that won't be blocked server-side (parse errors have TTL=0)
         permanent_skip: list[str] = list(exclude_ids or [])
 
+        attempt = 0
         while True:
+            attempt += 1
             candidate = self.select(
                 step=step,
                 estimated_tokens=estimated_tokens,
@@ -341,10 +374,18 @@ class ProvizElekto:
                 exclude_ids=permanent_skip,
                 categories=categories,
             )
+            _logger.debug(
+                "call attempt=%d step=%s model=%s/%s",
+                attempt, step, candidate.brand_slug, candidate.model_slug,
+            )
             try:
                 response = fn(candidate)
                 self.report_success(candidate.model_id)
                 prompt, completion, total = _extract_usage(response)
+                _logger.debug(
+                    "call success: model=%s/%s prompt=%d completion=%d total=%d",
+                    candidate.brand_slug, candidate.model_slug, prompt, completion, total,
+                )
                 return CallResult(
                     response=response,
                     candidate=candidate,
@@ -357,6 +398,10 @@ class ProvizElekto:
                 raise
             except Exception as exc:
                 outcome, error_type = classifier(exc)
+                _logger.debug(
+                    "call error: model=%s/%s outcome=%s error_type=%s exc=%s",
+                    candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
+                )
                 if outcome == "rate_limit":
                     self.report_rate_limit(candidate.model_id, error_type)
                 else:
