@@ -117,6 +117,26 @@ impl std::fmt::Display for RateLimitErrorType {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Group {
+    pub id: Uuid,
+    pub slug: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupMember {
+    pub id: Uuid,
+    pub group_id: Uuid,
+    pub model_id: Uuid,
+    /// Lower = tried first within the group (tiebreaker alongside brand priority).
+    pub priority: i16,
+    pub is_enabled: bool,
+}
+
 /// Input to /select
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SelectRequest {
@@ -134,6 +154,12 @@ pub struct SelectRequest {
     /// Use to explicitly request specialized models (e.g. ["audio"], ["embedding"]).
     #[serde(default)]
     pub categories: Vec<String>,
+    /// Restrict candidates to models belonging to this group (by UUID). Takes priority over rules.
+    #[serde(default)]
+    pub group_id: Option<Uuid>,
+    /// Restrict candidates to models belonging to this group (by slug). Takes priority over rules.
+    #[serde(default)]
+    pub group_name: Option<String>,
 }
 
 /// Output of /select
