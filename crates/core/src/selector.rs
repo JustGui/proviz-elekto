@@ -260,6 +260,9 @@ impl Selector {
 
         let mut tried = 0;
         let mut candidates: Vec<Candidate<'_>> = Vec::new();
+        // Track IDs skipped for each reason to compute retry_after_ms on exhaustion.
+        let mut rate_limited_ids: Vec<Uuid> = Vec::new();
+        let mut headroom_exhausted_ids: Vec<Uuid> = Vec::new();
 
         for rule in rules {
             if !rule.is_enabled {
@@ -357,6 +360,7 @@ impl Selector {
             if self.rate_state.is_limited(&model.id) {
                 debug!(model = %model.slug, "skipped: rate limited");
                 tried += 1;
+                rate_limited_ids.push(model.id);
                 continue;
             }
 
@@ -367,6 +371,7 @@ impl Selector {
                 // Negative = strictly over limit. Zero = last slot, still eligible.
                 debug!(model = %model.slug, headroom, "skipped: usage tracker headroom exhausted");
                 tried += 1;
+                headroom_exhausted_ids.push(model.id);
                 continue;
             }
 
@@ -380,9 +385,29 @@ impl Selector {
         }
 
         if candidates.is_empty() {
+            // Compute how long the caller should wait before retrying.
+            let rate_ms = self.rate_state.min_remaining_ms_for(&rate_limited_ids);
+            let headroom_ms = self
+                .usage_tracker
+                .earliest_drain_ms_for(&headroom_exhausted_ids);
+            let retry_after_ms = match (rate_ms, headroom_ms) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => 0,
+            };
+            warn!(
+                step = %req.step,
+                tried,
+                retry_after_ms,
+                rate_limited = rate_limited_ids.len(),
+                headroom_exhausted = headroom_exhausted_ids.len(),
+                "all models exhausted"
+            );
             return Err(ProvizError::AllModelsExhausted {
                 step: req.step.clone(),
                 tried,
+                retry_after_ms,
             });
         }
 

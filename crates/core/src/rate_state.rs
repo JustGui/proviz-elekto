@@ -51,6 +51,22 @@ impl RateLimitState {
         self.limited.remove(model_id);
     }
 
+    /// Minimum time remaining (ms) across all supplied model IDs that are currently rate-limited.
+    /// Returns None if none of the IDs are rate-limited (or all have already expired).
+    pub fn min_remaining_ms_for(&self, ids: &[Uuid]) -> Option<u64> {
+        let now = Instant::now();
+        ids.iter()
+            .filter_map(|id| {
+                let entry = self.limited.get(id)?;
+                let expiry: Instant = *entry;
+                drop(entry);
+                expiry
+                    .checked_duration_since(now)
+                    .map(|d| d.as_millis() as u64)
+            })
+            .min()
+    }
+
     #[cfg(test)]
     pub fn insert_expired(&self, id: Uuid) {
         self.limited

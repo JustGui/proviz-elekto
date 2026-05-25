@@ -155,14 +155,19 @@ async fn handle_select(
             );
             (StatusCode::OK, Json(json!(candidate))).into_response()
         }
-        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted { step, tried }) => {
-            debug!(peer = %peer, step = %step, tried, "select exhausted");
+        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted {
+            step,
+            tried,
+            retry_after_ms,
+        }) => {
+            debug!(peer = %peer, step = %step, tried, retry_after_ms, "select exhausted");
             (
                 StatusCode::CONFLICT,
                 Json(json!({
                     "error": "all_models_exhausted",
                     "step": step,
-                    "tried": tried
+                    "tried": tried,
+                    "retry_after_ms": retry_after_ms
                 })),
             )
                 .into_response()

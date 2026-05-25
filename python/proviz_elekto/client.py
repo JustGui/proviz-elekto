@@ -38,10 +38,11 @@ class ProvizError(Exception):
 
 
 class AllModelsExhausted(ProvizError):
-    def __init__(self, step: str, tried: int):
+    def __init__(self, step: str, tried: int, retry_after_ms: int = 0):
         super().__init__(f"all models exhausted for step '{step}' (tried {tried})")
         self.step = step
         self.tried = tried
+        self.retry_after_ms = retry_after_ms
 
 
 @dataclass
@@ -267,6 +268,7 @@ class ProvizElekto:
                 raise AllModelsExhausted(
                     step=payload.get("step", "?"),
                     tried=payload.get("tried", 0),
+                    retry_after_ms=payload.get("retry_after_ms", 0),
                 )
             raise ProvizError(f"HTTP {e.code}: {payload}") from e
 
@@ -352,28 +354,48 @@ class ProvizElekto:
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
+        max_wait_secs: float = 0.0,
     ) -> CallResult:
         """Select a model, call fn(candidate), report the outcome, and retry on failure.
 
         fn receives a ModelCandidate and must return the raw LLM response.
         Retries automatically until a model succeeds or AllModelsExhausted is raised.
+
+        max_wait_secs: when all models are transiently exhausted (quota full), sleep for
+        the server-supplied retry_after_ms hint and try again until this budget is spent.
+        Set to 0 (default) to raise AllModelsExhausted immediately on exhaustion.
         """
         classifier = error_classifier or _classify_error
         # Models that won't be blocked server-side (parse errors have TTL=0)
         permanent_skip: list[str] = list(exclude_ids or [])
+        wait_deadline = time.monotonic() + max_wait_secs if max_wait_secs > 0 else None
 
         attempt = 0
         while True:
             attempt += 1
-            candidate = self.select(
-                step=step,
-                estimated_tokens=estimated_tokens,
-                requires_fn_call=requires_fn_call,
-                requires_json_mode=requires_json_mode,
-                quality_min=quality_min,
-                exclude_ids=permanent_skip,
-                categories=categories,
-            )
+            try:
+                candidate = self.select(
+                    step=step,
+                    estimated_tokens=estimated_tokens,
+                    requires_fn_call=requires_fn_call,
+                    requires_json_mode=requires_json_mode,
+                    quality_min=quality_min,
+                    exclude_ids=permanent_skip,
+                    categories=categories,
+                )
+            except AllModelsExhausted as e:
+                if wait_deadline is not None and e.retry_after_ms > 0:
+                    remaining = wait_deadline - time.monotonic()
+                    wait = min(e.retry_after_ms / 1000.0, remaining)
+                    if wait > 0:
+                        _logger.debug(
+                            "step=%s all models exhausted, retrying in %.1fs "
+                            "(retry_after_ms=%d, attempt=%d)",
+                            step, wait, e.retry_after_ms, attempt,
+                        )
+                        time.sleep(wait)
+                        continue
+                raise
             _logger.debug(
                 "call attempt=%d step=%s model=%s/%s",
                 attempt, step, candidate.brand_slug, candidate.model_slug,
@@ -421,6 +443,7 @@ class ProvizElekto:
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
+        max_wait_secs: float = 0.0,
         **litellm_kwargs: Any,
     ) -> CallResult:
         """call() with built-in LiteLLM integration.
@@ -430,6 +453,8 @@ class ProvizElekto:
         Selection parameters (categories, requires_fn_call, etc.) are used for model
         selection and are NOT forwarded to litellm.completion(). Any remaining kwargs
         are forwarded to litellm.completion().
+
+        max_wait_secs: budget for retrying when all models are transiently exhausted.
         """
         try:
             import litellm
@@ -456,6 +481,7 @@ class ProvizElekto:
             exclude_ids=exclude_ids,
             categories=categories,
             error_classifier=error_classifier,
+            max_wait_secs=max_wait_secs,
         )
 
     def health(self) -> dict:

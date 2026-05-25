@@ -2,8 +2,15 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProvizError {
-    #[error("all eligible models exhausted for step '{step}' (tried {tried})")]
-    AllModelsExhausted { step: String, tried: usize },
+    #[error("all eligible models exhausted for step '{step}' (tried {tried}, retry_after={retry_after_ms}ms)")]
+    AllModelsExhausted {
+        step: String,
+        tried: usize,
+        /// Hint: milliseconds to wait before the next select() call may succeed.
+        /// 0 means unknown. Derived from the earliest rate-limit cooldown expiry or
+        /// the oldest sliding-window entry across all skipped models.
+        retry_after_ms: u64,
+    },
 
     #[error("storage error: {0}")]
     Storage(#[from] StorageError),

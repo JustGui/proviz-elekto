@@ -125,6 +125,65 @@ impl UsageTracker {
         });
     }
 
+    /// Earliest time (ms from now) at which any of the supplied models may regain positive headroom,
+    /// based on the oldest sliding-window entry leaving the 60-second RPM/TPM window.
+    ///
+    /// Returns `Some(ms)` if any model has window entries that haven't expired yet.
+    /// Returns `Some(2_000)` as a conservative hint when models are blocked only by in-flight
+    /// reservations (no window entries) — those slots free up when current LLM calls complete.
+    /// Returns `None` if `ids` is empty.
+    pub fn earliest_drain_ms_for(&self, ids: &[Uuid]) -> Option<u64> {
+        if ids.is_empty() {
+            return None;
+        }
+        let now = Instant::now();
+        let window_dur = Duration::from_secs(60);
+        let mut min_ms: Option<u64> = None;
+        let mut found_inflight_only = false;
+
+        for id in ids {
+            let arc = match self.map.get(id) {
+                Some(entry) => entry.value().clone(),
+                None => {
+                    // No tracked usage at all — blocked only by a just-reserved in-flight slot.
+                    found_inflight_only = true;
+                    continue;
+                }
+            };
+
+            let w = arc.windows.lock().unwrap();
+            let oldest_rpm = w.rpm.front().map(|e| e.at);
+            let oldest_tpm = w.tpm.front().map(|e| e.at);
+            let oldest = match (oldest_rpm, oldest_tpm) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => {
+                    // Windows are empty; blocked by in-flight only.
+                    found_inflight_only = true;
+                    continue;
+                }
+            };
+
+            if let Some(oldest_at) = oldest {
+                let expiry = oldest_at + window_dur;
+                if let Some(remaining) = expiry.checked_duration_since(now) {
+                    // +1 ms so callers that sleep exactly this long clear the boundary.
+                    let ms = remaining.as_millis() as u64 + 1;
+                    min_ms = Some(min_ms.map_or(ms, |prev| prev.min(ms)));
+                }
+                // else: already expired — this model's window is actually clear now.
+            }
+        }
+
+        if min_ms.is_none() && found_inflight_only {
+            // All blocked models have no window history; hint a short wait for in-flight to finish.
+            Some(2_000)
+        } else {
+            min_ms
+        }
+    }
+
     /// Minimum headroom across all applicable limits for a candidate request.
     ///
     /// - Positive: room remaining; 1.0 = fully unconstrained.
