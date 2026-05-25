@@ -3,7 +3,7 @@
     "slug": "codestral-2508",
     "display_name": "Codestral 2508",
     "category": "code",
-    "max_context_tokens": 262144,
+    "max_context_tokens": 131072,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 1000000,
@@ -21,13 +21,14 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "price_input_per_1m": 0.15
   },
   {
     "slug": "devstral-2512",
     "display_name": "Devstral 2512",
     "category": "code",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "tpm_limit": 2000000,
@@ -35,41 +36,13 @@
     "rps_limit": 6.0,
     "quality_score": 0.78,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 0.9
-  },
-  {
-    "slug": "devstral-medium-2507",
-    "display_name": "Devstral Medium 2507",
-    "category": "code",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "quality_score": 0.75,
-    "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.0
-  },
-  {
-    "slug": "devstral-small-2507",
-    "display_name": "Devstral Small 2507",
-    "category": "code",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "quality_score": 0.72,
-    "price_input_per_1m": 0.07,
-    "price_output_per_1m": 0.28
+    "price_output_per_1m": 2
   },
   {
     "slug": "labs-leanstral-2603",
     "display_name": "Leanstral 2603",
-    "category": "text",
-    "max_context_tokens": 131072,
+    "category": "code",
+    "max_context_tokens": 262144,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 15000000,
@@ -94,22 +67,10 @@
     "price_output_per_1m": 5.0
   },
   {
-    "slug": "magistral-small-2509",
-    "display_name": "Magistral Small 2509",
-    "category": "text",
-    "max_context_tokens": 32768,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "tpm_limit": 40000,
-    "tpm_limit_month": null,
-    "rps_limit": 0.08,
-    "quality_score": 0.72
-  },
-  {
     "slug": "ministral-14b-2512",
     "display_name": "Ministral 14B 2512",
     "category": "text",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "tpm_limit": 1500000,
@@ -123,7 +84,7 @@
     "slug": "ministral-3b-2512",
     "display_name": "Ministral 3B 2512",
     "category": "text",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 2000000,
@@ -137,7 +98,7 @@
     "slug": "ministral-8b-2512",
     "display_name": "Ministral 8B 2512",
     "category": "text",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "tpm_limit": 1000000,
@@ -156,27 +117,15 @@
     "supports_json_mode": false,
     "tpm_limit": 20000000,
     "tpm_limit_month": 200000000000,
-    "rps_limit": 6.0
-  },
-  {
-    "slug": "mistral-large-2411",
-    "display_name": "Mistral Large 2411",
-    "category": "text",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "price_input_per_1m": 2.0,
-    "price_output_per_1m": 6.0,
-    "tpm_limit": 600000,
-    "tpm_limit_month": 200000000000,
-    "rps_limit": 1.67,
-    "quality_score": 0.92
+    "rps_limit": 6.0,
+    "quality_score": 0.5,
+    "price_input_per_1m": 0.1
   },
   {
     "slug": "mistral-large-2512",
     "display_name": "Mistral Large 2512",
     "category": "text",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "price_input_per_1m": 0.5,
@@ -218,7 +167,7 @@
     "slug": "mistral-medium-3-5",
     "display_name": "Mistral Medium 3.5",
     "category": "text",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "tpm_limit": 2000000,
@@ -229,51 +178,15 @@
     "price_output_per_1m": 7.5
   },
   {
-    "slug": "mistral-moderation-2411",
-    "display_name": "Mistral Moderation 2411",
-    "category": "moderation",
-    "max_context_tokens": 8192,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 8.33
-  },
-  {
     "slug": "mistral-moderation-2603",
     "display_name": "Mistral Moderation 2603",
     "category": "moderation",
-    "max_context_tokens": 8192,
+    "max_context_tokens": 131072,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 8.33
-  },
-  {
-    "slug": "mistral-nemo-2407",
-    "display_name": "Mistral Nemo",
-    "category": "text",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "tpm_limit": 1500000,
-    "tpm_limit_month": null,
-    "rps_limit": 2.0,
-    "quality_score": 0.93,
-    "price_input_per_1m": 0.02,
-    "price_output_per_1m": 0.03
-  },
-  {
-    "slug": "mistral-ocr-2505",
-    "display_name": "Mistral OCR 2505",
-    "category": "vision",
-    "max_context_tokens": 8192,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0
   },
   {
     "slug": "mistral-ocr-2512",
@@ -284,27 +197,14 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
-  },
-  {
-    "slug": "mistral-small-2506",
-    "display_name": "Mistral Small 2506",
-    "category": "text",
-    "max_context_tokens": 32768,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3,
-    "tpm_limit": 5000000,
-    "tpm_limit_month": null,
-    "rps_limit": 20.83,
-    "quality_score": 0.72
+    "rps_limit": 6.0,
+    "quality_score": 0.70
   },
   {
     "slug": "mistral-small-2603",
     "display_name": "Mistral Small 2603",
     "category": "text",
-    "max_context_tokens": 32768,
+    "max_context_tokens": 262144,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "price_input_per_1m": 0.15,
@@ -337,36 +237,8 @@
     "tpm_limit_month": null,
     "rps_limit": 2.0,
     "quality_score": 0.93,
-    "price_input_per_1m": 0.02,
-    "price_output_per_1m": 0.03
-  },
-  {
-    "slug": "pixtral-12b-2409",
-    "display_name": "Pixtral 12B",
-    "category": "vision",
-    "max_context_tokens": 128000,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "quality_score": 0.75,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.1
-  },
-  {
-    "slug": "pixtral-large-2411",
-    "display_name": "Pixtral Large 2411",
-    "category": "vision",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "quality_score": 0.8,
-    "price_input_per_1m": 2.0,
-    "price_output_per_1m": 6.0
+    "price_input_per_1m": 0.15,
+    "price_output_per_1m": 0.15
   },
   {
     "slug": "voxtral-mini-2507",
@@ -377,9 +249,7 @@
     "supports_json_mode": false,
     "tpm_limit": 400000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
+    "rps_limit": 6.0
   },
   {
     "slug": "voxtral-mini-2602",
@@ -390,48 +260,20 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
-  },
-  {
-    "slug": "voxtral-mini-transcribe-2507",
-    "display_name": "Voxtral Mini Transcribe 2507",
-    "category": "audio",
-    "max_context_tokens": 32768,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 400000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
-  },
-  {
-    "slug": "voxtral-mini-transcribe-realtime-2602",
-    "display_name": "Voxtral Mini Transcribe Realtime 2602",
-    "category": "audio",
-    "max_context_tokens": 32768,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 600000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
+    "rps_limit": 6.0
   },
   {
     "slug": "voxtral-mini-tts-2603",
     "display_name": "Voxtral Mini TTS 2603",
     "category": "audio",
-    "max_context_tokens": 32768,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
+    "quality_score": 0.9,
+    "price_input_per_1m": 0,
+    "price_output_per_1m": 16
   },
   {
     "slug": "voxtral-small-2507",
@@ -445,16 +287,5 @@
     "rps_limit": 6.0,
     "price_input_per_1m": 0.1,
     "price_output_per_1m": 0.3
-  },
-  {
-    "slug": "voxtral-tts-2603",
-    "display_name": "Voxtral TTS",
-    "category": "audio",
-    "max_context_tokens": 32768,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "tpm_limit": 2000000,
-    "tpm_limit_month": null,
-    "rps_limit": 6.0
   }
 ]
