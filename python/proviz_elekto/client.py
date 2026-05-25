@@ -262,8 +262,10 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
     ) -> ModelCandidate:
-        r = self._post("/select", {
+        payload: dict = {
             "step": step,
             "estimated_tokens": estimated_tokens,
             "requires_fn_call": requires_fn_call,
@@ -271,7 +273,12 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
-        })
+        }
+        if group_id is not None:
+            payload["group_id"] = group_id
+        if group_name is not None:
+            payload["group_name"] = group_name
+        r = self._post("/select", payload)
         return ModelCandidate(
             model_id=r["model_id"],
             brand_slug=r["brand_slug"],
