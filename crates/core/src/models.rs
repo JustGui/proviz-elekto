@@ -155,6 +155,14 @@ pub struct SelectRequest {
     /// Restrict candidates to models belonging to this group (by slug). Takes priority over rules.
     #[serde(default)]
     pub group_name: Option<String>,
+    /// When true (default), member.priority is used as a tiebreaker within the same brand.
+    /// When false, only brand.priority and the selection score determine order.
+    #[serde(default = "default_true")]
+    pub use_member_priority: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Output of /select

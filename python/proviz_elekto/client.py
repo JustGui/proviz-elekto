@@ -264,6 +264,7 @@ class ProvizElekto:
         categories: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
+        use_member_priority: bool = True,
     ) -> ModelCandidate:
         payload: dict = {
             "step": step,
@@ -273,6 +274,7 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
+            "use_member_priority": use_member_priority,
         }
         if group_id is not None:
             payload["group_id"] = group_id

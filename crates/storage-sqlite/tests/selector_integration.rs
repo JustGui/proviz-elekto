@@ -88,6 +88,7 @@ fn base_req() -> SelectRequest {
         categories: vec![],
         group_id: None,
         group_name: None,
+        use_member_priority: true,
     }
 }
 

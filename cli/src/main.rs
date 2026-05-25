@@ -736,6 +736,7 @@ fn main() {
                 categories: vec![],
                 group_id,
                 group_name,
+                use_member_priority: true,
             };
             match selector.select(&req) {
                 Ok(c) => {

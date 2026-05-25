@@ -193,18 +193,26 @@ impl Selector {
             synthetic_rules = members
                 .iter()
                 .enumerate()
-                .map(|(i, m)| SelectionRule {
-                    id: Uuid::nil(),
-                    step: req.step.clone(),
-                    model_id: m.model_id,
-                    priority: if m.priority != 0 {
+                .map(|(i, m)| {
+                    let priority = if req.use_member_priority && m.priority != 0 {
                         m.priority
                     } else {
-                        i as i16
-                    },
-                    max_ctx_tokens: None,
-                    requires_fn_call: false,
-                    is_enabled: m.is_enabled,
+                        cache
+                            .models
+                            .get(&m.model_id)
+                            .and_then(|model| cache.brands.get(&model.brand_id))
+                            .map(|b| b.priority)
+                            .unwrap_or(i as i16)
+                    };
+                    SelectionRule {
+                        id: Uuid::nil(),
+                        step: req.step.clone(),
+                        model_id: m.model_id,
+                        priority,
+                        max_ctx_tokens: None,
+                        requires_fn_call: false,
+                        is_enabled: m.is_enabled,
+                    }
                 })
                 .collect();
             &synthetic_rules
