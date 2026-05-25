@@ -123,13 +123,13 @@ impl CatalogStorage for PostgresStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
         client.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
              ON CONFLICT (slug) DO UPDATE SET
                name=EXCLUDED.name, api_key_env=EXCLUDED.api_key_env,
-               base_url=EXCLUDED.base_url, is_active=EXCLUDED.is_active, plan=EXCLUDED.plan,
+               base_url=EXCLUDED.base_url, is_active=EXCLUDED.is_active,
                priority=EXCLUDED.priority",
-            &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.plan, &brand.priority, &brand.created_at],
+            &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -141,8 +141,8 @@ impl CatalogStorage for PostgresStorage {
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-              is_enabled,notes,category,plan,created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
+              is_enabled,notes,category,created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -152,7 +152,7 @@ impl CatalogStorage for PostgresStorage {
                price_output_per_1m=EXCLUDED.price_output_per_1m,
                tpm_limit=EXCLUDED.tpm_limit, rpm_limit=EXCLUDED.rpm_limit, rpd_limit=EXCLUDED.rpd_limit,
                quality_score=EXCLUDED.quality_score, is_enabled=EXCLUDED.is_enabled,
-               category=EXCLUDED.category, plan=EXCLUDED.plan",
+               category=EXCLUDED.category",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -167,7 +167,7 @@ impl CatalogStorage for PostgresStorage {
                 &model.rps_limit.map(|v| v as f64),
                 &model.quality_score.map(|v| v as f64),
                 &model.avg_latency_ms.map(|v| v as i32),
-                &model.is_enabled, &model.notes, &model.category, &model.plan, &model.created_at,
+                &model.is_enabled, &model.notes, &model.category, &model.created_at,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -361,7 +361,6 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     api_key_env VARCHAR(100),
     base_url    VARCHAR(255),
     is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
-    plan        VARCHAR(50),
     priority    SMALLINT     NOT NULL DEFAULT 0,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
@@ -388,7 +387,6 @@ CREATE TABLE IF NOT EXISTS pz_models (
     is_enabled                BOOLEAN      NOT NULL DEFAULT TRUE,
     notes                     TEXT,
     category                  VARCHAR(50),
-    plan                      VARCHAR(50),
     created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
@@ -434,6 +432,6 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at DESC);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_slug_plan
-    ON pz_models(slug, COALESCE(plan, ''));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
+    ON pz_models(brand_id, slug);
 ";

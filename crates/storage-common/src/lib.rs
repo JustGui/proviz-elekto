@@ -4,14 +4,14 @@ use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
 pub const Q_BRANDS: &str =
-    "SELECT id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at \
+    "SELECT id,slug,name,api_key_env,base_url,is_active,priority,created_at \
      FROM pz_brands";
 
 pub const Q_MODELS: &str =
     "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,\
      supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,\
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
-     avg_latency_ms,is_enabled,notes,category,plan,created_at \
+     avg_latency_ms,is_enabled,notes,category,created_at \
      FROM pz_models";
 
 pub const Q_RULES: &str =
@@ -48,9 +48,8 @@ pub fn brand_from_row(row: &impl RowReader) -> Brand {
         api_key_env: row.opt_string(3),
         base_url: row.opt_string(4),
         is_active: row.bool_val(5),
-        plan: row.opt_string(6),
-        priority: row.i16_val(7),
-        created_at: row.datetime(8),
+        priority: row.i16_val(6),
+        created_at: row.datetime(7),
     }
 }
 
@@ -77,8 +76,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         is_enabled: row.bool_val(18),
         notes: row.opt_string(19),
         category: row.opt_string(20),
-        plan: row.opt_string(21),
-        created_at: row.datetime(22),
+        created_at: row.datetime(21),
     }
 }
 

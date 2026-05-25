@@ -162,12 +162,12 @@ impl CatalogStorage for SqliteStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,plan,priority,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, api_key_env=excluded.api_key_env,
                base_url=excluded.base_url, is_active=excluded.is_active,
-               plan=excluded.plan, priority=excluded.priority",
+               priority=excluded.priority",
             params![
                 brand.id.to_string(),
                 brand.slug,
@@ -175,7 +175,6 @@ impl CatalogStorage for SqliteStorage {
                 brand.api_key_env,
                 brand.base_url,
                 brand.is_active,
-                brand.plan,
                 brand.priority as i64,
                 brand.created_at.to_rfc3339(),
             ],
@@ -191,8 +190,8 @@ impl CatalogStorage for SqliteStorage {
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-              is_enabled,notes,category,plan,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+              is_enabled,notes,category,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -215,7 +214,6 @@ impl CatalogStorage for SqliteStorage {
                 model.is_enabled,
                 model.notes,
                 model.category,
-                model.plan,
                 model.created_at.to_rfc3339(),
             ],
         )
@@ -423,7 +421,6 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     api_key_env TEXT,
     base_url    TEXT,
     is_active   INTEGER NOT NULL DEFAULT 1,
-    plan        TEXT,
     priority    INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -450,7 +447,6 @@ CREATE TABLE IF NOT EXISTS pz_models (
     is_enabled                INTEGER NOT NULL DEFAULT 1,
     notes                     TEXT,
     category                  TEXT,
-    plan                      TEXT,
     created_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -496,8 +492,8 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at);
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_slug_plan
-    ON pz_models(slug, COALESCE(plan, ''));
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
+    ON pz_models(brand_id, slug);
 ";
 
 #[cfg(test)]
@@ -519,7 +515,6 @@ mod tests {
             api_key_env: None,
             base_url: None,
             is_active: true,
-            plan: None,
             priority: 0,
             created_at: Utc::now(),
         }
@@ -548,7 +543,6 @@ mod tests {
             is_enabled: true,
             notes: None,
             category: None,
-            plan: None,
             created_at: Utc::now(),
         }
     }
