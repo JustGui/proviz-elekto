@@ -217,7 +217,7 @@
   {
     "slug": "mistral-vibe-cli-latest",
     "display_name": "Mistral Vibe CLI",
-    "category": "text",
+    "category": "code",
     "max_context_tokens": 131072,
     "supports_function_calling": true,
     "supports_json_mode": true,
