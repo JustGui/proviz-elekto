@@ -322,9 +322,12 @@ class ProvizElekto:
         )
         return candidate
 
-    def report_success(self, model_id: str) -> None:
-        _logger.debug("report: model_id=%s outcome=success", model_id)
-        self._post("/report", {"model_id": model_id, "outcome": "success"})
+    def report_success(self, model_id: str, estimated_tokens: int = 0, actual_tokens: Optional[int] = None) -> None:
+        _logger.debug("report: model_id=%s outcome=success actual_tokens=%s", model_id, actual_tokens)
+        payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
+        if actual_tokens is not None:
+            payload["actual_tokens"] = actual_tokens
+        self._post("/report", payload)
 
     def report_rate_limit(self, model_id: str, error_type: str = "tpm") -> None:
         _logger.debug("report: model_id=%s outcome=rate_limit error_type=%s", model_id, error_type)
@@ -402,8 +405,8 @@ class ProvizElekto:
             )
             try:
                 response = fn(candidate)
-                self.report_success(candidate.model_id)
                 prompt, completion, total = _extract_usage(response)
+                self.report_success(candidate.model_id, estimated_tokens=estimated_tokens, actual_tokens=total)
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d",
                     candidate.brand_slug, candidate.model_slug, prompt, completion, total,
