@@ -9,6 +9,7 @@ import select as _select
 import shutil
 import socket
 import subprocess
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -322,6 +323,21 @@ class ProvizElekto:
                 )
             raise ProvizError(f"HTTP {e.code}: {payload}") from e
 
+    def _post_fire_and_forget(self, path: str, body: dict) -> None:
+        """Send a report in a background thread — caller is not blocked.
+
+        Used exclusively for success reports where the LLM response is already
+        in hand. Rate-limit and error reports must use _post (synchronous) so
+        that the model is blocked in proviz before the retry select() call.
+        """
+        def _send() -> None:
+            try:
+                self._post(path, body)
+            except Exception as exc:
+                _logger.debug("background report failed (path=%s): %s", path, exc)
+
+        threading.Thread(target=_send, daemon=True, name="proviz-report").start()
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def select(
@@ -391,7 +407,10 @@ class ProvizElekto:
             payload["remaining_requests"] = remaining_requests
         if remaining_tokens is not None:
             payload["remaining_tokens"] = remaining_tokens
-        self._post("/report", payload)
+        # Fire-and-forget: the LLM result is already in hand, no need to block
+        # the caller while we send usage + remaining-limit data back to proviz.
+        # Rate-limit/error reports remain synchronous (must arrive before retry select()).
+        self._post_fire_and_forget("/report", payload)
 
     def report_rate_limit(self, model_id: str, error_type: str = "tpm") -> None:
         _logger.debug("report: model_id=%s outcome=rate_limit error_type=%s", model_id, error_type)
