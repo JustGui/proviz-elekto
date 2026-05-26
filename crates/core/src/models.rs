@@ -195,6 +195,15 @@ pub struct ReportRequest {
     /// Actual tokens consumed as reported by the provider. Improves TPM window accuracy.
     #[serde(default)]
     pub actual_tokens: Option<u64>,
+    /// Remaining requests in the current window as reported by the provider response headers
+    /// (e.g. `x-ratelimit-remaining-requests`). Used to anchor the UsageTracker windows
+    /// against provider reality rather than relying solely on internal estimation.
+    #[serde(default)]
+    pub remaining_requests: Option<u32>,
+    /// Remaining tokens in the current window as reported by the provider response headers
+    /// (e.g. `x-ratelimit-remaining-tokens`).
+    #[serde(default)]
+    pub remaining_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
