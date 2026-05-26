@@ -18,6 +18,7 @@ Your app → pz.call(step, fn)               → CallResult
 
 - **Context-aware selection** - don't waste a 128k model on a 1k prompt
 - **Proactive quota tracking** - sliding-window counters (RPM/TPM/RPD/TPD) plus atomic in-flight reservations; avoids over-booking before any 429 fires
+- **Provider-anchored windows** - every successful call forwards `x-ratelimit-remaining-*` headers back to the server; the window floor is clamped to provider reality so internal estimates can't drift below what the provider actually sees
 - **Scored selection** - picks the best model across all eligible candidates: headroom (50%), quality (25%), cost (15%), latency (10%)
 - **Capability filtering** - hard requirements for function calling, JSON mode
 - **Quality floor** - reject models below a quality threshold per step
@@ -29,6 +30,8 @@ Your app → pz.call(step, fn)               → CallResult
 
 ## Installation
 
+ProvizElekto consists of a Rust server and various clients.
+
 ```bash
 pip install proviz-elekto          # core only
 pip install proviz-elekto[litellm] # + built-in LiteLLM integration
@@ -37,6 +40,13 @@ pip install proviz-elekto[litellm] # + built-in LiteLLM integration
 The `proviz-server` binary is bundled in the wheel.
 
 CLI tool (`proviz`) is also included:
+
+## Documentation
+
+- **Python Guide** - How to use the Python client and LiteLLM integration.
+- **HTTP API Reference** - Endpoint documentation for `/select` and `/report`.
+- **Selection Algorithm** - Details on scoring, headroom, and priority.
+- **Deployment & Docker** - How to run the server in production.
 
 ```bash
 proviz --help
@@ -92,24 +102,36 @@ If you need direct control over selection and reporting:
 candidate = pz.select(step="verdict", estimated_tokens=2500)
 try:
     response = my_llm_call(candidate)
+
+    # Read provider rate-limit headers (Mistral/OpenAI style; Anthropic style also supported)
+    hdrs = getattr(response, "_hidden_params", {}).get("additional_headers") or {}
+    rem_req = hdrs.get("x-ratelimit-remaining-requests")
+    rem_tok = hdrs.get("x-ratelimit-remaining-tokens")
+
     pz.report_success(
         candidate.model_id,
-        estimated_tokens=candidate.estimated_tokens,  # echo back for accurate quota tracking
+        estimated_tokens=candidate.estimated_tokens,  # releases in-flight reservation
         actual_tokens=response.usage.total_tokens,    # improves TPM window accuracy
+        remaining_requests=int(rem_req) if rem_req is not None else None,
+        remaining_tokens=int(rem_tok)   if rem_tok is not None else None,
     )
-except RateLimitError:
-    pz.report_rate_limit(
-        candidate.model_id, "tpm",
-        estimated_tokens=candidate.estimated_tokens,
-    )
+    # report_success is fire-and-forget — returns immediately, HTTP call runs in background
+except RateLimitError as exc:
+    msg = str(exc).lower()
+    if "day" in msg or "daily" in msg:
+        error_type = "tpd"
+    elif "token" in msg:
+        error_type = "tpm"
+    else:
+        error_type = "rpm"
+    pz.report_rate_limit(candidate.model_id, error_type)  # synchronous — must complete before retry
 except Exception:
-    pz.report_error(
-        candidate.model_id, "other",
-        estimated_tokens=candidate.estimated_tokens,
-    )
+    pz.report_error(candidate.model_id, "other")
 ```
 
 `estimated_tokens` in each report call releases the in-flight reservation made at selection time. Omitting it is safe (legacy clients work unchanged) but leaves the in-flight counter inflated until the next selection clears it.
+
+`report_success` is non-blocking: the HTTP call to proviz runs in a background daemon thread so the caller receives the LLM result without waiting for the round-trip. `report_rate_limit` and `report_error` remain synchronous because the model must be blocked in proviz before the retry `select()` call.
 
 ## Catalog Setup
 
@@ -318,6 +340,58 @@ Windows are updated on every `/report` call. In-flight reservations
 window sums when computing headroom — preventing over-booking under
 concurrent load.
 
+When `remaining_requests` or `remaining_tokens` are included in a `/report` payload,
+the server stores them as a floor for the corresponding window: `effective_used = max(window_sum, limit - remaining)`.
+This means if the provider reports fewer remaining requests/tokens than the local window
+suggests, the server trusts the provider. In-flight requests (not yet acknowledged by
+the provider) are still added on top.
+
+### Transient exhaustion and retry hints
+
+When all models fail Pass 1, `AllModelsExhausted` is raised (HTTP 409). To help callers
+recover automatically without busy-polling, the response includes a `retry_after_ms` hint:
+
+```json
+{
+  "error": "all_models_exhausted",
+  "step": "detector",
+  "tried": 14,
+  "retry_after_ms": 1820
+}
+```
+
+The hint is the **earliest time any model can regain positive headroom**:
+- Rate-limited models (reactive block): remaining TTL on their cooldown.
+- Headroom-exhausted models (proactive quota): time until the oldest window entry leaves the 60 s RPM/TPM window.
+- In-flight-only models (no window history yet): 2 000 ms conservative default — in-flight tokens are released as soon as current LLM calls complete.
+
+**Python `call()` / `call_litellm()` built-in retry:**
+
+```python
+# Retry for up to 60 s when transiently exhausted (default when using model_selector.py)
+result = pz.call_litellm(
+    step="detector",
+    messages=messages,
+    max_wait_secs=60,   # sleep retry_after_ms, keep retrying until budget spent
+)
+
+# Disable retry (raise immediately)
+result = pz.call_litellm(step="detector", messages=messages, max_wait_secs=0)
+```
+
+The sleep uses `retry_after_ms × uniform(0.8, 1.2)` jitter so concurrent workers don't
+all wake up and hammer the same freed slots simultaneously.
+
+When using `model_selector.py` (the rtfc wrapper), the default is controlled by the
+`PROVIZ_MAX_WAIT_SECS` environment variable (default `60`).
+
+The exhaustion WARN log now includes both retry hint components for debugging:
+```
+WARN all models exhausted step=worker_verdict tried=13 retry_after_ms=2000
+     retry_after_ms_rate=Some(58000) retry_after_ms_headroom=Some(2000)
+     rate_limited=7 headroom_exhausted=6
+```
+
 ## Priority System
 
 Two independent priority axes control selection order. Both use **lower = preferred**.
@@ -471,10 +545,11 @@ Response `409` (all candidates exhausted):
 ```json
 {
   "model_id": "b3f1...",
-  "outcome": "rate_limit",
-  "error_type": "tpm",
+  "outcome": "success",
   "estimated_tokens": 2500,
-  "actual_tokens": 1843
+  "actual_tokens": 1843,
+  "remaining_requests": 47,
+  "remaining_tokens": 82340
 }
 ```
 
@@ -485,10 +560,10 @@ Response `409` (all candidates exhausted):
 | `error_type` | for `rate_limit`/`error` | `tpm` \| `rpm` \| `tpd` \| `auth` \| `timeout` \| `parse` \| `other` |
 | `estimated_tokens` | recommended | Echo of `ModelCandidate.estimated_tokens` — releases the in-flight reservation |
 | `actual_tokens` | optional | Real token count from provider — improves TPM window accuracy |
+| `remaining_requests` | optional | Value of `x-ratelimit-remaining-requests` (or `anthropic-ratelimit-requests-remaining`) from the provider response. Anchors the RPM window floor to provider reality. |
+| `remaining_tokens` | optional | Value of `x-ratelimit-remaining-tokens` (or `anthropic-ratelimit-tokens-remaining`) from the provider response. Anchors the TPM window floor to provider reality. |
 
-`estimated_tokens` and `actual_tokens` are optional for backward compatibility. Omitting
-`estimated_tokens` leaves the in-flight counter inflated, which is safe (pessimistic) but
-causes the model to appear more loaded than it is until the in-flight window clears.
+All fields except `model_id` and `outcome` are optional for backward compatibility. `remaining_requests`/`remaining_tokens` should be sent on every `success` outcome when the provider includes rate-limit headers — they prevent internal window estimates from drifting below what the provider actually sees, reducing unnecessary over-booking.
 
 ### `GET /health`
 
