@@ -409,6 +409,8 @@ impl Selector {
                 step = %req.step,
                 tried,
                 retry_after_ms,
+                retry_after_ms_rate = ?rate_ms,
+                retry_after_ms_headroom = ?headroom_ms,
                 rate_limited = rate_limited_ids.len(),
                 headroom_exhausted = headroom_exhausted_ids.len(),
                 "all models exhausted"
