@@ -541,7 +541,7 @@ fn main() {
                         rpd_limit: v["rpd_limit"].as_u64().map(|v| v as u32),
                         tpd_limit: v["tpd_limit"].as_u64(),
                         tpm_limit_month: v["tpm_limit_month"].as_u64(),
-                        rps_limit: v["rps_limit"].as_f64().map(|v| v as f32),
+                        rps_limit: v["rps_limit"].as_f64(),
                         quality_score: v["quality_score"].as_f64(),
                         avg_latency_ms: v["avg_latency_ms"].as_u64().map(|v| v as u32),
                         is_enabled: v["is_enabled"].as_bool().unwrap_or(true),
@@ -928,7 +928,7 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                         rpd_limit: def.rpd_limit.or(existing.rpd_limit),
                         tpd_limit: def.tpd_limit.or(existing.tpd_limit),
                         tpm_limit_month: def.tpm_limit_month.or(existing.tpm_limit_month),
-                        rps_limit: def.rps_limit.map(|v| v as f32).or(existing.rps_limit),
+                        rps_limit: def.rps_limit.or(existing.rps_limit),
                         ..existing.clone()
                     };
                     storage.insert_model(&model).unwrap();
@@ -954,7 +954,7 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                     rpd_limit: def.rpd_limit,
                     tpd_limit: def.tpd_limit,
                     tpm_limit_month: def.tpm_limit_month,
-                    rps_limit: def.rps_limit.map(|v| v as f32),
+                    rps_limit: def.rps_limit,
                     quality_score: def.quality_score,
                     avg_latency_ms: def.avg_latency_ms,
                     is_enabled: true,

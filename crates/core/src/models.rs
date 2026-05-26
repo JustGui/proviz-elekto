@@ -32,7 +32,7 @@ pub struct Model {
     pub rpd_limit: Option<u32>,
     pub tpd_limit: Option<u64>,
     pub tpm_limit_month: Option<u64>,
-    pub rps_limit: Option<f32>,
+    pub rps_limit: Option<f64>,
     pub quality_score: Option<f64>,
     pub avg_latency_ms: Option<u32>,
     pub is_enabled: bool,

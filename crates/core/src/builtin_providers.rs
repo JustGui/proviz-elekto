@@ -93,7 +93,7 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
                 rpd_limit: def.rpd_limit,
                 tpd_limit: def.tpd_limit,
                 tpm_limit_month: def.tpm_limit_month,
-                rps_limit: def.rps_limit.map(|v| v as f32),
+                rps_limit: def.rps_limit,
                 quality_score: def.quality_score,
                 avg_latency_ms: def.avg_latency_ms,
                 is_enabled: true,
