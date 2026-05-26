@@ -163,6 +163,7 @@ impl Selector {
         let cache = guard.as_ref().unwrap();
 
         let synthetic_rules: Vec<SelectionRule>;
+        let use_priority_scoring: bool;
         let rules: &[SelectionRule] = if req.group_id.is_some() || req.group_name.is_some() {
             // Group-based selection: restrict candidates to group members.
             let group_id = if let Some(id) = req.group_id {
@@ -215,8 +216,10 @@ impl Selector {
                     }
                 })
                 .collect();
+            use_priority_scoring = req.use_member_priority;
             &synthetic_rules
         } else {
+            use_priority_scoring = false;
             match cache.rules.get(&req.step) {
                 Some(r) if !r.is_empty() => r.as_slice(),
                 _ => {
@@ -256,6 +259,7 @@ impl Selector {
             rule_priority: i16,
             headroom: f32,
             score: f32,
+            member_priority: Option<i16>,
         }
 
         let mut tried = 0;
@@ -381,6 +385,11 @@ impl Selector {
                 rule_priority: rule.priority,
                 headroom,
                 score: 0.0,
+                member_priority: if use_priority_scoring {
+                    Some(rule.priority)
+                } else {
+                    None
+                },
             });
         }
 
@@ -427,6 +436,18 @@ impl Selector {
         let min_latency = latencies.iter().cloned().min().unwrap_or(0);
         let max_latency = latencies.iter().cloned().max().unwrap_or(0);
 
+        let (min_prio, max_prio) = if use_priority_scoring {
+            let priorities: Vec<i16> = candidates
+                .iter()
+                .filter_map(|c| c.member_priority)
+                .collect();
+            let mn = priorities.iter().cloned().min().unwrap_or(0);
+            let mx = priorities.iter().cloned().max().unwrap_or(0);
+            (mn, mx)
+        } else {
+            (0, 0)
+        };
+
         for c in &mut candidates {
             let quality = c.model.quality_score.unwrap_or(0.5);
 
@@ -445,10 +466,23 @@ impl Selector {
             };
 
             // Clamp headroom to 0 for scoring (last slot = 0, not negative).
-            c.score = 0.50 * c.headroom.max(0.0)
-                + 0.25 * quality as f32
-                + 0.15 * cost_score
-                + 0.10 * latency_score;
+            c.score = if use_priority_scoring {
+                let priority_score = match c.member_priority {
+                    None => 0.5_f32,
+                    Some(_) if max_prio == min_prio => 1.0_f32,
+                    Some(p) => 1.0_f32 - ((p - min_prio) as f32 / (max_prio - min_prio) as f32),
+                };
+                0.35 * c.headroom.max(0.0)
+                    + 0.20 * quality as f32
+                    + 0.15 * cost_score
+                    + 0.10 * latency_score
+                    + 0.20 * priority_score
+            } else {
+                0.50 * c.headroom.max(0.0)
+                    + 0.25 * quality as f32
+                    + 0.15 * cost_score
+                    + 0.10 * latency_score
+            };
         }
 
         // Sort by (score DESC, rule_priority ASC) so priority is the tiebreaker.
