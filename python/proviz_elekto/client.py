@@ -98,6 +98,46 @@ def _extract_usage(response: Any) -> tuple[int, int, int]:
         return 0, 0, 0
 
 
+def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[int]]:
+    """Extract remaining request/token limits from provider response headers.
+
+    Handles OpenAI/Mistral style headers (`x-ratelimit-remaining-*`) and
+    Anthropic style (`anthropic-ratelimit-*-remaining`). LiteLLM stores
+    response headers in `response._hidden_params["additional_headers"]`.
+    """
+    headers: Optional[dict] = None
+    hidden = getattr(response, "_hidden_params", None)
+    if isinstance(hidden, dict):
+        headers = hidden.get("additional_headers") or hidden.get("response_headers")
+    if not isinstance(headers, dict):
+        return None, None
+
+    remaining_requests: Optional[int] = None
+    remaining_tokens: Optional[int] = None
+
+    for key in ("x-ratelimit-remaining-requests", "ratelimit-remaining-requests",
+                "anthropic-ratelimit-requests-remaining"):
+        val = headers.get(key)
+        if val is not None:
+            try:
+                remaining_requests = int(val)
+            except (ValueError, TypeError):
+                pass
+            break
+
+    for key in ("x-ratelimit-remaining-tokens", "ratelimit-remaining-tokens",
+                "anthropic-ratelimit-tokens-remaining"):
+        val = headers.get(key)
+        if val is not None:
+            try:
+                remaining_tokens = int(val)
+            except (ValueError, TypeError):
+                pass
+            break
+
+    return remaining_requests, remaining_tokens
+
+
 def _estimate_tokens(messages: list[dict]) -> int:
     total = sum(len(str(m.get("content", ""))) for m in messages)
     return max(1, total // 4)
@@ -322,11 +362,25 @@ class ProvizElekto:
         )
         return candidate
 
-    def report_success(self, model_id: str, estimated_tokens: int = 0, actual_tokens: Optional[int] = None) -> None:
-        _logger.debug("report: model_id=%s outcome=success actual_tokens=%s", model_id, actual_tokens)
+    def report_success(
+        self,
+        model_id: str,
+        estimated_tokens: int = 0,
+        actual_tokens: Optional[int] = None,
+        remaining_requests: Optional[int] = None,
+        remaining_tokens: Optional[int] = None,
+    ) -> None:
+        _logger.debug(
+            "report: model_id=%s outcome=success actual_tokens=%s remaining_req=%s remaining_tok=%s",
+            model_id, actual_tokens, remaining_requests, remaining_tokens,
+        )
         payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
         if actual_tokens is not None:
             payload["actual_tokens"] = actual_tokens
+        if remaining_requests is not None:
+            payload["remaining_requests"] = remaining_requests
+        if remaining_tokens is not None:
+            payload["remaining_tokens"] = remaining_tokens
         self._post("/report", payload)
 
     def report_rate_limit(self, model_id: str, error_type: str = "tpm") -> None:
@@ -406,10 +460,19 @@ class ProvizElekto:
             try:
                 response = fn(candidate)
                 prompt, completion, total = _extract_usage(response)
-                self.report_success(candidate.model_id, estimated_tokens=estimated_tokens, actual_tokens=total)
+                rem_req, rem_tok = _extract_remaining_limits(response)
+                self.report_success(
+                    candidate.model_id,
+                    estimated_tokens=estimated_tokens,
+                    actual_tokens=total,
+                    remaining_requests=rem_req,
+                    remaining_tokens=rem_tok,
+                )
                 _logger.debug(
-                    "call success: model=%s/%s prompt=%d completion=%d total=%d",
+                    "call success: model=%s/%s prompt=%d completion=%d total=%d "
+                    "remaining_req=%s remaining_tok=%s",
                     candidate.brand_slug, candidate.model_slug, prompt, completion, total,
+                    rem_req, rem_tok,
                 )
                 return CallResult(
                     response=response,
