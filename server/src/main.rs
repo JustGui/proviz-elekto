@@ -199,28 +199,37 @@ async fn handle_report(
         outcome = ?req.outcome,
         error_type = ?req.error_type,
         actual_tokens = ?req.actual_tokens,
+        remaining_requests = ?req.remaining_requests,
+        remaining_tokens = ?req.remaining_tokens,
         "report"
     );
     tokio::task::spawn_blocking(move || {
         let estimated = req.estimated_tokens.unwrap_or(0);
         let actual = req.actual_tokens;
+        let rem_req = req.remaining_requests;
+        let rem_tok = req.remaining_tokens;
         match req.outcome {
             ReportOutcome::Success => {
                 state
                     .selector
-                    .report_success(req.model_id, estimated, actual);
+                    .report_success(req.model_id, estimated, actual, rem_req, rem_tok);
             }
             ReportOutcome::RateLimit => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                state
-                    .selector
-                    .report_rate_limit(req.model_id, et, estimated, actual);
+                state.selector.report_rate_limit(
+                    req.model_id,
+                    et,
+                    estimated,
+                    actual,
+                    rem_req,
+                    rem_tok,
+                );
             }
             ReportOutcome::Error => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
                 state
                     .selector
-                    .report_error(req.model_id, et, estimated, actual);
+                    .report_error(req.model_id, et, estimated, actual, rem_req, rem_tok);
             }
         }
     })

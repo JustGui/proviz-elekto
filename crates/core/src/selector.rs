@@ -531,10 +531,14 @@ impl Selector {
         error_type: RateLimitErrorType,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
+        remaining_requests: Option<u32>,
+        remaining_tokens: Option<u64>,
     ) {
         self.rate_state.mark(model_id, &error_type);
         self.usage_tracker
             .release(model_id, estimated_tokens, actual_tokens);
+        self.usage_tracker
+            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist rate limit event");
         }
@@ -545,10 +549,14 @@ impl Selector {
         model_id: Uuid,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
+        remaining_requests: Option<u32>,
+        remaining_tokens: Option<u64>,
     ) {
         self.rate_state.clear(&model_id);
         self.usage_tracker
             .release(model_id, estimated_tokens, actual_tokens);
+        self.usage_tracker
+            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
     }
 
     pub fn report_error(
@@ -557,10 +565,14 @@ impl Selector {
         error_type: RateLimitErrorType,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
+        remaining_requests: Option<u32>,
+        remaining_tokens: Option<u64>,
     ) {
         self.rate_state.mark(model_id, &error_type);
         self.usage_tracker
             .release(model_id, estimated_tokens, actual_tokens);
+        self.usage_tracker
+            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist error event");
         }

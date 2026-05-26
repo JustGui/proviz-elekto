@@ -22,6 +22,11 @@ struct ModelWindows {
     tpm: VecDeque<WindowEntry>,
     rpd: VecDeque<WindowEntry>,
     tpd: VecDeque<WindowEntry>,
+    /// Last value of `x-ratelimit-remaining-requests` reported by the provider.
+    /// Used as a floor for effective window usage so our estimates can't drift below reality.
+    provider_remaining_requests: Option<u32>,
+    /// Last value of `x-ratelimit-remaining-tokens` reported by the provider.
+    provider_remaining_tokens: Option<u64>,
 }
 
 impl Default for ModelWindows {
@@ -31,6 +36,8 @@ impl Default for ModelWindows {
             tpm: VecDeque::new(),
             rpd: VecDeque::new(),
             tpd: VecDeque::new(),
+            provider_remaining_requests: None,
+            provider_remaining_tokens: None,
         }
     }
 }
@@ -125,6 +132,30 @@ impl UsageTracker {
         });
     }
 
+    /// Record provider-reported remaining capacity from response headers.
+    ///
+    /// Called alongside `release()` on every successful response. The stored values are used
+    /// in `headroom()` as a floor: `effective_used = max(window_sum, limit - remaining)`.
+    /// This prevents our window estimates from drifting below what the provider actually sees.
+    pub fn anchor_remaining(
+        &self,
+        model_id: Uuid,
+        remaining_requests: Option<u32>,
+        remaining_tokens: Option<u64>,
+    ) {
+        if remaining_requests.is_none() && remaining_tokens.is_none() {
+            return;
+        }
+        let usage = self.get_or_default(model_id);
+        let mut w = usage.windows.lock().unwrap();
+        if let Some(r) = remaining_requests {
+            w.provider_remaining_requests = Some(r);
+        }
+        if let Some(t) = remaining_tokens {
+            w.provider_remaining_tokens = Some(t);
+        }
+    }
+
     /// Earliest time (ms from now) at which any of the supplied models may regain positive headroom,
     /// based on the oldest sliding-window entry leaving the 60-second RPM/TPM window.
     ///
@@ -209,14 +240,33 @@ impl UsageTracker {
         let rpd_count = window_sum(&w.rpd);
         let tpd_sum = window_sum(&w.tpd);
 
+        // Use provider-reported remaining as a floor: if the provider says fewer requests/tokens
+        // remain than our window suggests, trust the provider. In-flight (not yet acknowledged
+        // by the provider) is always added on top.
+        let effective_rpm =
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, model.rpm_limit) {
+                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                rpm_count.max(provider_used)
+            } else {
+                rpm_count
+            };
+
+        let effective_tpm =
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, model.tpm_limit) {
+                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                tpm_sum.max(provider_used)
+            } else {
+                tpm_sum
+            };
+
         let mut min_hr: f32 = 1.0;
 
         if let Some(limit) = model.rpm_limit {
-            let projected = rpm_count + in_flight_req + 1;
+            let projected = effective_rpm + in_flight_req + 1;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
         if let Some(limit) = model.tpm_limit {
-            let projected = tpm_sum + in_flight_tok + estimated_tokens;
+            let projected = effective_tpm + in_flight_tok + estimated_tokens;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
         if let Some(limit) = model.rpd_limit {
