@@ -1298,7 +1298,7 @@ dependencies = [
 
 [[package]]
 name = "proviz"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "clap",
@@ -1314,7 +1314,7 @@ dependencies = [
 
 [[package]]
 name = "proviz-elekto-core"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "dashmap",
@@ -1328,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "proviz-elekto-storage-common"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "proviz-elekto-core",
@@ -1337,7 +1337,7 @@ dependencies = [
 
 [[package]]
 name = "proviz-elekto-storage-pg"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "postgres",
@@ -1350,7 +1350,7 @@ dependencies = [
 
 [[package]]
 name = "proviz-elekto-storage-sqlite"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "chrono",
  "proviz-elekto-core",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "proviz-server"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "axum",
  "clap",
