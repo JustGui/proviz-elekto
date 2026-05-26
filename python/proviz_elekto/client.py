@@ -4,6 +4,7 @@ import atexit
 import json
 import logging
 import os
+import random
 import select as _select
 import shutil
 import socket
@@ -70,19 +71,28 @@ class CallResult:
 def _classify_error(exc: Exception) -> tuple[str, str]:
     status = getattr(exc, "status_code", None)
     cls = type(exc).__name__
+    cls_lower = cls.lower()
+    msg = str(exc).lower()
 
-    if status == 429 or "RateLimit" in cls:
-        msg = str(exc).lower()
-        if "day" in msg or "tpd" in msg:
+    is_rate_limit = (
+        status == 429
+        or "ratelimit" in cls_lower
+        or "rate_limit" in cls_lower
+        # some providers surface 429 via response body without setting status_code
+        or ("429" in msg and "rate" in msg)
+    )
+
+    if is_rate_limit:
+        if "day" in msg or "tpd" in msg or "daily" in msg:
             return "rate_limit", "tpd"
         if "token" in msg or "tpm" in msg:
             return "rate_limit", "tpm"
         return "rate_limit", "rpm"
 
-    if status in (401, 403) or "Auth" in cls:
+    if status in (401, 403) or "auth" in cls_lower:
         return "error", "auth"
 
-    if "Timeout" in cls or status == 408:
+    if "timeout" in cls_lower or status == 408:
         return "error", "timeout"
 
     return "error", "other"
@@ -443,11 +453,14 @@ class ProvizElekto:
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
                     remaining = wait_deadline - time.monotonic()
-                    wait = min(e.retry_after_ms / 1000.0, remaining)
-                    if wait > 0:
+                    base_wait = min(e.retry_after_ms / 1000.0, remaining)
+                    if base_wait > 0:
+                        # Jitter ±20% so concurrent workers don't all retry simultaneously.
+                        wait = base_wait * random.uniform(0.8, 1.2)
+                        wait = min(wait, remaining)
                         _logger.debug(
-                            "step=%s all models exhausted, retrying in %.1fs "
-                            "(retry_after_ms=%d, attempt=%d)",
+                            "step=%s all models exhausted, retrying in %.2fs "
+                            "(retry_after_ms=%d, jittered, attempt=%d)",
                             step, wait, e.retry_after_ms, attempt,
                         )
                         time.sleep(wait)
