@@ -127,6 +127,7 @@ def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[in
     remaining_tokens: Optional[int] = None
 
     for key in ("x-ratelimit-remaining-requests", "ratelimit-remaining-requests",
+                "x-ratelimit-remaining-req-minute",
                 "anthropic-ratelimit-requests-remaining"):
         val = headers.get(key)
         if val is not None:
@@ -137,6 +138,7 @@ def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[in
             break
 
     for key in ("x-ratelimit-remaining-tokens", "ratelimit-remaining-tokens",
+                "x-ratelimit-remaining-tokens-minute",
                 "anthropic-ratelimit-tokens-remaining"):
         val = headers.get(key)
         if val is not None:
