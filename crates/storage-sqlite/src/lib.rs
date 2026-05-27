@@ -261,6 +261,24 @@ impl CatalogStorage for SqliteStorage {
         Ok(())
     }
 
+    fn sync_model_limits(
+        &self,
+        model_id: Uuid,
+        rpm: Option<u32>,
+        tpm: Option<u32>,
+    ) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pz_models \
+             SET rpm_limit = COALESCE(?1, rpm_limit), \
+                 tpm_limit = COALESCE(?2, tpm_limit) \
+             WHERE id = ?3",
+            params![rpm, tpm, model_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn set_brand_active(&self, brand_id: Uuid, active: bool) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

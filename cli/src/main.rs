@@ -737,6 +737,7 @@ fn main() {
                 group_id,
                 group_name,
                 use_member_priority: true,
+                max_wait_ms: None,
             };
             match selector.select(&req) {
                 Ok(c) => {

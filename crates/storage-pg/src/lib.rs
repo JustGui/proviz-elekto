@@ -210,6 +210,27 @@ impl CatalogStorage for PostgresStorage {
         Ok(())
     }
 
+    fn sync_model_limits(
+        &self,
+        model_id: Uuid,
+        rpm: Option<u32>,
+        tpm: Option<u32>,
+    ) -> StorageResult<()> {
+        let mut client = self.client.lock().unwrap();
+        let rpm_i = rpm.map(|v| v as i32);
+        let tpm_i = tpm.map(|v| v as i32);
+        client
+            .execute(
+                "UPDATE pz_models \
+                 SET rpm_limit = COALESCE($1, rpm_limit), \
+                     tpm_limit = COALESCE($2, tpm_limit) \
+                 WHERE id = $3",
+                &[&rpm_i, &tpm_i, &model_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn set_brand_active(&self, brand_id: Uuid, active: bool) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
         client

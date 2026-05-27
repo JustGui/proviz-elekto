@@ -159,6 +159,11 @@ pub struct SelectRequest {
     /// When false, only brand.priority and the selection score determine order.
     #[serde(default = "default_true")]
     pub use_member_priority: bool,
+    /// Maximum time (ms) to wait server-side if all models are exhausted.
+    /// When set and `retry_after_ms <= max_wait_ms`, the server sleeps and retries the
+    /// selection once before returning 409. Saves a client round-trip on short waits.
+    #[serde(default)]
+    pub max_wait_ms: Option<u64>,
 }
 
 fn default_true() -> bool {
@@ -204,6 +209,18 @@ pub struct ReportRequest {
     /// (e.g. `x-ratelimit-remaining-tokens`).
     #[serde(default)]
     pub remaining_tokens: Option<u64>,
+    /// Actual RPM limit reported by the provider (e.g. `x-ratelimit-limit-req-minute`).
+    /// When `sync_limits=true`, overwrites the model's `rpm_limit` in storage if it changed.
+    #[serde(default)]
+    pub limit_requests: Option<u32>,
+    /// Actual TPM limit reported by the provider (e.g. `x-ratelimit-limit-tokens-minute`).
+    /// When `sync_limits=true`, overwrites the model's `tpm_limit` in storage if it changed.
+    #[serde(default)]
+    pub limit_tokens: Option<u32>,
+    /// When true, sync `limit_requests`/`limit_tokens` back to the DB if they differ from the
+    /// stored values. Keeps configured limits aligned with actual provider plan without manual edits.
+    #[serde(default)]
+    pub sync_limits: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

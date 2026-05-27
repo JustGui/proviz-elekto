@@ -109,46 +109,66 @@ def _extract_usage(response: Any) -> tuple[int, int, int]:
         return 0, 0, 0
 
 
-def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[int]]:
-    """Extract remaining request/token limits from provider response headers.
+def _extract_provider_limits(
+    response: Any,
+) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    """Extract remaining and limit request/token values from provider response headers.
 
-    Handles OpenAI/Mistral style headers (`x-ratelimit-remaining-*`) and
-    Anthropic style (`anthropic-ratelimit-*-remaining`). LiteLLM stores
-    response headers in `response._hidden_params["additional_headers"]`.
+    Returns ``(remaining_requests, remaining_tokens, limit_requests, limit_tokens)``.
+
+    Handles OpenAI/Mistral style headers (`x-ratelimit-remaining-*`, `x-ratelimit-limit-*`)
+    and Anthropic style (`anthropic-ratelimit-*-remaining`, `anthropic-ratelimit-*-limit`).
+    LiteLLM stores response headers in `response._hidden_params["additional_headers"]`.
     """
     headers: Optional[dict] = None
     hidden = getattr(response, "_hidden_params", None)
     if isinstance(hidden, dict):
         headers = hidden.get("additional_headers") or hidden.get("response_headers")
     if not isinstance(headers, dict):
-        return None, None
+        return None, None, None, None
 
-    remaining_requests: Optional[int] = None
-    remaining_tokens: Optional[int] = None
+    def _parse(keys: tuple[str, ...]) -> Optional[int]:
+        for key in keys:
+            val = headers.get(key)
+            if val is not None:
+                try:
+                    return int(val)
+                except (ValueError, TypeError):
+                    pass
+        return None
 
-    for key in ("x-ratelimit-remaining-requests", "ratelimit-remaining-requests",
-                "x-ratelimit-remaining-req-minute",
-                "anthropic-ratelimit-requests-remaining"):
-        val = headers.get(key)
-        if val is not None:
-            try:
-                remaining_requests = int(val)
-            except (ValueError, TypeError):
-                pass
-            break
+    remaining_requests = _parse((
+        "x-ratelimit-remaining-requests",
+        "ratelimit-remaining-requests",
+        "x-ratelimit-remaining-req-minute",
+        "anthropic-ratelimit-requests-remaining",
+    ))
+    remaining_tokens = _parse((
+        "x-ratelimit-remaining-tokens",
+        "ratelimit-remaining-tokens",
+        "x-ratelimit-remaining-tokens-minute",
+        "anthropic-ratelimit-tokens-remaining",
+    ))
+    limit_requests = _parse((
+        "x-ratelimit-limit-requests",
+        "ratelimit-limit-requests",
+        "x-ratelimit-limit-req-minute",
+        "anthropic-ratelimit-requests-limit",
+    ))
+    limit_tokens = _parse((
+        "x-ratelimit-limit-tokens",
+        "ratelimit-limit-tokens",
+        "x-ratelimit-limit-tokens-minute",
+        "anthropic-ratelimit-tokens-limit",
+    ))
 
-    for key in ("x-ratelimit-remaining-tokens", "ratelimit-remaining-tokens",
-                "x-ratelimit-remaining-tokens-minute",
-                "anthropic-ratelimit-tokens-remaining"):
-        val = headers.get(key)
-        if val is not None:
-            try:
-                remaining_tokens = int(val)
-            except (ValueError, TypeError):
-                pass
-            break
+    return remaining_requests, remaining_tokens, limit_requests, limit_tokens
 
-    return remaining_requests, remaining_tokens
+
+def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[int]]:
+    """Thin wrapper kept for backwards compatibility. Prefer _extract_provider_limits."""
+    rem_req, rem_tok, _, _ = _extract_provider_limits(response)
+    return rem_req, rem_tok
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -220,6 +240,7 @@ class ProvizElekto:
         port: int = 0,
         timeout: float = 5.0,
         startup_timeout: float = 10.0,
+        sync_provider_limits: bool = False,
     ):
         self._proc: Optional[subprocess.Popen] = None
         host = os.environ.get("PROVIZ_HOST", host)
@@ -228,6 +249,7 @@ class ProvizElekto:
         self._port = port
         self._base = f"http://{host}:{port}"
         self._timeout = timeout
+        self._sync_provider_limits = sync_provider_limits
 
         # If pointing at a remote host (not localhost), never spawn — just attach.
         if host != "localhost" and port > 0:
@@ -354,6 +376,7 @@ class ProvizElekto:
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         use_member_priority: bool = True,
+        max_wait_ms: Optional[int] = None,
     ) -> ModelCandidate:
         payload: dict = {
             "step": step,
@@ -369,9 +392,11 @@ class ProvizElekto:
             payload["group_id"] = group_id
         if group_name is not None:
             payload["group_name"] = group_name
+        if max_wait_ms is not None:
+            payload["max_wait_ms"] = max_wait_ms
         _logger.debug(
-            "select request: step=%s estimated_tokens=%d group_name=%s group_id=%s",
-            step, estimated_tokens, group_name, group_id,
+            "select request: step=%s estimated_tokens=%d group_name=%s group_id=%s max_wait_ms=%s",
+            step, estimated_tokens, group_name, group_id, max_wait_ms,
         )
         r = self._post("/select", payload)
         candidate = ModelCandidate(
@@ -397,10 +422,14 @@ class ProvizElekto:
         actual_tokens: Optional[int] = None,
         remaining_requests: Optional[int] = None,
         remaining_tokens: Optional[int] = None,
+        limit_requests: Optional[int] = None,
+        limit_tokens: Optional[int] = None,
     ) -> None:
         _logger.debug(
-            "report: model_id=%s outcome=success actual_tokens=%s remaining_req=%s remaining_tok=%s",
+            "report: model_id=%s outcome=success actual_tokens=%s remaining_req=%s remaining_tok=%s "
+            "limit_req=%s limit_tok=%s sync=%s",
             model_id, actual_tokens, remaining_requests, remaining_tokens,
+            limit_requests, limit_tokens, self._sync_provider_limits,
         )
         payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
         if actual_tokens is not None:
@@ -409,6 +438,12 @@ class ProvizElekto:
             payload["remaining_requests"] = remaining_requests
         if remaining_tokens is not None:
             payload["remaining_tokens"] = remaining_tokens
+        if self._sync_provider_limits:
+            if limit_requests is not None:
+                payload["limit_requests"] = limit_requests
+            if limit_tokens is not None:
+                payload["limit_tokens"] = limit_tokens
+            payload["sync_limits"] = True
         # Fire-and-forget: the LLM result is already in hand, no need to block
         # the caller while we send usage + remaining-limit data back to proviz.
         # Rate-limit/error reports remain synchronous (must arrive before retry select()).
@@ -461,6 +496,13 @@ class ProvizElekto:
         attempt = 0
         while True:
             attempt += 1
+            # Pass the remaining wall-clock budget as max_wait_ms so the server can
+            # sleep-and-retry internally before returning 409, saving a round-trip.
+            server_wait_ms: Optional[int] = None
+            if wait_deadline is not None:
+                remaining_budget = wait_deadline - time.monotonic()
+                if remaining_budget > 0:
+                    server_wait_ms = int(remaining_budget * 1000)
             try:
                 candidate = self.select(
                     step=step,
@@ -470,6 +512,7 @@ class ProvizElekto:
                     quality_min=quality_min,
                     exclude_ids=permanent_skip,
                     categories=categories,
+                    max_wait_ms=server_wait_ms,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -494,19 +537,21 @@ class ProvizElekto:
             try:
                 response = fn(candidate)
                 prompt, completion, total = _extract_usage(response)
-                rem_req, rem_tok = _extract_remaining_limits(response)
+                rem_req, rem_tok, lim_req, lim_tok = _extract_provider_limits(response)
                 self.report_success(
                     candidate.model_id,
                     estimated_tokens=estimated_tokens,
                     actual_tokens=total,
                     remaining_requests=rem_req,
                     remaining_tokens=rem_tok,
+                    limit_requests=lim_req,
+                    limit_tokens=lim_tok,
                 )
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d "
-                    "remaining_req=%s remaining_tok=%s",
+                    "remaining_req=%s remaining_tok=%s limit_req=%s limit_tok=%s",
                     candidate.brand_slug, candidate.model_slug, prompt, completion, total,
-                    rem_req, rem_tok,
+                    rem_req, rem_tok, lim_req, lim_tok,
                 )
                 return CallResult(
                     response=response,

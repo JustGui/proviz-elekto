@@ -21,6 +21,14 @@ pub trait CatalogStorage: Send + Sync {
     fn delete_rule(&self, rule_id: Uuid) -> StorageResult<()>;
     fn set_model_enabled(&self, model_id: Uuid, enabled: bool) -> StorageResult<()>;
     fn set_brand_active(&self, brand_id: Uuid, active: bool) -> StorageResult<()>;
+    /// Overwrite `rpm_limit` and/or `tpm_limit` for a model when the provider reports
+    /// different values via response headers. Only non-None fields are updated.
+    fn sync_model_limits(
+        &self,
+        model_id: Uuid,
+        rpm: Option<u32>,
+        tpm: Option<u32>,
+    ) -> StorageResult<()>;
 
     // Groups
     fn load_groups(&self) -> StorageResult<Vec<Group>>;

@@ -89,6 +89,7 @@ fn base_req() -> SelectRequest {
         group_id: None,
         group_name: None,
         use_member_priority: true,
+        max_wait_ms: None,
     }
 }
 

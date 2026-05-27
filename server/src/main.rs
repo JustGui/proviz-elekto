@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{ConnectInfo, State},
@@ -140,9 +140,41 @@ async fn handle_select(
         quality_min = req.quality_min,
         "select request"
     );
-    let result = tokio::task::spawn_blocking(move || state.selector.select(&req))
-        .await
-        .expect("select task panicked");
+
+    let max_wait_ms = req.max_wait_ms;
+
+    // First attempt.
+    let result = {
+        let state2 = state.clone();
+        let req2 = req.clone();
+        tokio::task::spawn_blocking(move || state2.selector.select(&req2))
+            .await
+            .expect("select task panicked")
+    };
+
+    // If all models are exhausted and the caller supplied a wait budget that covers the hint,
+    // sleep until the soonest model's window drains, then retry once.
+    let result = match result {
+        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted {
+            ref step,
+            tried,
+            retry_after_ms,
+        }) if max_wait_ms.map_or(false, |max| retry_after_ms > 0 && retry_after_ms <= max) => {
+            debug!(
+                peer = %peer,
+                step = %step,
+                tried,
+                retry_after_ms,
+                "all models exhausted — sleeping before retry"
+            );
+            tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
+            tokio::task::spawn_blocking(move || state.selector.select(&req))
+                .await
+                .expect("select retry panicked")
+        }
+        other => other,
+    };
+
     match result {
         Ok(candidate) => {
             debug!(
@@ -231,6 +263,11 @@ async fn handle_report(
                     .selector
                     .report_error(req.model_id, et, estimated, actual, rem_req, rem_tok);
             }
+        }
+        if req.sync_limits {
+            state
+                .selector
+                .sync_provider_limits(req.model_id, req.limit_requests, req.limit_tokens);
         }
     })
     .await

@@ -580,6 +580,50 @@ impl Selector {
         }
     }
 
+    /// Update `rpm_limit` / `tpm_limit` for a model when the provider reports different values
+    /// via response headers. Only writes to storage (and patches the in-memory cache) if the
+    /// value actually changed, so hot-path overhead is a single cache read in the common case.
+    pub fn sync_provider_limits(&self, model_id: Uuid, rpm: Option<u32>, tpm: Option<u32>) {
+        if rpm.is_none() && tpm.is_none() {
+            return;
+        }
+        let needs_update = {
+            let guard = self.cache.read().unwrap();
+            guard
+                .as_ref()
+                .and_then(|c| c.models.get(&model_id))
+                .map(|m| {
+                    (rpm.is_some() && rpm != m.rpm_limit) || (tpm.is_some() && tpm != m.tpm_limit)
+                })
+                .unwrap_or(false)
+        };
+        if !needs_update {
+            return;
+        }
+        if let Err(e) = self.storage.sync_model_limits(model_id, rpm, tpm) {
+            warn!(model_id = %model_id, error = %e, "failed to persist synced provider limits");
+            return;
+        }
+        // Patch the in-memory cache without a full reload.
+        let mut guard = self.cache.write().unwrap();
+        if let Some(cache) = guard.as_mut() {
+            if let Some(model) = cache.models.get_mut(&model_id) {
+                if let Some(r) = rpm {
+                    model.rpm_limit = Some(r);
+                }
+                if let Some(t) = tpm {
+                    model.tpm_limit = Some(t);
+                }
+                info!(
+                    model = %model.slug,
+                    rpm = ?rpm,
+                    tpm = ?tpm,
+                    "synced provider limits from response headers"
+                );
+            }
+        }
+    }
+
     pub fn storage(&self) -> &Arc<dyn CatalogStorage> {
         &self.storage
     }
