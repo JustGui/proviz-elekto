@@ -571,23 +571,26 @@ impl Selector {
 
         // Compute actual cost from model prices + token breakdown when available.
         let guard = self.cache.read().unwrap();
-        guard.as_ref().and_then(|c| c.models.get(&model_id)).and_then(|m| {
-            let in_cost = m
-                .price_input_per_1m
-                .zip(prompt_tokens)
-                .map(|(p, t)| p * t as f64 / 1_000_000.0)
-                .unwrap_or(0.0);
-            let out_cost = m
-                .price_output_per_1m
-                .zip(completion_tokens)
-                .map(|(p, t)| p * t as f64 / 1_000_000.0)
-                .unwrap_or(0.0);
-            if m.price_input_per_1m.is_some() || m.price_output_per_1m.is_some() {
-                Some(in_cost + out_cost)
-            } else {
-                None
-            }
-        })
+        guard
+            .as_ref()
+            .and_then(|c| c.models.get(&model_id))
+            .and_then(|m| {
+                let in_cost = m
+                    .price_input_per_1m
+                    .zip(prompt_tokens)
+                    .map(|(p, t)| p * t as f64 / 1_000_000.0)
+                    .unwrap_or(0.0);
+                let out_cost = m
+                    .price_output_per_1m
+                    .zip(completion_tokens)
+                    .map(|(p, t)| p * t as f64 / 1_000_000.0)
+                    .unwrap_or(0.0);
+                if m.price_input_per_1m.is_some() || m.price_output_per_1m.is_some() {
+                    Some(in_cost + out_cost)
+                } else {
+                    None
+                }
+            })
     }
 
     pub fn report_error(
