@@ -123,13 +123,13 @@ impl CatalogStorage for PostgresStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
         client.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at,traffic_weight)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
              ON CONFLICT (slug) DO UPDATE SET
                name=EXCLUDED.name, api_key_env=EXCLUDED.api_key_env,
                base_url=EXCLUDED.base_url, is_active=EXCLUDED.is_active,
-               priority=EXCLUDED.priority",
-            &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at],
+               priority=EXCLUDED.priority, traffic_weight=EXCLUDED.traffic_weight",
+            &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -376,14 +376,15 @@ impl CatalogStorage for PostgresStorage {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS pz_brands (
-    id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
-    slug        VARCHAR(50)  UNIQUE NOT NULL,
-    name        VARCHAR(100) NOT NULL,
-    api_key_env VARCHAR(100),
-    base_url    VARCHAR(255),
-    is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
-    priority    SMALLINT     NOT NULL DEFAULT 0,
-    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    id             UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    slug           VARCHAR(50)      UNIQUE NOT NULL,
+    name           VARCHAR(100)     NOT NULL,
+    api_key_env    VARCHAR(100),
+    base_url       VARCHAR(255),
+    is_active      BOOLEAN          NOT NULL DEFAULT TRUE,
+    priority       SMALLINT         NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
+    traffic_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (

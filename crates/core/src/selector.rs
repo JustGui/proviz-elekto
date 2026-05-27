@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
-    sync::{Arc, RwLock},
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
 };
 
+use dashmap::DashMap;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
@@ -17,6 +18,9 @@ use crate::{
     storage::CatalogStorage,
     usage_tracker::UsageTracker,
 };
+
+/// Rolling window (seconds) for per-brand traffic-share tracking.
+const TRAFFIC_WINDOW_SECS: u64 = 300;
 
 const CACHE_TTL_SECS: u64 = 300; // 5 minutes
 
@@ -37,6 +41,9 @@ pub struct Selector {
     cache: RwLock<Option<CatalogCache>>,
     rate_state: RateLimitState,
     usage_tracker: UsageTracker,
+    /// Per-brand selection timestamps for traffic-share balancing.
+    /// Entries older than TRAFFIC_WINDOW_SECS are drained lazily on each selection.
+    brand_traffic: DashMap<Uuid, Arc<Mutex<VecDeque<Instant>>>>,
 }
 
 impl Selector {
@@ -46,6 +53,7 @@ impl Selector {
             cache: RwLock::new(None),
             rate_state: RateLimitState::new(),
             usage_tracker: UsageTracker::new(),
+            brand_traffic: DashMap::new(),
         }
     }
 
@@ -251,22 +259,26 @@ impl Selector {
         let exclude_set: std::collections::HashSet<&Uuid> = req.exclude_ids.iter().collect();
         let estimated_tokens = req.estimated_tokens as u64;
 
-        // ── Pass 1: collect all hard-filter-eligible candidates ──────────────────
+        // ── Pass 1: hard filters — only truly unavailable models are excluded ─────
+        //
+        // Headroom is NOT a hard filter: a model that is over its per-minute quota is
+        // still eligible (it may succeed, and if it 429s the reactive RateLimitState
+        // will block it for the appropriate TTL). This guarantees we never return
+        // AllModelsExhausted while any model still has capacity on any window.
 
         struct Candidate<'c> {
             model: &'c Model,
             brand: &'c Brand,
             rule_priority: i16,
-            headroom: f32,
+            fast_headroom: f32,
+            slow_headroom: f32,
             score: f32,
             member_priority: Option<i16>,
         }
 
         let mut tried = 0;
         let mut candidates: Vec<Candidate<'_>> = Vec::new();
-        // Track IDs skipped for each reason to compute retry_after_ms on exhaustion.
         let mut rate_limited_ids: Vec<Uuid> = Vec::new();
-        let mut headroom_exhausted_ids: Vec<Uuid> = Vec::new();
 
         for rule in rules {
             if !rule.is_enabled {
@@ -362,28 +374,34 @@ impl Selector {
             }
 
             if self.rate_state.is_limited(&model.id) {
-                debug!(model = %model.slug, "skipped: rate limited");
+                debug!(model = %model.slug, "skipped: rate limited (reactive)");
                 tried += 1;
                 rate_limited_ids.push(model.id);
                 continue;
             }
 
-            let headroom = self
+            let fast_headroom = self
                 .usage_tracker
-                .headroom(model.id, estimated_tokens, model);
-            if headroom < 0.0 {
-                // Negative = strictly over limit. Zero = last slot, still eligible.
-                debug!(model = %model.slug, headroom, "skipped: usage tracker headroom exhausted");
-                tried += 1;
-                headroom_exhausted_ids.push(model.id);
-                continue;
+                .headroom_fast(model.id, estimated_tokens, model);
+            let slow_headroom = self
+                .usage_tracker
+                .headroom_slow(model.id, estimated_tokens, model);
+
+            if fast_headroom < 0.0 || slow_headroom < 0.0 {
+                debug!(
+                    model = %model.slug,
+                    fast_headroom,
+                    slow_headroom,
+                    "over quota (soft — still eligible)"
+                );
             }
 
             candidates.push(Candidate {
                 model,
                 brand,
                 rule_priority: rule.priority,
-                headroom,
+                fast_headroom,
+                slow_headroom,
                 score: 0.0,
                 member_priority: if use_priority_scoring {
                     Some(rule.priority)
@@ -394,25 +412,15 @@ impl Selector {
         }
 
         if candidates.is_empty() {
-            // Compute how long the caller should wait before retrying.
-            let rate_ms = self.rate_state.min_remaining_ms_for(&rate_limited_ids);
-            let headroom_ms = self
-                .usage_tracker
-                .earliest_drain_ms_for(&headroom_exhausted_ids);
-            let retry_after_ms = match (rate_ms, headroom_ms) {
-                (Some(a), Some(b)) => a.min(b),
-                (Some(a), None) => a,
-                (None, Some(b)) => b,
-                (None, None) => 0,
-            };
+            let retry_after_ms = self
+                .rate_state
+                .min_remaining_ms_for(&rate_limited_ids)
+                .unwrap_or(0);
             warn!(
                 step = %req.step,
                 tried,
                 retry_after_ms,
-                retry_after_ms_rate = ?rate_ms,
-                retry_after_ms_headroom = ?headroom_ms,
                 rate_limited = rate_limited_ids.len(),
-                headroom_exhausted = headroom_exhausted_ids.len(),
                 "all models exhausted"
             );
             return Err(ProvizError::AllModelsExhausted {
@@ -423,6 +431,14 @@ impl Selector {
         }
 
         // ── Pass 2: score across the pool with min-max normalization ─────────────
+        //
+        // Headroom is now split into two signals:
+        //   fast_headroom (RPS/RPM/TPM) — recovers within 60s, penalise lightly
+        //   slow_headroom (RPD/TPD)     — recovers over 24h, penalise heavily
+        //
+        // Both are mapped [-1,1] → [0,1] so over-quota models remain eligible but
+        // rank below models that have capacity.  Traffic balance steers load toward
+        // under-served brands according to their traffic_weight.
 
         let prices: Vec<f64> = candidates
             .iter()
@@ -450,8 +466,84 @@ impl Selector {
             (0, 0)
         };
 
+        // ── Traffic balance ───────────────────────────────────────────────────────
+        // For each candidate brand, compute how much of the recent selection window
+        // it consumed vs how much its traffic_weight entitles it to.
+        // balance_ratio = target_share / (actual_share + ε) — high when under-served.
+        let now = Instant::now();
+        let cutoff = now - Duration::from_secs(TRAFFIC_WINDOW_SECS);
+
+        // Collect recent selection counts per brand across the candidate pool only.
+        let pool_brand_ids: Vec<Uuid> = {
+            let mut ids: Vec<Uuid> = candidates.iter().map(|c| c.brand.id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
+
+        let mut brand_recent: HashMap<Uuid, u64> = HashMap::new();
+        let mut total_recent: u64 = 0;
+        for &bid in &pool_brand_ids {
+            let count = self
+                .brand_traffic
+                .get(&bid)
+                .map(|arc| {
+                    let w = arc.lock().unwrap();
+                    w.iter().filter(|&&t| t > cutoff).count() as u64
+                })
+                .unwrap_or(0);
+            brand_recent.insert(bid, count);
+            total_recent += count;
+        }
+
+        let total_weight: f64 = pool_brand_ids
+            .iter()
+            .map(|id| {
+                cache
+                    .brands
+                    .get(id)
+                    .map(|b| b.traffic_weight.max(0.0))
+                    .unwrap_or(1.0)
+            })
+            .sum::<f64>()
+            .max(f64::EPSILON);
+
+        let balance_ratios: Vec<f32> = pool_brand_ids
+            .iter()
+            .map(|bid| {
+                let target_share = cache
+                    .brands
+                    .get(bid)
+                    .map(|b| b.traffic_weight.max(0.0))
+                    .unwrap_or(1.0)
+                    / total_weight;
+                let actual_share =
+                    brand_recent[bid] as f64 / (total_recent as f64 + f64::EPSILON);
+                (target_share / (actual_share + f64::EPSILON)) as f32
+            })
+            .collect();
+
+        let min_ratio = balance_ratios.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_ratio = balance_ratios
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max);
+        let brand_balance_score: HashMap<Uuid, f32> = pool_brand_ids
+            .iter()
+            .zip(balance_ratios.iter())
+            .map(|(&bid, &r)| {
+                let norm = if (max_ratio - min_ratio).abs() < f32::EPSILON {
+                    0.5_f32
+                } else {
+                    (r - min_ratio) / (max_ratio - min_ratio)
+                };
+                (bid, norm)
+            })
+            .collect();
+
+        // ── Per-candidate scoring ────────────────────────────────────────────────
         for c in &mut candidates {
-            let quality = c.model.quality_score.unwrap_or(0.5);
+            let quality = c.model.quality_score.unwrap_or(0.5) as f32;
 
             let cost_score = match c.model.price_input_per_1m {
                 None => 0.5_f32,
@@ -467,23 +559,35 @@ impl Selector {
                 }
             };
 
-            // Clamp headroom to 0 for scoring (last slot = 0, not negative).
+            // Map headroom [-1, 1] → [0, 1]. Clamped so very negative values
+            // don't dominate — they just score 0 on this component.
+            let fast_hr_norm = (c.fast_headroom.clamp(-1.0, 1.0) + 1.0) / 2.0;
+            let slow_hr_norm = (c.slow_headroom.clamp(-1.0, 1.0) + 1.0) / 2.0;
+
+            let traffic_score = *brand_balance_score.get(&c.brand.id).unwrap_or(&0.5);
+
             c.score = if use_priority_scoring {
                 let priority_score = match c.member_priority {
                     None => 0.5_f32,
                     Some(_) if max_prio == min_prio => 1.0_f32,
                     Some(p) => 1.0_f32 - ((p - min_prio) as f32 / (max_prio - min_prio) as f32),
                 };
-                0.35 * c.headroom.max(0.0)
-                    + 0.20 * quality as f32
+                // With group priority (sum = 1.0)
+                0.20 * fast_hr_norm
+                    + 0.15 * slow_hr_norm
+                    + 0.20 * quality
                     + 0.15 * cost_score
                     + 0.10 * latency_score
-                    + 0.20 * priority_score
+                    + 0.10 * priority_score
+                    + 0.10 * traffic_score
             } else {
-                0.50 * c.headroom.max(0.0)
-                    + 0.25 * quality as f32
+                // Without group (sum = 1.0)
+                0.25 * fast_hr_norm
+                    + 0.20 * slow_hr_norm
+                    + 0.20 * quality
                     + 0.15 * cost_score
                     + 0.10 * latency_score
+                    + 0.10 * traffic_score
             };
         }
 
@@ -501,6 +605,22 @@ impl Selector {
         self.usage_tracker
             .reserve(winner.model.id, estimated_tokens);
 
+        // Record this selection in the brand traffic window for future balance scoring.
+        {
+            let arc = self
+                .brand_traffic
+                .entry(winner.brand.id)
+                .or_insert_with(|| Arc::new(Mutex::new(VecDeque::new())))
+                .value()
+                .clone();
+            let mut w = arc.lock().unwrap();
+            // Drain expired entries lazily.
+            while w.front().map(|&t| t <= cutoff).unwrap_or(false) {
+                w.pop_front();
+            }
+            w.push_back(now);
+        }
+
         let estimated_input_cost_usd = winner
             .model
             .price_input_per_1m
@@ -510,7 +630,8 @@ impl Selector {
             model = %winner.model.slug,
             brand = %winner.brand.slug,
             score = winner.score,
-            headroom = winner.headroom,
+            fast_headroom = winner.fast_headroom,
+            slow_headroom = winner.slow_headroom,
             "selected"
         );
 

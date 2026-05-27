@@ -219,11 +219,100 @@ impl UsageTracker {
         }
     }
 
-    /// Minimum headroom across all applicable limits for a candidate request.
+    /// Headroom considering only fast-recovering windows (RPS 1s, RPM 60s, TPM 60s).
+    ///
+    /// Returns 1.0 when none of these limits are configured (unconstrained on fast windows).
+    /// Negative means over the per-minute/per-second quota but this will recover within 60s.
+    pub fn headroom_fast(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {
+        let usage = self.get_or_default(model_id);
+        let in_flight_req = usage.in_flight_requests.load(Ordering::Relaxed) as u64;
+        let in_flight_tok = usage.in_flight_tokens.load(Ordering::Relaxed);
+
+        let mut w = usage.windows.lock().unwrap();
+        let now = Instant::now();
+
+        drain_before(&mut w.rps, now, 1);
+        drain_before(&mut w.rpm, now, 60);
+        drain_before(&mut w.tpm, now, 60);
+
+        let rps_count = window_sum(&w.rps);
+        let rpm_count = window_sum(&w.rpm);
+        let tpm_sum = window_sum(&w.tpm);
+
+        let effective_rpm =
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, model.rpm_limit) {
+                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                rpm_count.max(provider_used)
+            } else {
+                rpm_count
+            };
+
+        let effective_tpm =
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, model.tpm_limit) {
+                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                tpm_sum.max(provider_used)
+            } else {
+                tpm_sum
+            };
+
+        let mut min_hr: f32 = 1.0;
+
+        if let Some(limit) = model.rps_limit {
+            if limit > 0.0 {
+                let projected = (rps_count + in_flight_req + 1) as f32;
+                min_hr = min_hr.min(1.0_f32 - projected / limit as f32);
+            }
+        }
+        if let Some(limit) = model.rpm_limit {
+            let projected = effective_rpm + in_flight_req + 1;
+            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+        }
+        if let Some(limit) = model.tpm_limit {
+            let projected = effective_tpm + in_flight_tok + estimated_tokens;
+            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+        }
+
+        min_hr
+    }
+
+    /// Headroom considering only slow-recovering windows (RPD 24h, TPD 24h, TPM-month).
+    ///
+    /// Returns 1.0 when none of these limits are configured (unconstrained on long windows).
+    /// Negative means the daily/monthly budget is depleted — recovery takes hours or days.
+    /// Scoring should weigh this heavily to avoid burning irreplaceable long-horizon credits.
+    pub fn headroom_slow(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {
+        let usage = self.get_or_default(model_id);
+        let in_flight_req = usage.in_flight_requests.load(Ordering::Relaxed) as u64;
+        let in_flight_tok = usage.in_flight_tokens.load(Ordering::Relaxed);
+
+        let mut w = usage.windows.lock().unwrap();
+        let now = Instant::now();
+
+        drain_before(&mut w.rpd, now, 86_400);
+        drain_before(&mut w.tpd, now, 86_400);
+
+        let rpd_count = window_sum(&w.rpd);
+        let tpd_sum = window_sum(&w.tpd);
+
+        let mut min_hr: f32 = 1.0;
+
+        if let Some(limit) = model.rpd_limit {
+            let projected = rpd_count + in_flight_req + 1;
+            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+        }
+        if let Some(limit) = model.tpd_limit {
+            let projected = tpd_sum + in_flight_tok + estimated_tokens;
+            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+        }
+
+        min_hr
+    }
+
+    /// Minimum headroom across ALL applicable limits for a candidate request.
     ///
     /// - Positive: room remaining; 1.0 = fully unconstrained.
     /// - 0.0: exactly last slot (eligible but deprioritised by scoring).
-    /// - Negative: over capacity → caller must skip this model.
+    /// - Negative: over capacity.
     ///
     /// Drains expired window entries as a side-effect (amortised cleanup).
     pub fn headroom(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {

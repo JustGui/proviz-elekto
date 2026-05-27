@@ -72,6 +72,7 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
             is_active: true,
             priority: 0,
             created_at: Utc::now(),
+            traffic_weight: 1.0,
         };
         storage.insert_brand(&brand)?;
 

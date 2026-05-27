@@ -20,6 +20,7 @@ fn make_brand(slug: &str, priority: i16) -> Brand {
         is_active: true,
         priority,
         created_at: Utc::now(),
+        traffic_weight: 1.0,
     }
 }
 
@@ -491,8 +492,8 @@ fn rpm_limit_single_model_exhausted() {
     use proviz_elekto_core::storage::CatalogStorage;
     let db = SqliteStorage::open_in_memory().unwrap();
     let brand = make_brand("acme", 0);
-    // rpm_limit=1: last slot is eligible (headroom=0 ≥ 0), then in_flight=1 makes
-    // projected=2 → headroom=-1.0 → filtered.
+    // rpm_limit=1: headroom is NOT a hard filter — an over-quota model remains eligible.
+    // AllModelsExhausted only triggers after the model is reactively rate-limited.
     let tight = Model {
         rpm_limit: Some(1),
         ..make_model(brand.id, "tight", 32_000)
@@ -502,11 +503,18 @@ fn rpm_limit_single_model_exhausted() {
     db.insert_rule(&make_rule("chat", tight.id, 0)).unwrap();
 
     let sel = selector(db);
-    // First select: last slot (headroom=0.0), not filtered (< 0.0 check)
+    // First select: headroom=0.0 (last slot), model is eligible.
     let c1 = sel.select(&base_req()).unwrap();
     assert_eq!(c1.model_slug, "tight");
 
-    // Second select: in_flight=1 → projected=2/1 → headroom=-1.0 → AllModelsExhausted
+    // Second select: in_flight=1 → headroom=-1.0, but still the only candidate (soft filter).
+    let c2 = sel.select(&base_req()).unwrap();
+    assert_eq!(c2.model_slug, "tight");
+
+    // After the provider returns 429, reactive RateLimitState blocks the model.
+    sel.report_rate_limit(tight.id, proviz_elekto_core::models::RateLimitErrorType::Rpm, 0, None, None, None);
+
+    // Now AllModelsExhausted because the only model is reactively blocked.
     let err = sel.select(&base_req()).unwrap_err();
     assert!(matches!(
         err,
@@ -519,8 +527,13 @@ fn headroom_scoring_causes_fallback_when_loaded() {
     use proviz_elekto_core::storage::CatalogStorage;
     // "primary" has high quality (1.0) but rpm_limit=2.
     // "backup" has low quality (0.0) but is unlimited.
-    // Before load: scores tie (quality offsets headroom gap), priority breaks tie → primary.
-    // After 1 reserve: primary headroom drops to 0.0, backup (headroom=1.0) wins by score.
+    // Headroom is a soft signal: primary's quality advantage keeps it winning until its
+    // fast_headroom reaches -1.0 (severely over quota), at which point backup wins.
+    //
+    // Scoring (no group):
+    //   score = 0.25*fast_hr_norm + 0.20*slow_hr_norm + 0.20*quality + 0.15*cost + 0.10*latency + 0.10*traffic
+    // primary with fast_headroom=-1.0: fast_hr_norm=0.0 → score=0.575
+    // backup (unlimited, quality=0.0): fast_hr_norm=1.0 → score=0.625 → backup wins
     let db = SqliteStorage::open_in_memory().unwrap();
     let brand = make_brand("acme", 0);
     let primary = Model {
@@ -539,11 +552,18 @@ fn headroom_scoring_causes_fallback_when_loaded() {
     db.insert_rule(&make_rule("chat", backup.id, 1)).unwrap();
 
     let sel = selector(db);
-    // Primary and backup tie on score (0.625 each); primary wins via rule priority.
+    // Selects 1-3: primary still preferred despite dropping headroom (quality advantage holds).
+    // in_flight=0→1: fast_headroom=0.0, score≈0.70 vs backup 0.625 → primary wins
+    // in_flight=1→2: fast_headroom=-0.5, score≈0.638 vs backup 0.625 → primary wins (tiebreak)
+    // in_flight=2→3: fast_headroom=-1.0, score=0.575 vs backup 0.625 → backup wins
     let c1 = sel.select(&base_req()).unwrap();
     assert_eq!(c1.model_slug, "primary");
-
-    // After reserve: primary headroom=0.0, backup headroom=1.0 → backup wins by score.
     let c2 = sel.select(&base_req()).unwrap();
-    assert_eq!(c2.model_slug, "backup");
+    assert_eq!(c2.model_slug, "primary");
+    let c3 = sel.select(&base_req()).unwrap();
+    assert_eq!(c3.model_slug, "primary");
+
+    // 4th select: primary fast_headroom=-1.0 → score=0.575, backup 0.625 → backup wins.
+    let c4 = sel.select(&base_req()).unwrap();
+    assert_eq!(c4.model_slug, "backup");
 }

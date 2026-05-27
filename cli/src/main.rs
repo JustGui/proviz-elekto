@@ -153,6 +153,9 @@ enum BrandCmd {
         /// Selection priority — lower = tried first (default 0)
         #[arg(long, default_value = "0")]
         priority: i16,
+        /// Traffic weight for load distribution (default 1.0, higher = more traffic)
+        #[arg(long, default_value = "1.0")]
+        traffic_weight: f64,
     },
     List,
     Disable {
@@ -169,6 +172,13 @@ enum BrandCmd {
         slug: String,
         #[arg(long)]
         priority: i16,
+    },
+    /// Set traffic weight for load distribution (1.0 = default, higher = more traffic)
+    SetTrafficWeight {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        weight: f64,
     },
 }
 
@@ -371,6 +381,7 @@ fn main() {
                 api_key_env,
                 base_url,
                 priority,
+                traffic_weight,
             } => {
                 let brand = Brand {
                     id: Uuid::new_v4(),
@@ -381,6 +392,7 @@ fn main() {
                     is_active: true,
                     priority,
                     created_at: chrono::Utc::now(),
+                    traffic_weight,
                 };
                 storage.insert_brand(&brand).unwrap();
                 println!("brand '{slug}' added (id={})", brand.id);
@@ -389,14 +401,14 @@ fn main() {
                 let mut brands = storage.load_brands().unwrap();
                 brands.sort_by_key(|b| b.priority);
                 println!(
-                    "{:<36}  {:<15}  {:<20}  {:>4}  active",
-                    "id", "slug", "name", "prio"
+                    "{:<36}  {:<15}  {:<20}  {:>4}  {:>7}  active",
+                    "id", "slug", "name", "prio", "weight"
                 );
-                println!("{}", "-".repeat(88));
+                println!("{}", "-".repeat(98));
                 for b in brands {
                     println!(
-                        "{:<36}  {:<15}  {:<20}  {:>4}  {}",
-                        b.id, b.slug, b.name, b.priority, b.is_active
+                        "{:<36}  {:<15}  {:<20}  {:>4}  {:>7.2}  {}",
+                        b.id, b.slug, b.name, b.priority, b.traffic_weight, b.is_active
                     );
                 }
             }
@@ -415,6 +427,12 @@ fn main() {
                 let b = find_brand(&storage, &slug);
                 storage.set_brand_active(b.id, true).unwrap();
                 println!("brand '{slug}' enabled");
+            }
+            BrandCmd::SetTrafficWeight { slug, weight } => {
+                let mut b = find_brand(&storage, &slug);
+                b.traffic_weight = weight;
+                storage.insert_brand(&b).unwrap();
+                println!("brand '{slug}' traffic_weight set to {weight:.2}");
             }
         },
 
@@ -910,6 +928,7 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                 is_active: true,
                 priority: 0,
                 created_at: chrono::Utc::now(),
+                traffic_weight: 1.0,
             };
             storage.insert_brand(&brand).unwrap();
             println!("[{}] created brand '{}'", provider_name, brand_def.slug);
@@ -991,6 +1010,7 @@ fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
             is_active: true,
             priority: 0,
             created_at: chrono::Utc::now(),
+            traffic_weight: 1.0,
         };
         storage.insert_brand(&brand).unwrap();
         println!("seeded brand: {slug}");

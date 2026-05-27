@@ -162,12 +162,12 @@ impl CatalogStorage for SqliteStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at,traffic_weight)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, api_key_env=excluded.api_key_env,
                base_url=excluded.base_url, is_active=excluded.is_active,
-               priority=excluded.priority",
+               priority=excluded.priority, traffic_weight=excluded.traffic_weight",
             params![
                 brand.id.to_string(),
                 brand.slug,
@@ -177,6 +177,7 @@ impl CatalogStorage for SqliteStorage {
                 brand.is_active,
                 brand.priority as i64,
                 brand.created_at.to_rfc3339(),
+                brand.traffic_weight,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -433,14 +434,15 @@ impl CatalogStorage for SqliteStorage {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS pz_brands (
-    id          TEXT PRIMARY KEY,
-    slug        TEXT UNIQUE NOT NULL,
-    name        TEXT NOT NULL,
-    api_key_env TEXT,
-    base_url    TEXT,
-    is_active   INTEGER NOT NULL DEFAULT 1,
-    priority    INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id             TEXT PRIMARY KEY,
+    slug           TEXT UNIQUE NOT NULL,
+    name           TEXT NOT NULL,
+    api_key_env    TEXT,
+    base_url       TEXT,
+    is_active      INTEGER NOT NULL DEFAULT 1,
+    priority       INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    traffic_weight REAL NOT NULL DEFAULT 1.0
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (
@@ -535,6 +537,7 @@ mod tests {
             is_active: true,
             priority: 0,
             created_at: Utc::now(),
+            traffic_weight: 1.0,
         }
     }
 
