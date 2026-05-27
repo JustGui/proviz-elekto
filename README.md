@@ -19,7 +19,8 @@ Your app → pz.call(step, fn)               → CallResult
 - **Context-aware selection** - don't waste a 128k model on a 1k prompt
 - **Proactive quota tracking** - sliding-window counters (RPM/TPM/RPD/TPD) plus atomic in-flight reservations; avoids over-booking before any 429 fires
 - **Provider-anchored windows** - every successful call forwards `x-ratelimit-remaining-*` headers back to the server; the window floor is clamped to provider reality so internal estimates can't drift below what the provider actually sees
-- **Scored selection** - picks the best model across all eligible candidates: headroom (50%), quality (25%), cost (15%), latency (10%)
+- **Scored selection** - multi-component scoring: fast headroom (RPS/RPM/TPM, 25%), daily budget (RPD/TPD, 20%), quality (20%), cost (15%), latency (10%), traffic balance (10%). Over-quota models stay eligible with lower scores — `AllModelsExhausted` only fires when every model is in reactive 429 cooldown.
+- **Traffic shaping** - per-brand `traffic_weight` steers load proportionally across providers in a 5-minute rolling window; under-served brands get a higher score on the traffic component
 - **Capability filtering** - hard requirements for function calling, JSON mode
 - **Quality floor** - reject models below a quality threshold per step
 - **Model groups** - define named pools of models (e.g. `"fast-chat"`, `"coding-tier1"`) and restrict selection to that pool

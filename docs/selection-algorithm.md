@@ -14,18 +14,43 @@ On every `select()` call (in-memory, ~microseconds):
 6. Filter: `quality_score >= quality_min` (skips models with unknown score when `quality_min > 0`)
 7. Filter: `model_id NOT IN exclude_ids` (already tried this call)
 8. Filter: not blocked by reactive rate-limit state (in-memory DashMap, O(1), TTL per error type)
-9. Filter: proactive headroom check — `headroom(model) >= 0` where headroom uses sliding-window
-   counters (RPM/TPM/RPD/TPD) plus atomic in-flight reservations. Negative headroom = over quota.
+
+**Headroom is not a hard filter.** A model that is over its per-minute quota (negative fast
+headroom) stays in the candidate pool with a lower score. This guarantees `AllModelsExhausted`
+is never returned while any model is still reachable — the system will always route to the
+least-over-quota option. `AllModelsExhausted` is only raised when every candidate is blocked
+by the reactive rate-limit state (i.e., a provider returned a 429 and is in cooldown).
 
 ## Pass 2 — Score and pick best
 
-All candidates that pass the filters are scored:
+Headroom is split into two components to give different weight to fast vs slow recovery:
+
+- **`fast_headroom`** (RPS/RPM/TPM windows, ≤60 s): recovers quickly — penalised lightly
+- **`slow_headroom`** (RPD/TPD windows, 24 h): irreplaceable daily budget — penalised heavily
+
+Both values are mapped `[-1, 1] → [0, 1]` before scoring: `(headroom.clamp(-1,1) + 1) / 2`.
+
+### Without group (step-based selection)
 
 ```
-score = 0.50 × headroom       (0 = last slot, 1 = fully unconstrained)
-      + 0.25 × quality_score   (model.quality_score, default 0.5 if unknown)
+score = 0.25 × fast_hr_norm    (RPS/RPM/TPM, ≤60s recovery)
+      + 0.20 × slow_hr_norm    (RPD/TPD, 24h recovery — preserve daily budget)
+      + 0.20 × quality_score   (model.quality_score, default 0.5 if unknown)
       + 0.15 × cost_score      (min-max normalized across candidates; cheaper = higher)
       + 0.10 × latency_score   (min-max normalized across candidates; faster = higher)
+      + 0.10 × traffic_balance (steers load toward under-served brands; see below)
+```
+
+### With group (`use_member_priority=true`)
+
+```
+score = 0.20 × fast_hr_norm
+      + 0.15 × slow_hr_norm
+      + 0.20 × quality_score
+      + 0.15 × cost_score
+      + 0.10 × latency_score
+      + 0.10 × priority_score  (lower member.priority → higher score; 1.0 when all equal)
+      + 0.10 × traffic_balance
 ```
 
 The highest-scoring candidate wins. When scores tie, **rule priority breaks the tie** (lower
@@ -33,6 +58,32 @@ number = preferred), preserving your explicit ordering for equal-quality models.
 
 Before returning, the winner's in-flight slot is atomically reserved so concurrent
 `select()` calls spread load across models rather than all grabbing the same one.
+
+## Traffic balance (`traffic_weight`)
+
+Each brand has a `traffic_weight` (default `1.0`, stored in `pz_brands.traffic_weight`).
+The selector tracks per-brand selection counts in a 5-minute rolling window and computes
+how much of that window each brand consumed vs its entitlement:
+
+```
+target_share  = brand.traffic_weight / sum(all_pool_brands.traffic_weight)
+actual_share  = brand_recent_count / total_recent_count
+balance_ratio = target_share / (actual_share + ε)   # high when under-served
+```
+
+The ratio is min-max normalised across the candidate pool before contributing to the score.
+When all brands are equally served (or only one brand is in the pool), the traffic component
+has no effect. When one brand has received less traffic than its weight entitles it to,
+its models get a higher score on this component.
+
+```bash
+# Give Groq twice the traffic share of Mistral
+proviz brand set-traffic-weight --slug groq    --weight 2.0
+proviz brand set-traffic-weight --slug mistral --weight 1.0
+
+# Or at creation time
+proviz brand add --slug groq --name "Groq" --traffic-weight 2.0
+```
 
 ## Rate-limit TTLs (reactive blocking)
 
@@ -51,10 +102,11 @@ A model can be reactive-blocked even when its quota counters show headroom.
 
 ## Quota sliding windows
 
-Proactive quota tracking uses four per-model sliding windows:
+Proactive quota tracking uses five per-model sliding windows:
 
 | Dimension | Window | Limit field |
 |-----------|--------|-------------|
+| RPS | 1 s | `rps_limit` |
 | RPM | 60 s | `rpm_limit` |
 | TPM | 60 s | `tpm_limit` |
 | RPD | 24 h | `rpd_limit` |
@@ -73,8 +125,8 @@ the provider) are still added on top.
 
 ## Transient exhaustion and retry hints
 
-When all models fail Pass 1, `AllModelsExhausted` is raised (HTTP 409). To help callers
-recover automatically without busy-polling, the response includes a `retry_after_ms` hint:
+When all models fail Pass 1 (reactive-blocked), `AllModelsExhausted` is raised (HTTP 409).
+The response includes a `retry_after_ms` hint computed from the remaining reactive-block TTLs:
 
 ```json
 {
@@ -84,11 +136,6 @@ recover automatically without busy-polling, the response includes a `retry_after
   "retry_after_ms": 1820
 }
 ```
-
-The hint is the **earliest time any model can regain positive headroom**:
-- Rate-limited models (reactive block): remaining TTL on their cooldown.
-- Headroom-exhausted models (proactive quota): time until the oldest window entry leaves the 60 s RPM/TPM window.
-- In-flight-only models (no window history yet): 2 000 ms conservative default — in-flight tokens are released as soon as current LLM calls complete.
 
 **Python `call()` / `call_litellm()` built-in retry:**
 
@@ -109,13 +156,6 @@ all wake up and hammer the same freed slots simultaneously.
 
 When using `model_selector.py` (the rtfc wrapper), the default is controlled by the
 `PROVIZ_MAX_WAIT_SECS` environment variable (default `60`).
-
-The exhaustion WARN log now includes both retry hint components for debugging:
-```
-WARN all models exhausted step=worker_verdict tried=13 retry_after_ms=2000
-     retry_after_ms_rate=Some(58000) retry_after_ms_headroom=Some(2000)
-     rate_limited=7 headroom_exhausted=6
-```
 
 ## Priority System
 
