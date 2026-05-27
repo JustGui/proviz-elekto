@@ -57,6 +57,8 @@ class ModelCandidate:
     supports_function_calling: bool
     supports_json_mode: bool
     estimated_input_cost_usd: Optional[float]
+    price_input_per_1m: Optional[float] = None
+    price_output_per_1m: Optional[float] = None
 
 
 @dataclass
@@ -67,6 +69,7 @@ class CallResult:
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
+    actual_cost_usd: Optional[float] = None
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -169,6 +172,19 @@ def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[in
     """Thin wrapper kept for backwards compatibility. Prefer _extract_provider_limits."""
     rem_req, rem_tok, _, _ = _extract_provider_limits(response)
     return rem_req, rem_tok
+
+
+def _compute_cost(
+    candidate: "ModelCandidate",
+    prompt_tokens: int,
+    completion_tokens: int,
+) -> Optional[float]:
+    """Compute actual cost in USD from model prices and token counts. Returns None if prices unknown."""
+    p_in = candidate.price_input_per_1m
+    p_out = candidate.price_output_per_1m
+    if p_in is None and p_out is None:
+        return None
+    return ((p_in or 0.0) * prompt_tokens + (p_out or 0.0) * completion_tokens) / 1_000_000.0
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -408,6 +424,8 @@ class ProvizElekto:
             supports_function_calling=r["supports_function_calling"],
             supports_json_mode=r["supports_json_mode"],
             estimated_input_cost_usd=r.get("estimated_input_cost_usd"),
+            price_input_per_1m=r.get("price_input_per_1m"),
+            price_output_per_1m=r.get("price_output_per_1m"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -420,18 +438,24 @@ class ProvizElekto:
         model_id: str,
         estimated_tokens: int = 0,
         actual_tokens: Optional[int] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
         remaining_requests: Optional[int] = None,
         remaining_tokens: Optional[int] = None,
         limit_requests: Optional[int] = None,
         limit_tokens: Optional[int] = None,
     ) -> None:
         _logger.debug(
-            "report: model_id=%s outcome=success actual_tokens=%s remaining_req=%s remaining_tok=%s "
-            "limit_req=%s limit_tok=%s sync=%s",
-            model_id, actual_tokens, remaining_requests, remaining_tokens,
+            "report: model_id=%s outcome=success prompt=%s completion=%s remaining_req=%s "
+            "remaining_tok=%s limit_req=%s limit_tok=%s sync=%s",
+            model_id, prompt_tokens, completion_tokens, remaining_requests, remaining_tokens,
             limit_requests, limit_tokens, self._sync_provider_limits,
         )
         payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
+        if prompt_tokens is not None:
+            payload["prompt_tokens"] = prompt_tokens
+        if completion_tokens is not None:
+            payload["completion_tokens"] = completion_tokens
         if actual_tokens is not None:
             payload["actual_tokens"] = actual_tokens
         if remaining_requests is not None:
@@ -538,10 +562,12 @@ class ProvizElekto:
                 response = fn(candidate)
                 prompt, completion, total = _extract_usage(response)
                 rem_req, rem_tok, lim_req, lim_tok = _extract_provider_limits(response)
+                actual_cost_usd = _compute_cost(candidate, prompt, completion)
                 self.report_success(
                     candidate.model_id,
                     estimated_tokens=estimated_tokens,
-                    actual_tokens=total,
+                    prompt_tokens=prompt if prompt else None,
+                    completion_tokens=completion if completion else None,
                     remaining_requests=rem_req,
                     remaining_tokens=rem_tok,
                     limit_requests=lim_req,
@@ -549,9 +575,9 @@ class ProvizElekto:
                 )
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d "
-                    "remaining_req=%s remaining_tok=%s limit_req=%s limit_tok=%s",
+                    "cost_usd=%s remaining_req=%s remaining_tok=%s limit_req=%s limit_tok=%s",
                     candidate.brand_slug, candidate.model_slug, prompt, completion, total,
-                    rem_req, rem_tok, lim_req, lim_tok,
+                    actual_cost_usd, rem_req, rem_tok, lim_req, lim_tok,
                 )
                 return CallResult(
                     response=response,
@@ -560,6 +586,7 @@ class ProvizElekto:
                     prompt_tokens=prompt,
                     completion_tokens=completion,
                     total_tokens=total,
+                    actual_cost_usd=actual_cost_usd,
                 )
             except AllModelsExhausted:
                 raise

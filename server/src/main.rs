@@ -12,7 +12,7 @@ use axum::{
 };
 use clap::Parser;
 use proviz_elekto_core::{
-    models::{RateLimitErrorType, ReportOutcome, ReportRequest, SelectRequest},
+    models::{RateLimitErrorType, ReportOutcome, ReportRequest, ReportResponse, SelectRequest},
     selector::Selector,
     storage::CatalogStorage,
 };
@@ -235,17 +235,23 @@ async fn handle_report(
         remaining_tokens = ?req.remaining_tokens,
         "report"
     );
-    tokio::task::spawn_blocking(move || {
+    let actual_cost_usd = tokio::task::spawn_blocking(move || {
         let estimated = req.estimated_tokens.unwrap_or(0);
         let actual = req.actual_tokens;
+        let prompt = req.prompt_tokens;
+        let completion = req.completion_tokens;
         let rem_req = req.remaining_requests;
         let rem_tok = req.remaining_tokens;
-        match req.outcome {
-            ReportOutcome::Success => {
-                state
-                    .selector
-                    .report_success(req.model_id, estimated, actual, rem_req, rem_tok);
-            }
+        let cost = match req.outcome {
+            ReportOutcome::Success => state.selector.report_success(
+                req.model_id,
+                estimated,
+                actual,
+                prompt,
+                completion,
+                rem_req,
+                rem_tok,
+            ),
             ReportOutcome::RateLimit => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
                 state.selector.report_rate_limit(
@@ -256,23 +262,33 @@ async fn handle_report(
                     rem_req,
                     rem_tok,
                 );
+                None
             }
             ReportOutcome::Error => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
                 state
                     .selector
                     .report_error(req.model_id, et, estimated, actual, rem_req, rem_tok);
+                None
             }
-        }
+        };
         if req.sync_limits {
             state
                 .selector
                 .sync_provider_limits(req.model_id, req.limit_requests, req.limit_tokens);
         }
+        cost
     })
     .await
     .expect("report task panicked");
-    (StatusCode::OK, Json(json!({ "status": "ok" }))).into_response()
+    (
+        StatusCode::OK,
+        Json(ReportResponse {
+            status: "ok",
+            actual_cost_usd,
+        }),
+    )
+        .into_response()
 }
 
 #[derive(Serialize)]

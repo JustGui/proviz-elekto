@@ -524,6 +524,8 @@ impl Selector {
             supports_json_mode: winner.model.supports_json_mode,
             estimated_input_cost_usd,
             estimated_tokens,
+            price_input_per_1m: winner.model.price_input_per_1m,
+            price_output_per_1m: winner.model.price_output_per_1m,
         })
     }
 
@@ -551,14 +553,41 @@ impl Selector {
         model_id: Uuid,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
+        prompt_tokens: Option<u64>,
+        completion_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
-    ) {
+    ) -> Option<f64> {
         self.rate_state.clear(&model_id);
+        // Prefer explicit split over legacy total when both are provided.
+        let effective_actual = match (prompt_tokens, completion_tokens) {
+            (Some(p), Some(c)) => Some(p + c),
+            _ => actual_tokens,
+        };
         self.usage_tracker
-            .release(model_id, estimated_tokens, actual_tokens);
+            .release(model_id, estimated_tokens, effective_actual);
         self.usage_tracker
             .anchor_remaining(model_id, remaining_requests, remaining_tokens);
+
+        // Compute actual cost from model prices + token breakdown when available.
+        let guard = self.cache.read().unwrap();
+        guard.as_ref().and_then(|c| c.models.get(&model_id)).and_then(|m| {
+            let in_cost = m
+                .price_input_per_1m
+                .zip(prompt_tokens)
+                .map(|(p, t)| p * t as f64 / 1_000_000.0)
+                .unwrap_or(0.0);
+            let out_cost = m
+                .price_output_per_1m
+                .zip(completion_tokens)
+                .map(|(p, t)| p * t as f64 / 1_000_000.0)
+                .unwrap_or(0.0);
+            if m.price_input_per_1m.is_some() || m.price_output_per_1m.is_some() {
+                Some(in_cost + out_cost)
+            } else {
+                None
+            }
+        })
     }
 
     pub fn report_error(

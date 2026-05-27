@@ -183,6 +183,11 @@ pub struct ModelCandidate {
     pub estimated_input_cost_usd: Option<f64>,
     /// Echoed from SelectRequest so callers can include it in /report for accurate window tracking.
     pub estimated_tokens: u64,
+    /// Provider's per-million-token input price. Exposed so callers can compute actual_cost_usd
+    /// client-side (prompt_tokens / 1M × price_input + completion_tokens / 1M × price_output).
+    pub price_input_per_1m: Option<f64>,
+    /// Provider's per-million-token output price.
+    pub price_output_per_1m: Option<f64>,
 }
 
 /// Input to /report
@@ -198,8 +203,16 @@ pub struct ReportRequest {
     #[serde(default)]
     pub estimated_tokens: Option<u64>,
     /// Actual tokens consumed as reported by the provider. Improves TPM window accuracy.
+    /// When both prompt_tokens and completion_tokens are set, their sum is preferred over this field.
     #[serde(default)]
     pub actual_tokens: Option<u64>,
+    /// Input (prompt) tokens from the provider response (e.g. response.usage.prompt_tokens).
+    /// Used together with completion_tokens for accurate cost computation.
+    #[serde(default)]
+    pub prompt_tokens: Option<u64>,
+    /// Output (completion) tokens from the provider response (e.g. response.usage.completion_tokens).
+    #[serde(default)]
+    pub completion_tokens: Option<u64>,
     /// Remaining requests in the current window as reported by the provider response headers
     /// (e.g. `x-ratelimit-remaining-requests`). Used to anchor the UsageTracker windows
     /// against provider reality rather than relying solely on internal estimation.
@@ -229,4 +242,13 @@ pub enum ReportOutcome {
     Success,
     RateLimit,
     Error,
+}
+
+/// Response body returned by POST /report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReportResponse {
+    pub status: &'static str,
+    /// Computed actual cost in USD when the model's prices and token counts are both known.
+    /// Only populated for outcome=success with prompt_tokens + completion_tokens set.
+    pub actual_cost_usd: Option<f64>,
 }
