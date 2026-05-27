@@ -13,6 +13,10 @@ pub struct Brand {
     /// Lower = tried first. Brands with same priority compete by rule.priority. Default 0.
     pub priority: i16,
     pub created_at: DateTime<Utc>,
+    /// Relative traffic weight for load-balancing across brands within a candidate pool.
+    /// Higher weight = more traffic directed here. Default 1.0 (equal share with peers).
+    /// Used together with per-brand selection history to steer toward under-served brands.
+    pub traffic_weight: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
