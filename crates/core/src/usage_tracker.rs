@@ -18,6 +18,7 @@ struct WindowEntry {
 }
 
 struct ModelWindows {
+    rps: VecDeque<WindowEntry>,
     rpm: VecDeque<WindowEntry>,
     tpm: VecDeque<WindowEntry>,
     rpd: VecDeque<WindowEntry>,
@@ -32,6 +33,7 @@ struct ModelWindows {
 impl Default for ModelWindows {
     fn default() -> Self {
         Self {
+            rps: VecDeque::new(),
             rpm: VecDeque::new(),
             tpm: VecDeque::new(),
             rpd: VecDeque::new(),
@@ -120,6 +122,7 @@ impl UsageTracker {
         let token_count = actual_tokens.unwrap_or(estimated_tokens);
         let now = Instant::now();
         let mut w = usage.windows.lock().unwrap();
+        w.rps.push_back(WindowEntry { at: now, value: 1 });
         w.rpm.push_back(WindowEntry { at: now, value: 1 });
         w.tpm.push_back(WindowEntry {
             at: now,
@@ -168,7 +171,6 @@ impl UsageTracker {
             return None;
         }
         let now = Instant::now();
-        let window_dur = Duration::from_secs(60);
         let mut min_ms: Option<u64> = None;
         let mut found_inflight_only = false;
 
@@ -183,27 +185,29 @@ impl UsageTracker {
             };
 
             let w = arc.windows.lock().unwrap();
-            let oldest_rpm = w.rpm.front().map(|e| e.at);
-            let oldest_tpm = w.tpm.front().map(|e| e.at);
-            let oldest = match (oldest_rpm, oldest_tpm) {
-                (Some(a), Some(b)) => Some(a.min(b)),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => {
-                    // Windows are empty; blocked by in-flight only.
-                    found_inflight_only = true;
-                    continue;
-                }
-            };
+            let mut model_has_window = false;
 
-            if let Some(oldest_at) = oldest {
-                let expiry = oldest_at + window_dur;
-                if let Some(remaining) = expiry.checked_duration_since(now) {
-                    // +1 ms so callers that sleep exactly this long clear the boundary.
-                    let ms = remaining.as_millis() as u64 + 1;
-                    min_ms = Some(min_ms.map_or(ms, |prev| prev.min(ms)));
+            // Check each window with its own expiry duration.
+            for (oldest, dur_secs) in [
+                (w.rps.front().map(|e| e.at), 1u64),
+                (w.rpm.front().map(|e| e.at), 60),
+                (w.tpm.front().map(|e| e.at), 60),
+            ] {
+                if let Some(oldest_at) = oldest {
+                    model_has_window = true;
+                    let expiry = oldest_at + Duration::from_secs(dur_secs);
+                    if let Some(remaining) = expiry.checked_duration_since(now) {
+                        // +1 ms so callers that sleep exactly this long clear the boundary.
+                        let ms = remaining.as_millis() as u64 + 1;
+                        min_ms = Some(min_ms.map_or(ms, |prev| prev.min(ms)));
+                    }
+                    // else: already expired — this window is actually clear now.
                 }
-                // else: already expired — this model's window is actually clear now.
+            }
+
+            if !model_has_window {
+                // All windows empty; model is blocked by in-flight reservations only.
+                found_inflight_only = true;
             }
         }
 
@@ -230,11 +234,13 @@ impl UsageTracker {
         let mut w = usage.windows.lock().unwrap();
         let now = Instant::now();
 
+        drain_before(&mut w.rps, now, 1);
         drain_before(&mut w.rpm, now, 60);
         drain_before(&mut w.tpm, now, 60);
         drain_before(&mut w.rpd, now, 86_400);
         drain_before(&mut w.tpd, now, 86_400);
 
+        let rps_count = window_sum(&w.rps);
         let rpm_count = window_sum(&w.rpm);
         let tpm_sum = window_sum(&w.tpm);
         let rpd_count = window_sum(&w.rpd);
@@ -261,6 +267,12 @@ impl UsageTracker {
 
         let mut min_hr: f32 = 1.0;
 
+        if let Some(limit) = model.rps_limit {
+            if limit > 0.0 {
+                let projected = (rps_count + in_flight_req + 1) as f32;
+                min_hr = min_hr.min(1.0_f32 - projected / limit as f32);
+            }
+        }
         if let Some(limit) = model.rpm_limit {
             let projected = effective_rpm + in_flight_req + 1;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
