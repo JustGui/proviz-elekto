@@ -512,7 +512,14 @@ fn rpm_limit_single_model_exhausted() {
     assert_eq!(c2.model_slug, "tight");
 
     // After the provider returns 429, reactive RateLimitState blocks the model.
-    sel.report_rate_limit(tight.id, proviz_elekto_core::models::RateLimitErrorType::Rpm, 0, None, None, None);
+    sel.report_rate_limit(
+        tight.id,
+        proviz_elekto_core::models::RateLimitErrorType::Rpm,
+        0,
+        None,
+        None,
+        None,
+    );
 
     // Now AllModelsExhausted because the only model is reactively blocked.
     let err = sel.select(&base_req()).unwrap_err();

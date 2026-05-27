@@ -517,8 +517,7 @@ impl Selector {
                     .map(|b| b.traffic_weight.max(0.0))
                     .unwrap_or(1.0)
                     / total_weight;
-                let actual_share =
-                    brand_recent[bid] as f64 / (total_recent as f64 + f64::EPSILON);
+                let actual_share = brand_recent[bid] as f64 / (total_recent as f64 + f64::EPSILON);
                 (target_share / (actual_share + f64::EPSILON)) as f32
             })
             .collect();
