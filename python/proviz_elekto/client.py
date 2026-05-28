@@ -112,6 +112,49 @@ def _extract_usage(response: Any) -> tuple[int, int, int]:
         return 0, 0, 0
 
 
+def _collect_response_headers(response: Any) -> dict[str, str]:
+    """Merge HTTP response headers from all locations a LiteLLM response may use.
+
+    LiteLLM stores headers under different keys depending on provider and version,
+    and sometimes as plain dicts, sometimes as httpx.Headers or similar objects.
+    We scan every known location and merge into one lowercase-keyed dict so callers
+    don't need to know which provider/version combination is in use.
+    """
+    merged: dict[str, str] = {}
+
+    def _absorb(obj: Any) -> None:
+        if obj is None:
+            return
+        try:
+            items = obj.items() if hasattr(obj, "items") else obj
+            for k, v in items:
+                if isinstance(k, str):
+                    # LiteLLM prefixes provider headers with "llm_provider-"; strip it.
+                    k = k.lower().removeprefix("llm_provider-")
+                    if k not in merged:
+                        merged[k] = str(v)
+        except Exception:
+            pass
+
+    # Direct attributes on the response object (some LiteLLM versions / providers)
+    for attr in ("headers", "_headers", "_response_headers", "response_headers"):
+        _absorb(getattr(response, attr, None))
+
+    # _hidden_params — all known keys across LiteLLM versions
+    hidden = getattr(response, "_hidden_params", None)
+    if isinstance(hidden, dict):
+        for key in (
+            "additional_headers",
+            "response_headers",
+            "headers",
+            "_response_headers",
+            "litellm_response_headers",
+        ):
+            _absorb(hidden.get(key))
+
+    return merged
+
+
 def _extract_provider_limits(
     response: Any,
 ) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
@@ -119,15 +162,12 @@ def _extract_provider_limits(
 
     Returns ``(remaining_requests, remaining_tokens, limit_requests, limit_tokens)``.
 
-    Handles OpenAI/Mistral style headers (`x-ratelimit-remaining-*`, `x-ratelimit-limit-*`)
+    Handles OpenAI/Mistral/Groq style headers (`x-ratelimit-remaining-*`, `x-ratelimit-limit-*`)
     and Anthropic style (`anthropic-ratelimit-*-remaining`, `anthropic-ratelimit-*-limit`).
-    LiteLLM stores response headers in `response._hidden_params["additional_headers"]`.
+    Scans all locations where LiteLLM may store headers across providers and versions.
     """
-    headers: Optional[dict] = None
-    hidden = getattr(response, "_hidden_params", None)
-    if isinstance(hidden, dict):
-        headers = hidden.get("additional_headers") or hidden.get("response_headers")
-    if not isinstance(headers, dict):
+    headers = _collect_response_headers(response)
+    if not headers:
         return None, None, None, None
 
     def _parse(keys: tuple[str, ...]) -> Optional[int]:
@@ -764,6 +804,13 @@ class ProvizElekto:
                     )
                     pt, ct, tot = _extract_usage(response)
                     last_rem_req, last_rem_tok, last_lim_req, last_lim_tok = _extract_provider_limits(response)
+                    if last_rem_req is None and last_rem_tok is None:
+                        _logger.debug(
+                            "call_litellm_tool_loop: no rate-limit headers found for %s/%s "
+                            "(known header keys: %s)",
+                            candidate.brand_slug, candidate.model_slug,
+                            list(_collect_response_headers(response).keys()) or "none",
+                        )
                     total_prompt += pt
                     total_completion += ct
                     total_tokens += tot
