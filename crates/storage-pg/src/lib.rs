@@ -2,12 +2,13 @@ use chrono::{DateTime, Utc};
 use postgres::{Client, NoTls};
 use proviz_elekto_core::{
     error::StorageError,
-    models::{Brand, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
+    models::{Brand, BrandApiKey, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
-    brand_from_row, group_from_row, group_member_from_row, model_from_row, rule_from_row,
-    RowReader, Q_BRANDS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_RULES,
+    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row, model_from_row,
+    rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS,
+    Q_RULES,
 };
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -333,6 +334,47 @@ impl CatalogStorage for PostgresStorage {
         Ok(())
     }
 
+    fn insert_brand_api_key(&self, key: &BrandApiKey) -> StorageResult<()> {
+        let mut client = self.client.lock().unwrap();
+        let env = key.api_key_env.clone();
+        client
+            .execute(
+                "INSERT INTO pz_brand_api_keys (id,brand_id,api_key_env,priority,is_active,created_at)
+                 VALUES ($1,$2,$3,$4,$5,$6)
+                 ON CONFLICT (brand_id,api_key_env) DO UPDATE SET
+                   priority=EXCLUDED.priority, is_active=EXCLUDED.is_active",
+                &[
+                    &key.id,
+                    &key.brand_id,
+                    &env,
+                    &key.priority,
+                    &key.is_active,
+                    &key.created_at,
+                ],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_all_brand_api_keys(&self) -> StorageResult<Vec<BrandApiKey>> {
+        let mut client = self.client.lock().unwrap();
+        let rows = client
+            .query(Q_BRAND_API_KEYS, &[])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| brand_api_key_from_row(&PgRow(row)))
+            .collect())
+    }
+
+    fn delete_brand_api_key(&self, key_id: Uuid) -> StorageResult<()> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .execute("DELETE FROM pz_brand_api_keys WHERE id=$1", &[&key_id])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
         let id = Uuid::new_v4();
@@ -456,4 +498,17 @@ CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
     ON pz_models(brand_id, slug);
+
+CREATE TABLE IF NOT EXISTS pz_brand_api_keys (
+    id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    brand_id    UUID         NOT NULL REFERENCES pz_brands(id) ON DELETE CASCADE,
+    api_key_env VARCHAR(100) NOT NULL,
+    priority    SMALLINT     NOT NULL DEFAULT 0,
+    is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    UNIQUE (brand_id, api_key_env)
+);
+
+CREATE INDEX IF NOT EXISTS idx_pz_brand_api_keys_brand
+    ON pz_brand_api_keys(brand_id);
 ";

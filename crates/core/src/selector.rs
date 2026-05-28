@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::{
     error::{ProvizError, Result},
     models::{
-        Brand, Group, GroupMember, Model, ModelCandidate, RateLimitErrorType, SelectRequest,
-        SelectionRule,
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCandidate, RateLimitErrorType,
+        SelectRequest, SelectionRule,
     },
     rate_state::RateLimitState,
     storage::CatalogStorage,
@@ -33,6 +33,8 @@ struct CatalogCache {
     group_slugs: HashMap<String, Uuid>,
     /// group_id → members sorted by (brand.priority, member.priority)
     group_members: HashMap<Uuid, Vec<GroupMember>>,
+    /// brand_id → API keys sorted by priority ASC
+    brand_keys: HashMap<Uuid, Vec<BrandApiKey>>,
     loaded_at: Instant,
 }
 
@@ -40,6 +42,10 @@ pub struct Selector {
     storage: Arc<dyn CatalogStorage>,
     cache: RwLock<Option<CatalogCache>>,
     rate_state: RateLimitState,
+    /// Per-key rate limit state for brands with multiple API keys.
+    /// Keyed by BrandApiKey.id. A blocked key means that account got a 429;
+    /// other keys for the same brand remain available.
+    key_rate_state: RateLimitState,
     usage_tracker: UsageTracker,
     /// Per-brand selection timestamps for traffic-share balancing.
     /// Entries older than TRAFFIC_WINDOW_SECS are drained lazily on each selection.
@@ -52,6 +58,7 @@ impl Selector {
             storage,
             cache: RwLock::new(None),
             rate_state: RateLimitState::new(),
+            key_rate_state: RateLimitState::new(),
             usage_tracker: UsageTracker::new(),
             brand_traffic: DashMap::new(),
         }
@@ -120,6 +127,18 @@ impl Selector {
             let _ = group_id;
         }
 
+        let all_keys = self
+            .storage
+            .load_all_brand_api_keys()
+            .map_err(ProvizError::Storage)?;
+        let mut brand_keys: HashMap<Uuid, Vec<BrandApiKey>> = HashMap::new();
+        for key in all_keys {
+            brand_keys.entry(key.brand_id).or_default().push(key);
+        }
+        for keys in brand_keys.values_mut() {
+            keys.sort_by_key(|k| k.priority);
+        }
+
         let model_count = models.len();
         let rule_count: usize = rules.values().map(|v| v.len()).sum();
 
@@ -138,6 +157,7 @@ impl Selector {
             groups,
             group_slugs,
             group_members,
+            brand_keys,
             loaded_at: Instant::now(),
         });
 
@@ -279,6 +299,7 @@ impl Selector {
         let mut tried = 0;
         let mut candidates: Vec<Candidate<'_>> = Vec::new();
         let mut rate_limited_ids: Vec<Uuid> = Vec::new();
+        let mut blocked_key_ids: Vec<Uuid> = Vec::new();
 
         for rule in rules {
             if !rule.is_enabled {
@@ -373,10 +394,32 @@ impl Selector {
                 continue;
             }
 
-            if self.rate_state.is_limited(&model.id) {
+            // Rate-limit check: multi-key brands are blocked only when ALL active keys are
+            // rate-limited. Single-key (legacy) brands use the model-level rate_state.
+            let brand_key_pool = cache.brand_keys.get(&brand.id);
+            let is_rate_blocked = match brand_key_pool {
+                Some(keys) => {
+                    let active: Vec<&BrandApiKey> = keys.iter().filter(|k| k.is_active).collect();
+                    if active.is_empty() {
+                        // Keys table has rows but none active — fall back to model-level check.
+                        self.rate_state.is_limited(&model.id)
+                    } else {
+                        active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
+                    }
+                }
+                None => self.rate_state.is_limited(&model.id),
+            };
+
+            if is_rate_blocked {
                 debug!(model = %model.slug, "skipped: rate limited (reactive)");
                 tried += 1;
-                rate_limited_ids.push(model.id);
+                if let Some(keys) = brand_key_pool {
+                    for k in keys.iter().filter(|k| k.is_active) {
+                        blocked_key_ids.push(k.id);
+                    }
+                } else {
+                    rate_limited_ids.push(model.id);
+                }
                 continue;
             }
 
@@ -412,15 +455,25 @@ impl Selector {
         }
 
         if candidates.is_empty() {
-            let retry_after_ms = self
+            let model_ms = self
                 .rate_state
                 .min_remaining_ms_for(&rate_limited_ids)
-                .unwrap_or(0);
+                .unwrap_or(u64::MAX);
+            let key_ms = self
+                .key_rate_state
+                .min_remaining_ms_for(&blocked_key_ids)
+                .unwrap_or(u64::MAX);
+            let retry_after_ms = model_ms.min(key_ms);
+            let retry_after_ms = if retry_after_ms == u64::MAX {
+                0
+            } else {
+                retry_after_ms
+            };
             warn!(
                 step = %req.step,
                 tried,
                 retry_after_ms,
-                rate_limited = rate_limited_ids.len(),
+                rate_limited = rate_limited_ids.len() + blocked_key_ids.len(),
                 "all models exhausted"
             );
             return Err(ProvizError::AllModelsExhausted {
@@ -625,12 +678,32 @@ impl Selector {
             .price_input_per_1m
             .map(|p| p * estimated_tokens as f64 / 1_000_000.0);
 
+        // Pick the best available key for this brand (lowest priority, not rate-limited).
+        let (api_key_env, brand_key_id) = {
+            let keys = cache.brand_keys.get(&winner.brand.id);
+            match keys {
+                Some(keys) => {
+                    // Keys are already sorted by priority ASC from reload().
+                    let best = keys
+                        .iter()
+                        .filter(|k| k.is_active && !self.key_rate_state.is_limited(&k.id))
+                        .next();
+                    match best {
+                        Some(k) => (Some(k.api_key_env.clone()), Some(k.id)),
+                        None => (winner.brand.api_key_env.clone(), None),
+                    }
+                }
+                None => (winner.brand.api_key_env.clone(), None),
+            }
+        };
+
         debug!(
             model = %winner.model.slug,
             brand = %winner.brand.slug,
             score = winner.score,
             fast_headroom = winner.fast_headroom,
             slow_headroom = winner.slow_headroom,
+            brand_key_id = ?brand_key_id,
             "selected"
         );
 
@@ -638,7 +711,8 @@ impl Selector {
             model_id: winner.model.id,
             brand_slug: winner.brand.slug.clone(),
             model_slug: winner.model.slug.clone(),
-            api_key_env: winner.brand.api_key_env.clone(),
+            api_key_env,
+            brand_key_id,
             max_context_tokens: winner.model.max_context_tokens,
             supports_function_calling: winner.model.supports_function_calling,
             supports_json_mode: winner.model.supports_json_mode,
@@ -652,13 +726,23 @@ impl Selector {
     pub fn report_rate_limit(
         &self,
         model_id: Uuid,
+        brand_key_id: Option<Uuid>,
         error_type: RateLimitErrorType,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
     ) {
-        self.rate_state.mark(model_id, &error_type);
+        match brand_key_id {
+            Some(key_id) => {
+                // Multi-key brand: block the specific key, not the model.
+                // Other keys for the same brand remain available.
+                self.key_rate_state.mark(key_id, &error_type);
+            }
+            None => {
+                self.rate_state.mark(model_id, &error_type);
+            }
+        }
         self.usage_tracker
             .release(model_id, estimated_tokens, actual_tokens);
         self.usage_tracker
@@ -671,6 +755,7 @@ impl Selector {
     pub fn report_success(
         &self,
         model_id: Uuid,
+        brand_key_id: Option<Uuid>,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
         prompt_tokens: Option<u64>,
@@ -679,6 +764,9 @@ impl Selector {
         remaining_tokens: Option<u64>,
     ) -> Option<f64> {
         self.rate_state.clear(&model_id);
+        if let Some(key_id) = brand_key_id {
+            self.key_rate_state.clear(&key_id);
+        }
         // Prefer explicit split over legacy total when both are provided.
         let effective_actual = match (prompt_tokens, completion_tokens) {
             (Some(p), Some(c)) => Some(p + c),
@@ -716,13 +804,17 @@ impl Selector {
     pub fn report_error(
         &self,
         model_id: Uuid,
+        brand_key_id: Option<Uuid>,
         error_type: RateLimitErrorType,
         estimated_tokens: u64,
         actual_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
     ) {
-        self.rate_state.mark(model_id, &error_type);
+        match brand_key_id {
+            Some(key_id) => self.key_rate_state.mark(key_id, &error_type),
+            None => self.rate_state.mark(model_id, &error_type),
+        }
         self.usage_tracker
             .release(model_id, estimated_tokens, actual_tokens);
         self.usage_tracker

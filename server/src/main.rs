@@ -242,9 +242,11 @@ async fn handle_report(
         let completion = req.completion_tokens;
         let rem_req = req.remaining_requests;
         let rem_tok = req.remaining_tokens;
+        let brand_key_id = req.brand_key_id;
         let cost = match req.outcome {
             ReportOutcome::Success => state.selector.report_success(
                 req.model_id,
+                brand_key_id,
                 estimated,
                 actual,
                 prompt,
@@ -256,6 +258,7 @@ async fn handle_report(
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
                 state.selector.report_rate_limit(
                     req.model_id,
+                    brand_key_id,
                     et,
                     estimated,
                     actual,
@@ -266,9 +269,15 @@ async fn handle_report(
             }
             ReportOutcome::Error => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                state
-                    .selector
-                    .report_error(req.model_id, et, estimated, actual, rem_req, rem_tok);
+                state.selector.report_error(
+                    req.model_id,
+                    brand_key_id,
+                    et,
+                    estimated,
+                    actual,
+                    rem_req,
+                    rem_tok,
+                );
                 None
             }
         };

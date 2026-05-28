@@ -2,6 +2,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// One API account (key) for a brand. Multiple accounts can exist per brand
+/// to distribute rate limits and share expenses across accounts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrandApiKey {
+    pub id: Uuid,
+    pub brand_id: Uuid,
+    /// Name of the environment variable holding the actual API key secret.
+    pub api_key_env: String,
+    /// Lower = preferred (tried first). Default 0.
+    pub priority: i16,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Brand {
     pub id: Uuid,
@@ -181,6 +195,11 @@ pub struct ModelCandidate {
     pub brand_slug: String,
     pub model_slug: String,
     pub api_key_env: Option<String>,
+    /// ID of the specific BrandApiKey selected for this call. Present when the brand has rows in
+    /// pz_brand_api_keys; None for legacy single-key brands. Echo back in ReportRequest so the
+    /// server knows which key to mark rate-limited on a 429.
+    #[serde(default)]
+    pub brand_key_id: Option<Uuid>,
     pub max_context_tokens: u32,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
@@ -238,6 +257,10 @@ pub struct ReportRequest {
     /// stored values. Keeps configured limits aligned with actual provider plan without manual edits.
     #[serde(default)]
     pub sync_limits: bool,
+    /// Echo of ModelCandidate.brand_key_id. When set, the server marks this specific key as
+    /// rate-limited rather than the model, allowing other keys for the same brand to still serve.
+    #[serde(default)]
+    pub brand_key_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

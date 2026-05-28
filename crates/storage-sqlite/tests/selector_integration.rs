@@ -342,7 +342,7 @@ fn exclude_ids_increments_tried() {
 fn rate_limit_skips_model() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, RateLimitErrorType::Tpm, 0, None, None, None);
+    sel.report_rate_limit(mid, None, RateLimitErrorType::Tpm, 0, None, None, None);
     let err = sel.select(&base_req()).unwrap_err();
     assert!(matches!(
         err,
@@ -354,8 +354,8 @@ fn rate_limit_skips_model() {
 fn report_success_clears_limit() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, RateLimitErrorType::Tpm, 0, None, None, None);
-    sel.report_success(mid, 0, None, None, None, None, None);
+    sel.report_rate_limit(mid, None, RateLimitErrorType::Tpm, 0, None, None, None);
+    sel.report_success(mid, None, 0, None, None, None, None, None);
     assert!(sel.select(&base_req()).is_ok());
 }
 
@@ -514,6 +514,7 @@ fn rpm_limit_single_model_exhausted() {
     // After the provider returns 429, reactive RateLimitState blocks the model.
     sel.report_rate_limit(
         tight.id,
+        None,
         proviz_elekto_core::models::RateLimitErrorType::Rpm,
         0,
         None,

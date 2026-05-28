@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use proviz_elekto_core::models::{Brand, Group, GroupMember, Model, SelectionRule};
+use proviz_elekto_core::models::{Brand, BrandApiKey, Group, GroupMember, Model, SelectionRule};
 use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
@@ -23,6 +23,9 @@ pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at
 
 pub const Q_GROUP_MEMBERS: &str = "SELECT id,group_id,model_id,priority,is_enabled \
      FROM pz_group_members";
+
+pub const Q_BRAND_API_KEYS: &str = "SELECT id,brand_id,api_key_env,priority,is_active,created_at \
+     FROM pz_brand_api_keys";
 
 /// Uniform read interface over a single result row.
 /// Implementations must match column indices to the constants above.
@@ -111,5 +114,16 @@ pub fn group_member_from_row(row: &impl RowReader) -> GroupMember {
         model_id: row.uuid(2),
         priority: row.i16_val(3),
         is_enabled: row.bool_val(4),
+    }
+}
+
+pub fn brand_api_key_from_row(row: &impl RowReader) -> BrandApiKey {
+    BrandApiKey {
+        id: row.uuid(0),
+        brand_id: row.uuid(1),
+        api_key_env: row.string(2),
+        priority: row.i16_val(3),
+        is_active: row.bool_val(4),
+        created_at: row.datetime(5),
     }
 }

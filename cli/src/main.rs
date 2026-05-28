@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use proviz_elekto_core::{
-    models::{Brand, Group, GroupMember, Model, SelectRequest, SelectionRule},
+    models::{Brand, BrandApiKey, Group, GroupMember, Model, SelectRequest, SelectionRule},
     selector::Selector,
     storage::CatalogStorage,
 };
@@ -179,6 +179,40 @@ enum BrandCmd {
         slug: String,
         #[arg(long)]
         weight: f64,
+    },
+    /// Manage API keys (multiple accounts) for a brand
+    Key {
+        #[command(subcommand)]
+        action: BrandKeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BrandKeyCmd {
+    /// Add an API key (account) for a brand
+    Add {
+        /// Brand slug
+        #[arg(long)]
+        brand: String,
+        /// Environment variable name holding the API key secret
+        #[arg(long)]
+        api_key_env: String,
+        /// Selection priority — lower = tried first (default 0)
+        #[arg(long, default_value = "0")]
+        priority: i16,
+    },
+    /// List all API keys for a brand
+    List {
+        #[arg(long)]
+        brand: String,
+    },
+    /// Remove an API key from a brand
+    Remove {
+        #[arg(long)]
+        brand: String,
+        /// Environment variable name of the key to remove
+        #[arg(long)]
+        api_key_env: String,
     },
 }
 
@@ -434,6 +468,55 @@ fn main() {
                 storage.insert_brand(&b).unwrap();
                 println!("brand '{slug}' traffic_weight set to {weight:.2}");
             }
+            BrandCmd::Key { action } => match action {
+                BrandKeyCmd::Add {
+                    brand,
+                    api_key_env,
+                    priority,
+                } => {
+                    let b = find_brand(&storage, &brand);
+                    let key = BrandApiKey {
+                        id: Uuid::new_v4(),
+                        brand_id: b.id,
+                        api_key_env: api_key_env.clone(),
+                        priority,
+                        is_active: true,
+                        created_at: chrono::Utc::now(),
+                    };
+                    storage.insert_brand_api_key(&key).unwrap();
+                    println!(
+                        "key '{api_key_env}' added for brand '{brand}' (id={}, priority={priority})",
+                        key.id
+                    );
+                }
+                BrandKeyCmd::List { brand } => {
+                    let b = find_brand(&storage, &brand);
+                    let mut keys = storage.load_all_brand_api_keys().unwrap();
+                    keys.retain(|k| k.brand_id == b.id);
+                    keys.sort_by_key(|k| k.priority);
+                    println!("{:<36}  {:<30}  {:>4}  active", "id", "api_key_env", "prio");
+                    println!("{}", "-".repeat(80));
+                    for k in keys {
+                        println!(
+                            "{:<36}  {:<30}  {:>4}  {}",
+                            k.id, k.api_key_env, k.priority, k.is_active
+                        );
+                    }
+                }
+                BrandKeyCmd::Remove { brand, api_key_env } => {
+                    let b = find_brand(&storage, &brand);
+                    let keys = storage.load_all_brand_api_keys().unwrap();
+                    let key = keys
+                        .into_iter()
+                        .find(|k| k.brand_id == b.id && k.api_key_env == api_key_env)
+                        .unwrap_or_else(|| {
+                            eprintln!("no key '{api_key_env}' found for brand '{brand}'");
+                            std::process::exit(1);
+                        });
+                    storage.delete_brand_api_key(key.id).unwrap();
+                    println!("key '{api_key_env}' removed from brand '{brand}'");
+                }
+            },
         },
 
         Command::Model { action } => match action {

@@ -59,6 +59,9 @@ class ModelCandidate:
     estimated_input_cost_usd: Optional[float]
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
+    # ID of the specific brand API key selected. Echo back in report calls so the server
+    # can block the key (not the model) on 429, enabling failover to other keys.
+    brand_key_id: Optional[str] = None
 
 
 @dataclass
@@ -466,6 +469,7 @@ class ProvizElekto:
             estimated_input_cost_usd=r.get("estimated_input_cost_usd"),
             price_input_per_1m=r.get("price_input_per_1m"),
             price_output_per_1m=r.get("price_output_per_1m"),
+            brand_key_id=r.get("brand_key_id"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -484,6 +488,7 @@ class ProvizElekto:
         remaining_tokens: Optional[int] = None,
         limit_requests: Optional[int] = None,
         limit_tokens: Optional[int] = None,
+        brand_key_id: Optional[str] = None,
     ) -> None:
         _logger.debug(
             "report: model_id=%s outcome=success prompt=%s completion=%s remaining_req=%s "
@@ -508,26 +513,44 @@ class ProvizElekto:
             if limit_tokens is not None:
                 payload["limit_tokens"] = limit_tokens
             payload["sync_limits"] = True
+        if brand_key_id is not None:
+            payload["brand_key_id"] = brand_key_id
         # Fire-and-forget: the LLM result is already in hand, no need to block
         # the caller while we send usage + remaining-limit data back to proviz.
         # Rate-limit/error reports remain synchronous (must arrive before retry select()).
         self._post_fire_and_forget("/report", payload)
 
-    def report_rate_limit(self, model_id: str, error_type: str = "tpm") -> None:
+    def report_rate_limit(
+        self,
+        model_id: str,
+        error_type: str = "tpm",
+        brand_key_id: Optional[str] = None,
+    ) -> None:
         _logger.debug("report: model_id=%s outcome=rate_limit error_type=%s", model_id, error_type)
-        self._post("/report", {
+        payload: dict = {
             "model_id": model_id,
             "outcome": "rate_limit",
             "error_type": error_type,
-        })
+        }
+        if brand_key_id is not None:
+            payload["brand_key_id"] = brand_key_id
+        self._post("/report", payload)
 
-    def report_error(self, model_id: str, error_type: str = "other") -> None:
+    def report_error(
+        self,
+        model_id: str,
+        error_type: str = "other",
+        brand_key_id: Optional[str] = None,
+    ) -> None:
         _logger.debug("report: model_id=%s outcome=error error_type=%s", model_id, error_type)
-        self._post("/report", {
+        payload: dict = {
             "model_id": model_id,
             "outcome": "error",
             "error_type": error_type,
-        })
+        }
+        if brand_key_id is not None:
+            payload["brand_key_id"] = brand_key_id
+        self._post("/report", payload)
 
     def call(
         self,
@@ -612,6 +635,7 @@ class ProvizElekto:
                     remaining_tokens=rem_tok,
                     limit_requests=lim_req,
                     limit_tokens=lim_tok,
+                    brand_key_id=candidate.brand_key_id,
                 )
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d "
@@ -637,9 +661,9 @@ class ProvizElekto:
                     candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
                 )
                 if outcome == "rate_limit":
-                    self.report_rate_limit(candidate.model_id, error_type)
+                    self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 else:
-                    self.report_error(candidate.model_id, error_type)
+                    self.report_error(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
 
@@ -830,6 +854,7 @@ class ProvizElekto:
                             remaining_tokens=last_rem_tok,
                             limit_requests=last_lim_req,
                             limit_tokens=last_lim_tok,
+                            brand_key_id=candidate.brand_key_id,
                         )
                         _logger.debug(
                             "call_litellm_tool_loop success: model=%s/%s iterations=%d "
@@ -861,7 +886,7 @@ class ProvizElekto:
                     "for step=%s model=%s/%s",
                     max_iterations, step, candidate.brand_slug, candidate.model_slug,
                 )
-                self.report_error(candidate.model_id, "other")
+                self.report_error(candidate.model_id, "other", brand_key_id=candidate.brand_key_id)
                 return None
 
             except AllModelsExhausted:
@@ -873,9 +898,9 @@ class ProvizElekto:
                     candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
                 )
                 if outcome == "rate_limit":
-                    self.report_rate_limit(candidate.model_id, error_type)
+                    self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 else:
-                    self.report_error(candidate.model_id, error_type)
+                    self.report_error(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
 
