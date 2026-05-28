@@ -656,6 +656,182 @@ class ProvizElekto:
             max_wait_secs=max_wait_secs,
         )
 
+    def call_litellm_tool_loop(
+        self,
+        step: str,
+        messages: list,
+        tools: list,
+        tool_executor: Callable[[str, str], str],
+        *,
+        estimated_tokens: int = 0,
+        max_iterations: int = 5,
+        tool_choice: str = "auto",
+        requires_json_mode: bool = False,
+        quality_min: float = 0.0,
+        exclude_ids: Optional[list[str]] = None,
+        categories: Optional[list[str]] = None,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
+        max_wait_secs: float = 0.0,
+        **litellm_kwargs: Any,
+    ) -> Optional["CallResult"]:
+        """select → [litellm.completion → execute tools → append → repeat] → report_success
+
+        Owns the full multi-turn tool-use loop and handles token accumulation + reporting
+        internally. Tokens are accumulated across all iterations; a single report_success
+        fires after the final round with aggregate prompt/completion/remaining data so the
+        anchor floor and sliding-window correction activate correctly.
+
+        tool_executor: callable(tool_name, arguments_json) → result_str
+            Called once per tool call in each iteration. Exceptions propagate and cause
+            the whole attempt to be reported as an error.
+
+        Returns CallResult where .response is the final message content (str), or None if
+        max_iterations is reached without a non-tool-call response.
+
+        Requires: pip install proviz-elekto[litellm]
+        """
+        try:
+            import litellm
+        except ImportError:
+            raise ProvizError(
+                "litellm is not installed. Run: pip install proviz-elekto[litellm]"
+            ) from None
+
+        classifier = error_classifier or _classify_error
+        permanent_skip: list[str] = list(exclude_ids or [])
+        wait_deadline = time.monotonic() + max_wait_secs if max_wait_secs > 0 else None
+
+        attempt = 0
+        while True:
+            attempt += 1
+            server_wait_ms: Optional[int] = None
+            if wait_deadline is not None:
+                remaining_budget = wait_deadline - time.monotonic()
+                if remaining_budget > 0:
+                    server_wait_ms = int(remaining_budget * 1000)
+            try:
+                candidate = self.select(
+                    step=step,
+                    estimated_tokens=estimated_tokens,
+                    requires_fn_call=True,
+                    requires_json_mode=requires_json_mode,
+                    quality_min=quality_min,
+                    exclude_ids=permanent_skip,
+                    categories=categories,
+                    group_id=group_id,
+                    group_name=group_name,
+                    max_wait_ms=server_wait_ms,
+                )
+            except AllModelsExhausted as e:
+                if wait_deadline is not None and e.retry_after_ms > 0:
+                    remaining = wait_deadline - time.monotonic()
+                    base_wait = min(e.retry_after_ms / 1000.0, remaining)
+                    if base_wait > 0:
+                        wait = base_wait * random.uniform(0.8, 1.2)
+                        wait = min(wait, remaining)
+                        _logger.debug(
+                            "step=%s all models exhausted, retrying in %.2fs "
+                            "(retry_after_ms=%d, jittered, attempt=%d)",
+                            step, wait, e.retry_after_ms, attempt,
+                        )
+                        time.sleep(wait)
+                        continue
+                raise
+
+            _logger.debug(
+                "call_litellm_tool_loop attempt=%d step=%s model=%s/%s",
+                attempt, step, candidate.brand_slug, candidate.model_slug,
+            )
+
+            total_prompt = total_completion = total_tokens = 0
+            last_rem_req: Optional[int] = None
+            last_rem_tok: Optional[int] = None
+            last_lim_req: Optional[int] = None
+            last_lim_tok: Optional[int] = None
+            current_messages = list(messages)
+
+            try:
+                for iteration in range(max_iterations):
+                    response = litellm.completion(
+                        model=f"{candidate.brand_slug}/{candidate.model_slug}",
+                        messages=current_messages,
+                        tools=tools,
+                        tool_choice=tool_choice,
+                        api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                        **litellm_kwargs,
+                    )
+                    pt, ct, tot = _extract_usage(response)
+                    last_rem_req, last_rem_tok, last_lim_req, last_lim_tok = _extract_provider_limits(response)
+                    total_prompt += pt
+                    total_completion += ct
+                    total_tokens += tot
+
+                    msg = response.choices[0].message
+                    tool_calls = getattr(msg, "tool_calls", None) or []
+
+                    if not tool_calls:
+                        actual_cost_usd = _compute_cost(candidate, total_prompt, total_completion)
+                        self.report_success(
+                            candidate.model_id,
+                            estimated_tokens=estimated_tokens,
+                            actual_tokens=total_tokens,
+                            prompt_tokens=total_prompt if total_prompt else None,
+                            completion_tokens=total_completion if total_completion else None,
+                            remaining_requests=last_rem_req,
+                            remaining_tokens=last_rem_tok,
+                            limit_requests=last_lim_req,
+                            limit_tokens=last_lim_tok,
+                        )
+                        _logger.debug(
+                            "call_litellm_tool_loop success: model=%s/%s iterations=%d "
+                            "prompt=%d completion=%d cost_usd=%s",
+                            candidate.brand_slug, candidate.model_slug, iteration + 1,
+                            total_prompt, total_completion, actual_cost_usd,
+                        )
+                        return CallResult(
+                            response=msg.content or "",
+                            candidate=candidate,
+                            provider=candidate.brand_slug,
+                            prompt_tokens=total_prompt,
+                            completion_tokens=total_completion,
+                            total_tokens=total_tokens,
+                            actual_cost_usd=actual_cost_usd,
+                        )
+
+                    current_messages = current_messages + [msg]
+                    for tc in tool_calls:
+                        result = tool_executor(tc.function.name, tc.function.arguments)
+                        current_messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": result,
+                        })
+
+                _logger.warning(
+                    "call_litellm_tool_loop: max_iterations=%d reached without final answer "
+                    "for step=%s model=%s/%s",
+                    max_iterations, step, candidate.brand_slug, candidate.model_slug,
+                )
+                self.report_error(candidate.model_id, "other")
+                return None
+
+            except AllModelsExhausted:
+                raise
+            except Exception as exc:
+                outcome, error_type = classifier(exc)
+                _logger.debug(
+                    "call_litellm_tool_loop error: model=%s/%s outcome=%s error_type=%s exc=%s",
+                    candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
+                )
+                if outcome == "rate_limit":
+                    self.report_rate_limit(candidate.model_id, error_type)
+                else:
+                    self.report_error(candidate.model_id, error_type)
+                if error_type == "parse":
+                    permanent_skip.append(candidate.model_id)
+
     def health(self) -> dict:
         req = urllib.request.Request(f"{self._base}/health")
         with urllib.request.urlopen(req, timeout=self._timeout) as resp:
