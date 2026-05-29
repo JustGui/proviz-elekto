@@ -21,7 +21,6 @@ pub struct Brand {
     pub id: Uuid,
     pub slug: String,
     pub name: String,
-    pub api_key_env: Option<String>,
     pub base_url: Option<String>,
     pub is_active: bool,
     /// Lower = tried first. Brands with same priority compete by rule.priority. Default 0.

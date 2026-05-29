@@ -690,10 +690,10 @@ impl Selector {
                         .next();
                     match best {
                         Some(k) => (Some(k.api_key_env.clone()), Some(k.id)),
-                        None => (winner.brand.api_key_env.clone(), None),
+                        None => (None, None),
                     }
                 }
-                None => (winner.brand.api_key_env.clone(), None),
+                None => (None, None),
             }
         };
 

@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
 pub const Q_BRANDS: &str =
-    "SELECT id,slug,name,api_key_env,base_url,is_active,priority,created_at,traffic_weight \
+    "SELECT id,slug,name,base_url,is_active,priority,created_at,traffic_weight \
      FROM pz_brands";
 
 pub const Q_MODELS: &str =
@@ -48,12 +48,11 @@ pub fn brand_from_row(row: &impl RowReader) -> Brand {
         id: row.uuid(0),
         slug: row.string(1),
         name: row.string(2),
-        api_key_env: row.opt_string(3),
-        base_url: row.opt_string(4),
-        is_active: row.bool_val(5),
-        priority: row.i16_val(6),
-        created_at: row.datetime(7),
-        traffic_weight: row.opt_f64(8).unwrap_or(1.0),
+        base_url: row.opt_string(3),
+        is_active: row.bool_val(4),
+        priority: row.i16_val(5),
+        created_at: row.datetime(6),
+        traffic_weight: row.opt_f64(7).unwrap_or(1.0),
     }
 }
 

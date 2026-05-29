@@ -37,7 +37,59 @@ impl SqliteStorage {
             conn: Mutex::new(conn),
         };
         s.init_schema()?;
+        s.migrate_brand_api_keys()?;
         Ok(s)
+    }
+
+    fn migrate_brand_api_keys(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let has_column: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_brands') WHERE name='api_key_env'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+
+        if !has_column {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, api_key_env, created_at FROM pz_brands WHERE api_key_env IS NOT NULL",
+                )
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+            let iter = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+            iter.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| StorageError::Database(e.to_string()))?
+        };
+
+        for (brand_id, api_key_env, created_at) in rows {
+            let key_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO pz_brand_api_keys (id,brand_id,api_key_env,priority,is_active,created_at)
+                 VALUES (?1,?2,?3,0,1,?4)
+                 ON CONFLICT(brand_id,api_key_env) DO NOTHING",
+                params![key_id, brand_id, api_key_env, created_at],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+
+        conn.execute_batch("ALTER TABLE pz_brands DROP COLUMN api_key_env;")
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -163,17 +215,16 @@ impl CatalogStorage for SqliteStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at,traffic_weight)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
              ON CONFLICT(slug) DO UPDATE SET
-               name=excluded.name, api_key_env=excluded.api_key_env,
-               base_url=excluded.base_url, is_active=excluded.is_active,
-               priority=excluded.priority, traffic_weight=excluded.traffic_weight",
+               name=excluded.name, base_url=excluded.base_url,
+               is_active=excluded.is_active, priority=excluded.priority,
+               traffic_weight=excluded.traffic_weight",
             params![
                 brand.id.to_string(),
                 brand.slug,
                 brand.name,
-                brand.api_key_env,
                 brand.base_url,
                 brand.is_active,
                 brand.priority as i64,
@@ -483,7 +534,6 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     id             TEXT PRIMARY KEY,
     slug           TEXT UNIQUE NOT NULL,
     name           TEXT NOT NULL,
-    api_key_env    TEXT,
     base_url       TEXT,
     is_active      INTEGER NOT NULL DEFAULT 1,
     priority       INTEGER NOT NULL DEFAULT 0,
@@ -591,7 +641,6 @@ mod tests {
             id: Uuid::new_v4(),
             slug: slug.to_string(),
             name: slug.to_string(),
-            api_key_env: None,
             base_url: None,
             is_active: true,
             priority: 0,

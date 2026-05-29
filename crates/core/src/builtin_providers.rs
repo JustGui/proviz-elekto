@@ -3,7 +3,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::{
-    models::{Brand, Model},
+    models::{Brand, BrandApiKey, Model},
     storage::{CatalogStorage, StorageResult},
 };
 
@@ -67,7 +67,6 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
             id: Uuid::new_v4(),
             slug: brand_def.slug.clone(),
             name: brand_def.name.clone(),
-            api_key_env: brand_def.api_key_env.clone(),
             base_url: brand_def.base_url.clone(),
             is_active: true,
             priority: 0,
@@ -75,6 +74,17 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
             traffic_weight: 1.0,
         };
         storage.insert_brand(&brand)?;
+
+        if let Some(env) = &brand_def.api_key_env {
+            storage.insert_brand_api_key(&BrandApiKey {
+                id: Uuid::new_v4(),
+                brand_id: brand.id,
+                api_key_env: env.clone(),
+                priority: 0,
+                is_active: true,
+                created_at: Utc::now(),
+            })?;
+        }
 
         for def in &model_defs {
             let display = def.display_name.clone().unwrap_or_else(|| def.slug.clone());

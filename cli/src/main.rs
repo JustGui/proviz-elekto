@@ -421,7 +421,6 @@ fn main() {
                     id: Uuid::new_v4(),
                     slug: slug.clone(),
                     name: name.clone(),
-                    api_key_env,
                     base_url,
                     is_active: true,
                     priority,
@@ -429,7 +428,21 @@ fn main() {
                     traffic_weight,
                 };
                 storage.insert_brand(&brand).unwrap();
-                println!("brand '{slug}' added (id={})", brand.id);
+                if let Some(env) = api_key_env {
+                    storage
+                        .insert_brand_api_key(&BrandApiKey {
+                            id: Uuid::new_v4(),
+                            brand_id: brand.id,
+                            api_key_env: env.clone(),
+                            priority: 0,
+                            is_active: true,
+                            created_at: chrono::Utc::now(),
+                        })
+                        .unwrap();
+                    println!("brand '{slug}' added (id={}) with key '{env}'", brand.id);
+                } else {
+                    println!("brand '{slug}' added (id={})", brand.id);
+                }
             }
             BrandCmd::List => {
                 let mut brands = storage.load_brands().unwrap();
@@ -1006,7 +1019,6 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                 id: Uuid::new_v4(),
                 slug: brand_def.slug.clone(),
                 name: brand_def.name.clone(),
-                api_key_env: brand_def.api_key_env.clone(),
                 base_url: brand_def.base_url.clone(),
                 is_active: true,
                 priority: 0,
@@ -1014,6 +1026,18 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                 traffic_weight: 1.0,
             };
             storage.insert_brand(&brand).unwrap();
+            if let Some(env) = &brand_def.api_key_env {
+                storage
+                    .insert_brand_api_key(&BrandApiKey {
+                        id: Uuid::new_v4(),
+                        brand_id: brand.id,
+                        api_key_env: env.clone(),
+                        priority: 0,
+                        is_active: true,
+                        created_at: chrono::Utc::now(),
+                    })
+                    .unwrap();
+            }
             println!("[{}] created brand '{}'", provider_name, brand_def.slug);
             brand.id
         };
@@ -1078,7 +1102,7 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
 }
 
 fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
-    let entries = vec![
+    let entries: Vec<(&str, &str, Option<&str>, Option<&str>)> = vec![
         ("groq", "Groq", Some("GROQ_API_KEY"), None),
         ("mistral", "Mistral AI", Some("MISTRAL_API_KEY"), None),
         ("ollama", "Ollama", None, Some("http://localhost:11434")),
@@ -1088,7 +1112,6 @@ fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
             id: Uuid::new_v4(),
             slug: slug.to_string(),
             name: name.to_string(),
-            api_key_env: api_key_env.map(|s| s.to_string()),
             base_url: base_url.map(|s| s.to_string()),
             is_active: true,
             priority: 0,
@@ -1096,6 +1119,18 @@ fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
             traffic_weight: 1.0,
         };
         storage.insert_brand(&brand).unwrap();
+        if let Some(env) = api_key_env {
+            storage
+                .insert_brand_api_key(&BrandApiKey {
+                    id: Uuid::new_v4(),
+                    brand_id: brand.id,
+                    api_key_env: env.to_string(),
+                    priority: 0,
+                    is_active: true,
+                    created_at: chrono::Utc::now(),
+                })
+                .unwrap();
+        }
         println!("seeded brand: {slug}");
     }
 }

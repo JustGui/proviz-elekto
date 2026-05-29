@@ -25,9 +25,40 @@ impl PostgresStorage {
             client: Mutex::new(client),
         };
         s.init_schema()?;
+        s.migrate_brand_api_keys()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
+    }
+
+    fn migrate_brand_api_keys(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        let has_column = client
+            .query_one(
+                "SELECT COUNT(*) FROM information_schema.columns \
+                 WHERE table_name='pz_brands' AND column_name='api_key_env'",
+                &[],
+            )
+            .map(|row| row.get::<_, i64>(0) > 0)
+            .unwrap_or(false);
+
+        if !has_column {
+            return Ok(());
+        }
+
+        client
+            .batch_execute(
+                "INSERT INTO pz_brand_api_keys (brand_id,api_key_env,priority,is_active,created_at)
+                 SELECT id, api_key_env, 0, TRUE, created_at
+                 FROM pz_brands
+                 WHERE api_key_env IS NOT NULL
+                 ON CONFLICT (brand_id,api_key_env) DO NOTHING;
+
+                 ALTER TABLE pz_brands DROP COLUMN api_key_env;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+
+        Ok(())
     }
 }
 
@@ -124,13 +155,13 @@ impl CatalogStorage for PostgresStorage {
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
         client.execute(
-            "INSERT INTO pz_brands (id,slug,name,api_key_env,base_url,is_active,priority,created_at,traffic_weight)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
              ON CONFLICT (slug) DO UPDATE SET
-               name=EXCLUDED.name, api_key_env=EXCLUDED.api_key_env,
-               base_url=EXCLUDED.base_url, is_active=EXCLUDED.is_active,
-               priority=EXCLUDED.priority, traffic_weight=EXCLUDED.traffic_weight",
-            &[&brand.id, &brand.slug, &brand.name, &brand.api_key_env, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight],
+               name=EXCLUDED.name, base_url=EXCLUDED.base_url,
+               is_active=EXCLUDED.is_active, priority=EXCLUDED.priority,
+               traffic_weight=EXCLUDED.traffic_weight",
+            &[&brand.id, &brand.slug, &brand.name, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -421,7 +452,6 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     id             UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
     slug           VARCHAR(50)      UNIQUE NOT NULL,
     name           VARCHAR(100)     NOT NULL,
-    api_key_env    VARCHAR(100),
     base_url       VARCHAR(255),
     is_active      BOOLEAN          NOT NULL DEFAULT TRUE,
     priority       SMALLINT         NOT NULL DEFAULT 0,
