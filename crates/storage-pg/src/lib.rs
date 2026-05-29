@@ -173,8 +173,8 @@ impl CatalogStorage for PostgresStorage {
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-              is_enabled,notes,category,created_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+              is_enabled,notes,category,created_at,batch_price_multiplier)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -184,7 +184,8 @@ impl CatalogStorage for PostgresStorage {
                price_output_per_1m=EXCLUDED.price_output_per_1m,
                tpm_limit=EXCLUDED.tpm_limit, rpm_limit=EXCLUDED.rpm_limit, rpd_limit=EXCLUDED.rpd_limit,
                quality_score=EXCLUDED.quality_score, is_enabled=EXCLUDED.is_enabled,
-               category=EXCLUDED.category",
+               category=EXCLUDED.category,
+               batch_price_multiplier=EXCLUDED.batch_price_multiplier",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -200,6 +201,7 @@ impl CatalogStorage for PostgresStorage {
                 &model.quality_score.map(|v| v as f64),
                 &model.avg_latency_ms.map(|v| v as i32),
                 &model.is_enabled, &model.notes, &model.category, &model.created_at,
+                &model.batch_price_multiplier,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -481,7 +483,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     is_enabled                BOOLEAN      NOT NULL DEFAULT TRUE,
     notes                     TEXT,
     category                  VARCHAR(50),
-    created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+    created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    batch_price_multiplier    DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (

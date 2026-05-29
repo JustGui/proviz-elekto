@@ -137,6 +137,8 @@ struct ProviderModelDef {
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
+    #[serde(default)]
+    batch_price_multiplier: Option<f64>,
 }
 
 #[derive(Subcommand)]
@@ -575,6 +577,7 @@ fn main() {
                     notes,
                     category,
                     created_at: chrono::Utc::now(),
+                    batch_price_multiplier: None,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -662,6 +665,7 @@ fn main() {
                         notes: v["notes"].as_str().map(|s| s.to_string()),
                         category: v["category"].as_str().map(|s| s.to_string()),
                         created_at: chrono::Utc::now(),
+                        batch_price_multiplier: v["batch_price_multiplier"].as_f64(),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;
@@ -1088,6 +1092,7 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
                     notes: def.notes.clone(),
                     category: def.category.clone(),
                     created_at: chrono::Utc::now(),
+                    batch_price_multiplier: def.batch_price_multiplier,
                 };
                 storage.insert_model(&model).unwrap();
                 inserted += 1;
@@ -1292,6 +1297,7 @@ fn seed_models(storage: &Arc<dyn CatalogStorage>) {
             notes: None,
             category: None,
             created_at: chrono::Utc::now(),
+            batch_price_multiplier: None,
         };
         storage.insert_model(&model).unwrap();
         println!("seeded model: {brand_slug}/{slug}");

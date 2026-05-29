@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -22,6 +22,9 @@ use serde::Serialize;
 use serde_json::json;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
+use uuid::Uuid;
+
+mod batch;
 
 #[derive(Parser)]
 #[command(name = "proviz-server", about = "ProvizElekto LLM model router")]
@@ -37,10 +40,27 @@ struct Args {
 
     #[arg(long, env = "PROVIZ_PORT", default_value = "0")]
     port: u16,
+
+    /// Seconds to accumulate batch requests before flushing to Mistral's Batch API.
+    #[arg(long, env = "PROVIZ_BATCH_WINDOW_SECS", default_value = "60")]
+    batch_window_secs: u64,
+
+    /// Maximum batch size before an early flush is triggered.
+    #[arg(long, env = "PROVIZ_BATCH_MAX_SIZE", default_value = "100")]
+    batch_max_size: usize,
+
+    /// Mistral API base URL for batch operations.
+    #[arg(
+        long,
+        env = "PROVIZ_BATCH_MISTRAL_BASE_URL",
+        default_value = "https://api.mistral.ai"
+    )]
+    batch_mistral_base_url: String,
 }
 
 struct AppState {
-    selector: Selector,
+    selector: Arc<Selector>,
+    batch_queue: Arc<batch::BatchQueue>,
     started_at: Instant,
 }
 
@@ -97,8 +117,29 @@ async fn main() {
     .await
     .expect("catalog load task panicked");
 
+    let selector = Arc::new(selector);
+
+    let batch_queue = Arc::new(batch::BatchQueue::new(
+        args.batch_window_secs,
+        args.batch_max_size,
+        args.batch_mistral_base_url.clone(),
+    ));
+
+    batch::spawn_flush_task(
+        batch_queue.clone(),
+        selector.clone(),
+        reqwest::Client::new(),
+    );
+
+    info!(
+        window_secs = args.batch_window_secs,
+        max_size = args.batch_max_size,
+        "batch queue started"
+    );
+
     let state = Arc::new(AppState {
         selector,
+        batch_queue,
         started_at: Instant::now(),
     });
 
@@ -107,6 +148,8 @@ async fn main() {
         .route("/report", post(handle_report))
         .route("/health", get(handle_health))
         .route("/catalog/reload", post(handle_reload))
+        .route("/batch/submit", post(handle_batch_submit))
+        .route("/batch/result/{request_id}", get(handle_batch_result))
         .with_state(state)
         .layer(tower_http::cors::CorsLayer::permissive());
 
@@ -145,9 +188,9 @@ async fn handle_select(
 
     // First attempt.
     let result = {
-        let state2 = state.clone();
+        let sel = state.selector.clone();
         let req2 = req.clone();
-        tokio::task::spawn_blocking(move || state2.selector.select(&req2))
+        tokio::task::spawn_blocking(move || sel.select(&req2))
             .await
             .expect("select task panicked")
     };
@@ -168,7 +211,8 @@ async fn handle_select(
                 "all models exhausted — sleeping before retry"
             );
             tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
-            tokio::task::spawn_blocking(move || state.selector.select(&req))
+            let sel = state.selector.clone();
+            tokio::task::spawn_blocking(move || sel.select(&req))
                 .await
                 .expect("select retry panicked")
         }
@@ -235,6 +279,7 @@ async fn handle_report(
         remaining_tokens = ?req.remaining_tokens,
         "report"
     );
+    let sel = state.selector.clone();
     let actual_cost_usd = tokio::task::spawn_blocking(move || {
         let estimated = req.estimated_tokens.unwrap_or(0);
         let actual = req.actual_tokens;
@@ -244,7 +289,7 @@ async fn handle_report(
         let rem_tok = req.remaining_tokens;
         let brand_key_id = req.brand_key_id;
         let cost = match req.outcome {
-            ReportOutcome::Success => state.selector.report_success(
+            ReportOutcome::Success => sel.report_success(
                 req.model_id,
                 brand_key_id,
                 estimated,
@@ -256,7 +301,7 @@ async fn handle_report(
             ),
             ReportOutcome::RateLimit => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                state.selector.report_rate_limit(
+                sel.report_rate_limit(
                     req.model_id,
                     brand_key_id,
                     et,
@@ -269,7 +314,7 @@ async fn handle_report(
             }
             ReportOutcome::Error => {
                 let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                state.selector.report_error(
+                sel.report_error(
                     req.model_id,
                     brand_key_id,
                     et,
@@ -282,9 +327,7 @@ async fn handle_report(
             }
         };
         if req.sync_limits {
-            state
-                .selector
-                .sync_provider_limits(req.model_id, req.limit_requests, req.limit_tokens);
+            sel.sync_provider_limits(req.model_id, req.limit_requests, req.limit_tokens);
         }
         cost
     })
@@ -314,7 +357,8 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 }
 
 async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let result = tokio::task::spawn_blocking(move || state.selector.reload())
+    let sel = state.selector.clone();
+    let result = tokio::task::spawn_blocking(move || sel.reload())
         .await
         .expect("reload task panicked");
     match result {
@@ -329,4 +373,26 @@ async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         )
             .into_response(),
     }
+}
+
+async fn handle_batch_submit(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<batch::BatchSubmitRequest>,
+) -> impl IntoResponse {
+    debug!(peer = %peer, step = %req.step, "batch/submit");
+    match batch::handle_batch_submit(state.batch_queue.clone(), state.selector.clone(), req).await {
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
+        Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
+    }
+}
+
+async fn handle_batch_result(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(state): State<Arc<AppState>>,
+    Path(request_id): Path<Uuid>,
+) -> impl IntoResponse {
+    debug!(peer = %peer, %request_id, "batch/result");
+    let resp = batch::handle_batch_result(&state.batch_queue, request_id);
+    (StatusCode::OK, Json(json!(resp))).into_response()
 }

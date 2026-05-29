@@ -720,6 +720,7 @@ impl Selector {
             estimated_tokens,
             price_input_per_1m: winner.model.price_input_per_1m,
             price_output_per_1m: winner.model.price_output_per_1m,
+            batch_price_multiplier: winner.model.batch_price_multiplier,
         })
     }
 

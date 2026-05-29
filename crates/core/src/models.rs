@@ -58,6 +58,9 @@ pub struct Model {
     /// If set, callers must explicitly request this category to receive this model.
     pub category: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// Multiplier applied to pricing when this model is used via batch API (e.g. 0.5 for 50% discount).
+    /// None means no batch pricing is configured (standard prices apply).
+    pub batch_price_multiplier: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -210,6 +213,9 @@ pub struct ModelCandidate {
     pub price_input_per_1m: Option<f64>,
     /// Provider's per-million-token output price.
     pub price_output_per_1m: Option<f64>,
+    /// Multiplier applied to pricing when this model is used via batch API (e.g. 0.5 for 50% discount).
+    #[serde(default)]
+    pub batch_price_multiplier: Option<f64>,
 }
 
 /// Input to /report

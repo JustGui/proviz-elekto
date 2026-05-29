@@ -47,6 +47,7 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         notes: None,
         category: None,
         created_at: Utc::now(),
+        batch_price_multiplier: None,
     }
 }
 

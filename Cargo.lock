@@ -1367,10 +1367,12 @@ version = "0.7.1"
 dependencies = [
  "axum",
  "clap",
+ "dashmap",
  "dotenvy",
  "proviz-elekto-core",
  "proviz-elekto-storage-pg",
  "proviz-elekto-storage-sqlite",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",

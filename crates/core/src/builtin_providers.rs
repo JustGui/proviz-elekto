@@ -38,6 +38,8 @@ struct ModelDef {
     avg_latency_ms: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
+    #[serde(default)]
+    batch_price_multiplier: Option<f64>,
 }
 
 static PROVIDERS: &[(&str, &str)] = &[
@@ -111,6 +113,7 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
                 notes: def.notes.clone(),
                 category: def.category.clone(),
                 created_at: Utc::now(),
+                batch_price_multiplier: def.batch_price_multiplier,
             };
             storage.insert_model(&model)?;
         }

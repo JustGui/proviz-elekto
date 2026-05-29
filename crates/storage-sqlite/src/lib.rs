@@ -243,8 +243,8 @@ impl CatalogStorage for SqliteStorage {
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-              is_enabled,notes,category,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+              is_enabled,notes,category,created_at,batch_price_multiplier)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -268,6 +268,7 @@ impl CatalogStorage for SqliteStorage {
                 model.notes,
                 model.category,
                 model.created_at.to_rfc3339(),
+                model.batch_price_multiplier,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -563,7 +564,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     is_enabled                INTEGER NOT NULL DEFAULT 1,
     notes                     TEXT,
     category                  TEXT,
-    created_at                TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at                TEXT NOT NULL DEFAULT (datetime('now')),
+    batch_price_multiplier    REAL
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -673,6 +675,7 @@ mod tests {
             notes: None,
             category: None,
             created_at: Utc::now(),
+            batch_price_multiplier: None,
         }
     }
 

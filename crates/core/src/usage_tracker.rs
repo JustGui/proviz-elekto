@@ -432,6 +432,7 @@ mod tests {
             notes: None,
             category: None,
             created_at: Utc::now(),
+            batch_price_multiplier: None,
         }
     }
 

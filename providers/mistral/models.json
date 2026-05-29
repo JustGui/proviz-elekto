@@ -10,7 +10,8 @@
     "tpm_limit_month": null,
     "rps_limit": 8.33,
     "price_input_per_1m": 0.3,
-    "price_output_per_1m": 0.9
+    "price_output_per_1m": 0.9,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "codestral-embed",
@@ -36,7 +37,8 @@
     "rps_limit": 6.0,
     "quality_score": 0.78,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2
+    "price_output_per_1m": 2,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "labs-leanstral-2603",
@@ -50,7 +52,8 @@
     "rps_limit": 2.5,
     "quality_score": 0.75,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "magistral-medium-2509",
@@ -64,7 +67,8 @@
     "rps_limit": 0.17,
     "quality_score": 0.78,
     "price_input_per_1m": 2.0,
-    "price_output_per_1m": 5.0
+    "price_output_per_1m": 5.0,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "ministral-14b-2512",
@@ -78,7 +82,8 @@
     "rps_limit": 2.0,
     "quality_score": 0.85,
     "price_input_per_1m": 0.2,
-    "price_output_per_1m": 0.2
+    "price_output_per_1m": 0.2,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "ministral-3b-2512",
@@ -92,7 +97,8 @@
     "rps_limit": 50.0,
     "quality_score": 0.25,
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.1
+    "price_output_per_1m": 0.1,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "ministral-8b-2512",
@@ -106,7 +112,8 @@
     "rps_limit": 12.5,
     "quality_score": 0.8,
     "price_input_per_1m": 0.15,
-    "price_output_per_1m": 0.15
+    "price_output_per_1m": 0.15,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-embed-2312",
@@ -133,7 +140,8 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.95
+    "quality_score": 0.95,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-medium-2505",
@@ -147,7 +155,8 @@
     "rps_limit": 1.67,
     "quality_score": 0.83,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.0
+    "price_output_per_1m": 2.0,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-medium-2508",
@@ -161,7 +170,8 @@
     "rps_limit": 1.58,
     "quality_score": 0.85,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.0
+    "price_output_per_1m": 2.0,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-medium-3-5",
@@ -175,7 +185,8 @@
     "rps_limit": 6.0,
     "quality_score": 0.88,
     "price_input_per_1m": 1.5,
-    "price_output_per_1m": 7.5
+    "price_output_per_1m": 7.5,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-moderation-2603",
@@ -212,7 +223,8 @@
     "tpm_limit": 100000,
     "tpm_limit_month": null,
     "rps_limit": 1.67,
-    "quality_score": 0.7
+    "quality_score": 0.7,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "mistral-vibe-cli-latest",
@@ -224,7 +236,8 @@
     "tpm_limit": 600000,
     "tpm_limit_month": null,
     "rps_limit": 1.67,
-    "quality_score": 0.75
+    "quality_score": 0.75,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "open-mistral-nemo",
@@ -238,7 +251,8 @@
     "rps_limit": 2.0,
     "quality_score": 0.93,
     "price_input_per_1m": 0.15,
-    "price_output_per_1m": 0.15
+    "price_output_per_1m": 0.15,
+    "batch_price_multiplier": 0.5
   },
   {
     "slug": "voxtral-mini-2507",

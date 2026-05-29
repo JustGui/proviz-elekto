@@ -62,6 +62,8 @@ class ModelCandidate:
     # ID of the specific brand API key selected. Echo back in report calls so the server
     # can block the key (not the model) on 429, enabling failover to other keys.
     brand_key_id: Optional[str] = None
+    # Multiplier applied to pricing for batch API calls (e.g. 0.5 for 50% discount).
+    batch_price_multiplier: Optional[float] = None
 
 
 @dataclass
@@ -404,6 +406,18 @@ class ProvizElekto:
                     tried=payload.get("tried", 0),
                     retry_after_ms=payload.get("retry_after_ms", 0),
                 )
+            raise ProvizError(f"HTTP {e.code}: {payload}") from e
+
+    def _get(self, path: str) -> dict:
+        req = urllib.request.Request(
+            f"{self._base}{path}",
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            payload = json.loads(e.read())
             raise ProvizError(f"HTTP {e.code}: {payload}") from e
 
     def _post_fire_and_forget(self, path: str, body: dict) -> None:
@@ -903,6 +917,30 @@ class ProvizElekto:
                     self.report_error(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
+
+    def create_batch_queue(self, step: str, **select_kwargs: Any) -> "batch_module.BatchQueue":
+        """Create a BatchQueue that routes requests through Mistral's Batch API (50% cost reduction).
+
+        Requests submitted to the queue are forwarded to the server-side batch queue.
+        The server accumulates them from all workers and flushes as a single Mistral
+        batch job after the configured window (``--batch-window-secs``, default 60s).
+
+        Only Mistral text/code models are eligible. The server enforces this.
+
+        Args:
+            step: Step name for model selection.
+            **select_kwargs: Forwarded to ``/batch/submit`` (e.g. ``quality_min``,
+                ``group_name``, ``requires_fn_call``).
+
+        Example::
+
+            queue = pz.create_batch_queue("classify")
+            jobs = [queue.submit([{"role": "user", "content": t}]) for t in texts]
+            for job in jobs:
+                print(job.result(timeout=300).content)
+        """
+        from . import batch as batch_module
+        return batch_module.BatchQueue(proviz=self, step=step, **select_kwargs)
 
     def health(self) -> dict:
         req = urllib.request.Request(f"{self._base}/health")
