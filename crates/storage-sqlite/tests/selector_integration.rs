@@ -15,7 +15,6 @@ fn make_brand(slug: &str, priority: i16) -> Brand {
         id: Uuid::new_v4(),
         slug: slug.to_string(),
         name: slug.to_string(),
-        api_key_env: Some(format!("{}_API_KEY", slug.to_uppercase())),
         base_url: None,
         is_active: true,
         priority,
