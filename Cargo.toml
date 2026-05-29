@@ -34,7 +34,7 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 hyper = { version = "1" }
 
 # HTTP client (CLI + Python client example)
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Rate limit state
 dashmap = "6"
