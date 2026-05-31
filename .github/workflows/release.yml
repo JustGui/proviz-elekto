@@ -36,7 +36,7 @@ jobs:
     env:
       CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
       GIT_CONFIG_NOSYSTEM: "1"
-      CFLAGS_aarch64_unknown_linux_gnu: "-march=armv8-a"
+      CFLAGS_aarch64_unknown_linux_gnu: "-march=armv8-a -D__ARM_ARCH=8"
     steps:
       - uses: actions/checkout@v4
 
