@@ -14,6 +14,33 @@ Your app → pz.call(step, fn)               → CallResult
 
 **Key difference from LiteLLM fallback:** LiteLLM retries *after* failure. ProvizElekto picks the right model *before* the call — skipping models that are rate-limited or near their quota, can't fit the context, or lack required capabilities — then retries with the next eligible model automatically.
 
+### Two roles depending on the path
+
+In the **regular flow**, the server is a pure router — it picks the model and returns credentials; your code makes the actual LLM call.
+
+In the **batch flow**, the server becomes the caller:
+
+```
+# Regular: YOUR code calls the LLM
+Your app → POST /select → ModelCandidate → your code → Mistral/OpenAI/...
+                                                ↓
+                                        POST /report
+
+# Batch: the SERVER calls Mistral on your behalf
+Worker A ──┐
+Worker B ──┤ POST /batch/submit → server accumulates over window_secs
+Worker C ──┘
+                    ↓ server → POST Mistral /v1/batch/jobs (50% discount)
+                    ↓ server polls until complete
+Worker A ──┐
+Worker B ──┤ GET /batch/result/{id} → response
+Worker C ──┘
+```
+
+The batch path pools requests from all workers into a single Mistral job — the only way to qualify for Mistral's 50% batch discount. No individual worker can do this on its own, so the server acts as the aggregation point and makes the Mistral call itself.
+
+**Deployment note:** when using batch, the server process (including Docker) must have the Mistral API key env vars set. In the regular flow, API keys only need to be present in the caller's environment.
+
 ## Features
 
 - **Context-aware selection** - don't waste a 128k model on a 1k prompt
