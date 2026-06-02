@@ -102,7 +102,7 @@ A model can be reactive-blocked even when its quota counters show headroom.
 
 ## Quota sliding windows
 
-Proactive quota tracking uses five per-model sliding windows:
+Proactive quota tracking uses five sliding windows, maintained per `(model, API key)` bucket:
 
 | Dimension | Window | Limit field |
 |-----------|--------|-------------|
@@ -122,6 +122,22 @@ the server stores them as a floor for the corresponding window: `effective_used 
 This means if the provider reports fewer remaining requests/tokens than the local window
 suggests, the server trusts the provider. In-flight requests (not yet acknowledged by
 the provider) are still added on top.
+
+### Per-key isolation (multi-account brands)
+
+When a brand has multiple API keys in `pz_brand_api_keys` (separate accounts), each window
+set above is tracked independently per key — the tracker is keyed by `(model_id, brand_key_id)`.
+The selector picks the serving key during Pass 1, then computes headroom against *that key's*
+bucket. So if you register two Mistral accounts under one brand:
+
+- Heavy usage on key A drains key A's windows only; key B keeps full headroom and is scored
+  higher on the next selection, naturally spreading load across both accounts' quotas.
+- Provider `x-ratelimit-remaining-*` headers (which are per-account) anchor the floor of the
+  key that produced them, instead of overwriting a single shared value.
+- The caller echoes `brand_key_id` back in `/report`, so the in-flight release lands on the
+  same bucket the reservation was taken on.
+
+Single-key/legacy brands use `brand_key_id = None` — one bucket per model, exactly as before.
 
 ## Transient exhaustion and retry hints
 
