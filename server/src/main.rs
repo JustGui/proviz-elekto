@@ -327,7 +327,12 @@ async fn handle_report(
             }
         };
         if req.sync_limits {
-            sel.sync_provider_limits(req.model_id, req.limit_requests, req.limit_tokens);
+            sel.sync_provider_limits(
+                req.model_id,
+                brand_key_id,
+                req.limit_requests,
+                req.limit_tokens,
+            );
         }
         cost
     })
