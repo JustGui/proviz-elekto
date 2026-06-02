@@ -844,11 +844,30 @@ impl Selector {
         }
     }
 
-    /// Update `rpm_limit` / `tpm_limit` for a model when the provider reports different values
-    /// via response headers. Only writes to storage (and patches the in-memory cache) if the
-    /// value actually changed, so hot-path overhead is a single cache read in the common case.
-    pub fn sync_provider_limits(&self, model_id: Uuid, rpm: Option<u32>, tpm: Option<u32>) {
+    /// Apply provider-reported `rpm_limit` / `tpm_limit` (from response headers) for the key that
+    /// served the request.
+    ///
+    /// Always anchors the ceiling **per key** in the `UsageTracker` bucket, so headroom scores
+    /// against the limit each account actually reports. For single-key brands (`brand_key_id =
+    /// None`) the value is *also* persisted to the model-level DB row (and in-memory cache) when it
+    /// changed. For multi-key brands the model-level write is skipped — the limit is per-account
+    /// and a shared DB write would clobber across keys; the per-key bucket anchor is authoritative.
+    pub fn sync_provider_limits(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        rpm: Option<u32>,
+        tpm: Option<u32>,
+    ) {
         if rpm.is_none() && tpm.is_none() {
+            return;
+        }
+        // Per-key ceiling for live scoring — applies to both single- and multi-key brands.
+        self.usage_tracker
+            .anchor_limits(model_id, brand_key_id, rpm, tpm);
+
+        // Multi-key brands stop here: the limit is per-account, not per-model.
+        if brand_key_id.is_some() {
             return;
         }
         let needs_update = {
