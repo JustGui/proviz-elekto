@@ -134,6 +134,10 @@ bucket. So if you register two Mistral accounts under one brand:
   higher on the next selection, naturally spreading load across both accounts' quotas.
 - Provider `x-ratelimit-remaining-*` headers (which are per-account) anchor the floor of the
   key that produced them, instead of overwriting a single shared value.
+- Provider `x-ratelimit-limit-*` headers anchor the *ceiling* per key (when `sync_limits=true`),
+  and headroom prefers it over the DB `rpm_limit`/`tpm_limit` (`provider_limit.or(db_limit)`).
+  Two accounts with different real limits are each scored against their own. The model-level DB
+  row is only written for single-key brands — a shared write would clobber across accounts.
 - The caller echoes `brand_key_id` back in `/report`, so the in-flight release lands on the
   same bucket the reservation was taken on.
 
