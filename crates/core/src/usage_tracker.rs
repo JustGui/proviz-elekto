@@ -60,12 +60,22 @@ impl Default for ModelUsage {
     }
 }
 
-/// Proactive per-model quota tracker using sliding windows + atomic in-flight counters.
+/// Key into the usage map: `(model_id, brand_key_id)`.
+///
+/// `brand_key_id` isolates per-account quota. Multi-key brands track each API key
+/// independently, so heavy usage (or a 429) on one account never shrinks another
+/// account's headroom. Legacy single-key brands pass `None` and keep one bucket per model.
+pub type UsageKey = (Uuid, Option<Uuid>);
+
+/// Proactive quota tracker using sliding windows + atomic in-flight counters,
+/// keyed per `(model, API key)`.
 ///
 /// Works alongside `RateLimitState` (reactive 429 blocking). This layer prevents
-/// over-booking models before any 429 fires by tracking estimated usage.
+/// over-booking before any 429 fires by tracking estimated usage. When a brand has
+/// multiple API keys, each key gets its own independent quota bucket so a fresh
+/// account is scored on its own (full) headroom rather than the brand's combined load.
 pub struct UsageTracker {
-    map: DashMap<Uuid, Arc<ModelUsage>>,
+    map: DashMap<UsageKey, Arc<ModelUsage>>,
 }
 
 impl Default for UsageTracker {
@@ -82,20 +92,21 @@ impl UsageTracker {
     }
 
     // Returns Arc so the DashMap shard lock is released before taking Mutex<ModelWindows>.
-    fn get_or_default(&self, model_id: Uuid) -> Arc<ModelUsage> {
-        if let Some(entry) = self.map.get(&model_id) {
+    fn get_or_default(&self, key: UsageKey) -> Arc<ModelUsage> {
+        if let Some(entry) = self.map.get(&key) {
             return entry.value().clone();
         }
         self.map
-            .entry(model_id)
+            .entry(key)
             .or_insert_with(|| Arc::new(ModelUsage::default()))
             .value()
             .clone()
     }
 
     /// Reserve a slot before returning a ModelCandidate. Lock-free (atomic only).
-    pub fn reserve(&self, model_id: Uuid, estimated_tokens: u64) {
-        let usage = self.get_or_default(model_id);
+    /// `brand_key_id` selects the per-account bucket (`None` for single-key brands).
+    pub fn reserve(&self, model_id: Uuid, brand_key_id: Option<Uuid>, estimated_tokens: u64) {
+        let usage = self.get_or_default((model_id, brand_key_id));
         usage.in_flight_requests.fetch_add(1, Ordering::Relaxed);
         usage
             .in_flight_tokens
@@ -103,9 +114,16 @@ impl UsageTracker {
     }
 
     /// Release a reservation and push actual usage into the sliding windows.
-    /// Call from every report_* path. `estimated_tokens` must match what was passed to `reserve`.
-    pub fn release(&self, model_id: Uuid, estimated_tokens: u64, actual_tokens: Option<u64>) {
-        let usage = self.get_or_default(model_id);
+    /// Call from every report_* path. `estimated_tokens` must match what was passed to `reserve`,
+    /// and `brand_key_id` must match the value echoed by the caller from the `ModelCandidate`.
+    pub fn release(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        estimated_tokens: u64,
+        actual_tokens: Option<u64>,
+    ) {
+        let usage = self.get_or_default((model_id, brand_key_id));
         usage
             .in_flight_requests
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
@@ -143,13 +161,14 @@ impl UsageTracker {
     pub fn anchor_remaining(
         &self,
         model_id: Uuid,
+        brand_key_id: Option<Uuid>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
     ) {
         if remaining_requests.is_none() && remaining_tokens.is_none() {
             return;
         }
-        let usage = self.get_or_default(model_id);
+        let usage = self.get_or_default((model_id, brand_key_id));
         let mut w = usage.windows.lock().unwrap();
         if let Some(r) = remaining_requests {
             w.provider_remaining_requests = Some(r);
@@ -159,23 +178,23 @@ impl UsageTracker {
         }
     }
 
-    /// Earliest time (ms from now) at which any of the supplied models may regain positive headroom,
-    /// based on the oldest sliding-window entry leaving the 60-second RPM/TPM window.
+    /// Earliest time (ms from now) at which any of the supplied `(model, key)` buckets may regain
+    /// positive headroom, based on the oldest sliding-window entry leaving the 60-second RPM/TPM window.
     ///
-    /// Returns `Some(ms)` if any model has window entries that haven't expired yet.
-    /// Returns `Some(2_000)` as a conservative hint when models are blocked only by in-flight
+    /// Returns `Some(ms)` if any bucket has window entries that haven't expired yet.
+    /// Returns `Some(2_000)` as a conservative hint when buckets are blocked only by in-flight
     /// reservations (no window entries) — those slots free up when current LLM calls complete.
-    /// Returns `None` if `ids` is empty.
-    pub fn earliest_drain_ms_for(&self, ids: &[Uuid]) -> Option<u64> {
-        if ids.is_empty() {
+    /// Returns `None` if `keys` is empty.
+    pub fn earliest_drain_ms_for(&self, keys: &[UsageKey]) -> Option<u64> {
+        if keys.is_empty() {
             return None;
         }
         let now = Instant::now();
         let mut min_ms: Option<u64> = None;
         let mut found_inflight_only = false;
 
-        for id in ids {
-            let arc = match self.map.get(id) {
+        for key in keys {
+            let arc = match self.map.get(key) {
                 Some(entry) => entry.value().clone(),
                 None => {
                     // No tracked usage at all — blocked only by a just-reserved in-flight slot.
@@ -223,8 +242,14 @@ impl UsageTracker {
     ///
     /// Returns 1.0 when none of these limits are configured (unconstrained on fast windows).
     /// Negative means over the per-minute/per-second quota but this will recover within 60s.
-    pub fn headroom_fast(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {
-        let usage = self.get_or_default(model_id);
+    pub fn headroom_fast(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        estimated_tokens: u64,
+        model: &Model,
+    ) -> f32 {
+        let usage = self.get_or_default((model_id, brand_key_id));
         let in_flight_req = usage.in_flight_requests.load(Ordering::Relaxed) as u64;
         let in_flight_tok = usage.in_flight_tokens.load(Ordering::Relaxed);
 
@@ -280,8 +305,14 @@ impl UsageTracker {
     /// Returns 1.0 when none of these limits are configured (unconstrained on long windows).
     /// Negative means the daily/monthly budget is depleted — recovery takes hours or days.
     /// Scoring should weigh this heavily to avoid burning irreplaceable long-horizon credits.
-    pub fn headroom_slow(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {
-        let usage = self.get_or_default(model_id);
+    pub fn headroom_slow(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        estimated_tokens: u64,
+        model: &Model,
+    ) -> f32 {
+        let usage = self.get_or_default((model_id, brand_key_id));
         let in_flight_req = usage.in_flight_requests.load(Ordering::Relaxed) as u64;
         let in_flight_tok = usage.in_flight_tokens.load(Ordering::Relaxed);
 
@@ -315,8 +346,14 @@ impl UsageTracker {
     /// - Negative: over capacity.
     ///
     /// Drains expired window entries as a side-effect (amortised cleanup).
-    pub fn headroom(&self, model_id: Uuid, estimated_tokens: u64, model: &Model) -> f32 {
-        let usage = self.get_or_default(model_id);
+    pub fn headroom(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        estimated_tokens: u64,
+        model: &Model,
+    ) -> f32 {
+        let usage = self.get_or_default((model_id, brand_key_id));
         let in_flight_req = usage.in_flight_requests.load(Ordering::Relaxed) as u64;
         let in_flight_tok = usage.in_flight_tokens.load(Ordering::Relaxed);
 
@@ -440,7 +477,7 @@ mod tests {
     fn no_limits_full_headroom() {
         let tracker = UsageTracker::new();
         let model = make_model(None, None);
-        assert_eq!(tracker.headroom(model.id, 1_000, &model), 1.0);
+        assert_eq!(tracker.headroom(model.id, None, 1_000, &model), 1.0);
     }
 
     #[test]
@@ -448,10 +485,10 @@ mod tests {
         let tracker = UsageTracker::new();
         let model = make_model(Some(10), None);
         for _ in 0..5 {
-            tracker.reserve(model.id, 0);
+            tracker.reserve(model.id, None, 0);
         }
         // 5 in-flight + 1 projected = 6/10 → 0.4
-        let h = tracker.headroom(model.id, 0, &model);
+        let h = tracker.headroom(model.id, None, 0, &model);
         assert!((h - 0.4).abs() < 1e-5, "expected ~0.4, got {h}");
     }
 
@@ -460,10 +497,10 @@ mod tests {
         let tracker = UsageTracker::new();
         let model = make_model(Some(5), None);
         for _ in 0..5 {
-            tracker.reserve(model.id, 0);
+            tracker.reserve(model.id, None, 0);
         }
         // 5 in-flight + 1 projected = 6/5 → -0.2 (over limit)
-        let h = tracker.headroom(model.id, 0, &model);
+        let h = tracker.headroom(model.id, None, 0, &model);
         assert!(h < 0.0, "expected negative headroom, got {h}");
     }
 
@@ -471,9 +508,9 @@ mod tests {
     fn tpm_headroom_uses_tokens() {
         let tracker = UsageTracker::new();
         let model = make_model(None, Some(10_000));
-        tracker.reserve(model.id, 3_000);
+        tracker.reserve(model.id, None, 3_000);
         // in_flight_tokens=3000, estimated=3000 → projected=6000/10000 → 0.4
-        let h = tracker.headroom(model.id, 3_000, &model);
+        let h = tracker.headroom(model.id, None, 3_000, &model);
         assert!((h - 0.4).abs() < 1e-5, "expected ~0.4, got {h}");
     }
 
@@ -481,10 +518,10 @@ mod tests {
     fn release_decrements_inflight() {
         let tracker = UsageTracker::new();
         let model = make_model(None, None);
-        tracker.reserve(model.id, 1_000);
-        tracker.reserve(model.id, 1_000);
-        tracker.release(model.id, 1_000, None);
-        let usage = tracker.get_or_default(model.id);
+        tracker.reserve(model.id, None, 1_000);
+        tracker.reserve(model.id, None, 1_000);
+        tracker.release(model.id, None, 1_000, None);
+        let usage = tracker.get_or_default((model.id, None));
         assert_eq!(usage.in_flight_requests.load(Ordering::Relaxed), 1);
         assert_eq!(usage.in_flight_tokens.load(Ordering::Relaxed), 1_000);
     }
@@ -494,8 +531,8 @@ mod tests {
         let tracker = UsageTracker::new();
         let model = make_model(None, None);
         // Release without prior reserve — must not underflow
-        tracker.release(model.id, 500, None);
-        let usage = tracker.get_or_default(model.id);
+        tracker.release(model.id, None, 500, None);
+        let usage = tracker.get_or_default((model.id, None));
         assert_eq!(usage.in_flight_requests.load(Ordering::Relaxed), 0);
     }
 
@@ -505,14 +542,73 @@ mod tests {
         let mut model = make_model(Some(100), Some(10_000));
         model.tpd_limit = Some(20_000);
         // 9000 in-flight tokens; requesting 2000 more → TPM projected=11000/10000 → -0.1
-        tracker.reserve(model.id, 9_000);
+        tracker.reserve(model.id, None, 9_000);
         // RPM: 0+0+1=1/100 → 0.99
         // TPM: 9000+0+2000=11000/10000 → -0.1 (over)
         // TPD: 0+9000+2000=11000/20000 → 0.45
-        let h = tracker.headroom(model.id, 2_000, &model);
+        let h = tracker.headroom(model.id, None, 2_000, &model);
         assert!(
             h < 0.0,
             "TPM over-capacity should make headroom negative, got {h}"
+        );
+    }
+
+    #[test]
+    fn keys_have_independent_headroom() {
+        // Two API keys (accounts) under one brand share a model_id but must NOT share quota.
+        let tracker = UsageTracker::new();
+        let model = make_model(Some(10), None);
+        let key_a = Some(Uuid::new_v4());
+        let key_b = Some(Uuid::new_v4());
+
+        // Saturate key A's RPM bucket: 9 in-flight + 1 projected = 10/10 → 0.0.
+        for _ in 0..9 {
+            tracker.reserve(model.id, key_a, 0);
+        }
+        let hr_a = tracker.headroom_fast(model.id, key_a, 0, &model);
+        assert!(
+            hr_a.abs() < 1e-5,
+            "key A should be saturated (~0.0), got {hr_a}"
+        );
+
+        // key B is untouched: 0 + 0 + 1 = 1/10 → 0.9.
+        let hr_b = tracker.headroom_fast(model.id, key_b, 0, &model);
+        assert!(
+            (hr_b - 0.9).abs() < 1e-5,
+            "key B should be fresh (~0.9), got {hr_b}"
+        );
+
+        // The legacy (None) bucket is independent of both keys.
+        let hr_legacy = tracker.headroom_fast(model.id, None, 0, &model);
+        assert!(
+            (hr_legacy - 0.9).abs() < 1e-5,
+            "legacy bucket independent (~0.9), got {hr_legacy}"
+        );
+    }
+
+    #[test]
+    fn anchor_remaining_is_per_key() {
+        // A provider header floor reported for one key must not bleed into another key's bucket.
+        let tracker = UsageTracker::new();
+        let model = make_model(Some(100), None);
+        let key_a = Some(Uuid::new_v4());
+        let key_b = Some(Uuid::new_v4());
+
+        // Provider says key A has only 2 of 100 requests left → heavy used floor.
+        tracker.anchor_remaining(model.id, key_a, Some(2), None);
+
+        // key A headroom reflects the floor: effective_used = max(0, 100-2)=98; +1 → 99/100 → 0.01.
+        let hr_a = tracker.headroom_fast(model.id, key_a, 0, &model);
+        assert!(
+            (hr_a - 0.01).abs() < 1e-5,
+            "key A should reflect anchor (~0.01), got {hr_a}"
+        );
+
+        // key B never got an anchor → full headroom (1/100 → 0.99).
+        let hr_b = tracker.headroom_fast(model.id, key_b, 0, &model);
+        assert!(
+            (hr_b - 0.99).abs() < 1e-5,
+            "key B unaffected by key A anchor (~0.99), got {hr_b}"
         );
     }
 }

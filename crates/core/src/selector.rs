@@ -294,6 +294,11 @@ impl Selector {
             slow_headroom: f32,
             score: f32,
             member_priority: Option<i16>,
+            /// API key chosen for this candidate at filter time (lowest-priority active,
+            /// non-rate-limited key for the brand). `None` for single-key/legacy brands.
+            /// Headroom and the in-flight reservation are tracked against this specific key.
+            brand_key_id: Option<Uuid>,
+            api_key_env: Option<String>,
         }
 
         let mut tried = 0;
@@ -423,12 +428,26 @@ impl Selector {
                 continue;
             }
 
-            let fast_headroom = self
-                .usage_tracker
-                .headroom_fast(model.id, estimated_tokens, model);
-            let slow_headroom = self
-                .usage_tracker
-                .headroom_slow(model.id, estimated_tokens, model);
+            // Pick the key that WILL serve this candidate (lowest-priority active,
+            // non-rate-limited key — same order as reload()). Done here, before scoring, so
+            // headroom and the in-flight reservation are tracked against the specific account,
+            // giving each key its own independent quota bucket. `None` for legacy brands (no rows
+            // in pz_brand_api_keys) and for the keys-present-but-none-active fallback above.
+            let (brand_key_id, api_key_env) = match brand_key_pool {
+                Some(keys) => keys
+                    .iter()
+                    .find(|k| k.is_active && !self.key_rate_state.is_limited(&k.id))
+                    .map(|k| (Some(k.id), Some(k.api_key_env.clone())))
+                    .unwrap_or((None, None)),
+                None => (None, None),
+            };
+
+            let fast_headroom =
+                self.usage_tracker
+                    .headroom_fast(model.id, brand_key_id, estimated_tokens, model);
+            let slow_headroom =
+                self.usage_tracker
+                    .headroom_slow(model.id, brand_key_id, estimated_tokens, model);
 
             if fast_headroom < 0.0 || slow_headroom < 0.0 {
                 debug!(
@@ -451,6 +470,8 @@ impl Selector {
                 } else {
                     None
                 },
+                brand_key_id,
+                api_key_env,
             });
         }
 
@@ -653,9 +674,9 @@ impl Selector {
 
         let winner = &candidates[0];
 
-        // Atomic reservation — must happen before returning.
+        // Atomic reservation — on the winner's specific (model, key) bucket.
         self.usage_tracker
-            .reserve(winner.model.id, estimated_tokens);
+            .reserve(winner.model.id, winner.brand_key_id, estimated_tokens);
 
         // Record this selection in the brand traffic window for future balance scoring.
         {
@@ -678,24 +699,10 @@ impl Selector {
             .price_input_per_1m
             .map(|p| p * estimated_tokens as f64 / 1_000_000.0);
 
-        // Pick the best available key for this brand (lowest priority, not rate-limited).
-        let (api_key_env, brand_key_id) = {
-            let keys = cache.brand_keys.get(&winner.brand.id);
-            match keys {
-                Some(keys) => {
-                    // Keys are already sorted by priority ASC from reload().
-                    let best = keys
-                        .iter()
-                        .filter(|k| k.is_active && !self.key_rate_state.is_limited(&k.id))
-                        .next();
-                    match best {
-                        Some(k) => (Some(k.api_key_env.clone()), Some(k.id)),
-                        None => (None, None),
-                    }
-                }
-                None => (None, None),
-            }
-        };
+        // The serving key was chosen at filter time (Pass 1) so headroom and the in-flight
+        // reservation track the specific account; reuse it here rather than re-picking.
+        let api_key_env = winner.api_key_env.clone();
+        let brand_key_id = winner.brand_key_id;
 
         debug!(
             model = %winner.model.slug,
@@ -745,9 +752,13 @@ impl Selector {
             }
         }
         self.usage_tracker
-            .release(model_id, estimated_tokens, actual_tokens);
-        self.usage_tracker
-            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
+            .release(model_id, brand_key_id, estimated_tokens, actual_tokens);
+        self.usage_tracker.anchor_remaining(
+            model_id,
+            brand_key_id,
+            remaining_requests,
+            remaining_tokens,
+        );
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist rate limit event");
         }
@@ -774,9 +785,13 @@ impl Selector {
             _ => actual_tokens,
         };
         self.usage_tracker
-            .release(model_id, estimated_tokens, effective_actual);
-        self.usage_tracker
-            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
+            .release(model_id, brand_key_id, estimated_tokens, effective_actual);
+        self.usage_tracker.anchor_remaining(
+            model_id,
+            brand_key_id,
+            remaining_requests,
+            remaining_tokens,
+        );
 
         // Compute actual cost from model prices + token breakdown when available.
         let guard = self.cache.read().unwrap();
@@ -817,9 +832,13 @@ impl Selector {
             None => self.rate_state.mark(model_id, &error_type),
         }
         self.usage_tracker
-            .release(model_id, estimated_tokens, actual_tokens);
-        self.usage_tracker
-            .anchor_remaining(model_id, remaining_requests, remaining_tokens);
+            .release(model_id, brand_key_id, estimated_tokens, actual_tokens);
+        self.usage_tracker.anchor_remaining(
+            model_id,
+            brand_key_id,
+            remaining_requests,
+            remaining_tokens,
+        );
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist error event");
         }
