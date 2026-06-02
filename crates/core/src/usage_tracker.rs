@@ -28,6 +28,13 @@ struct ModelWindows {
     provider_remaining_requests: Option<u32>,
     /// Last value of `x-ratelimit-remaining-tokens` reported by the provider.
     provider_remaining_tokens: Option<u64>,
+    /// Last RPM *ceiling* reported by the provider (`x-ratelimit-limit-req-minute`) for THIS key.
+    /// Preferred over `model.rpm_limit` in headroom, so two accounts under one brand can be
+    /// scored against different real limits without fighting over a single DB value.
+    provider_limit_requests: Option<u32>,
+    /// Last TPM *ceiling* reported by the provider (`x-ratelimit-limit-tokens-minute`) for THIS key.
+    /// Preferred over `model.tpm_limit` in headroom.
+    provider_limit_tokens: Option<u32>,
 }
 
 impl Default for ModelWindows {
@@ -40,6 +47,8 @@ impl Default for ModelWindows {
             tpd: VecDeque::new(),
             provider_remaining_requests: None,
             provider_remaining_tokens: None,
+            provider_limit_requests: None,
+            provider_limit_tokens: None,
         }
     }
 }
@@ -178,6 +187,30 @@ impl UsageTracker {
         }
     }
 
+    /// Record provider-reported rate-limit *ceilings* (`x-ratelimit-limit-*` headers) for this
+    /// `(model, key)` bucket. Preferred over the model's DB `rpm_limit`/`tpm_limit` in `headroom*`,
+    /// so each account is scored against the ceiling it actually reports — letting two keys under
+    /// one brand carry different limits without clobbering a single shared model-level value.
+    pub fn anchor_limits(
+        &self,
+        model_id: Uuid,
+        brand_key_id: Option<Uuid>,
+        limit_requests: Option<u32>,
+        limit_tokens: Option<u32>,
+    ) {
+        if limit_requests.is_none() && limit_tokens.is_none() {
+            return;
+        }
+        let usage = self.get_or_default((model_id, brand_key_id));
+        let mut w = usage.windows.lock().unwrap();
+        if let Some(r) = limit_requests {
+            w.provider_limit_requests = Some(r);
+        }
+        if let Some(t) = limit_tokens {
+            w.provider_limit_tokens = Some(t);
+        }
+    }
+
     /// Earliest time (ms from now) at which any of the supplied `(model, key)` buckets may regain
     /// positive headroom, based on the oldest sliding-window entry leaving the 60-second RPM/TPM window.
     ///
@@ -264,8 +297,12 @@ impl UsageTracker {
         let rpm_count = window_sum(&w.rpm);
         let tpm_sum = window_sum(&w.tpm);
 
+        // Prefer the provider-reported per-key ceiling over the model's DB limit.
+        let rpm_limit = w.provider_limit_requests.or(model.rpm_limit);
+        let tpm_limit = w.provider_limit_tokens.or(model.tpm_limit);
+
         let effective_rpm =
-            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, model.rpm_limit) {
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, rpm_limit) {
                 let provider_used = (limit as u64).saturating_sub(rem as u64);
                 rpm_count.max(provider_used)
             } else {
@@ -273,7 +310,7 @@ impl UsageTracker {
             };
 
         let effective_tpm =
-            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, model.tpm_limit) {
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, tpm_limit) {
                 let provider_used = (limit as u64).saturating_sub(rem as u64);
                 tpm_sum.max(provider_used)
             } else {
@@ -288,11 +325,11 @@ impl UsageTracker {
                 min_hr = min_hr.min(1.0_f32 - projected / limit as f32);
             }
         }
-        if let Some(limit) = model.rpm_limit {
+        if let Some(limit) = rpm_limit {
             let projected = effective_rpm + in_flight_req + 1;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
-        if let Some(limit) = model.tpm_limit {
+        if let Some(limit) = tpm_limit {
             let projected = effective_tpm + in_flight_tok + estimated_tokens;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
@@ -374,9 +411,13 @@ impl UsageTracker {
 
         // Use provider-reported remaining as a floor: if the provider says fewer requests/tokens
         // remain than our window suggests, trust the provider. In-flight (not yet acknowledged
-        // by the provider) is always added on top.
+        // by the provider) is always added on top. The ceiling itself prefers the provider-reported
+        // per-key limit over the model's DB limit.
+        let rpm_limit = w.provider_limit_requests.or(model.rpm_limit);
+        let tpm_limit = w.provider_limit_tokens.or(model.tpm_limit);
+
         let effective_rpm =
-            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, model.rpm_limit) {
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_requests, rpm_limit) {
                 let provider_used = (limit as u64).saturating_sub(rem as u64);
                 rpm_count.max(provider_used)
             } else {
@@ -384,7 +425,7 @@ impl UsageTracker {
             };
 
         let effective_tpm =
-            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, model.tpm_limit) {
+            if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, tpm_limit) {
                 let provider_used = (limit as u64).saturating_sub(rem as u64);
                 tpm_sum.max(provider_used)
             } else {
@@ -399,11 +440,11 @@ impl UsageTracker {
                 min_hr = min_hr.min(1.0_f32 - projected / limit as f32);
             }
         }
-        if let Some(limit) = model.rpm_limit {
+        if let Some(limit) = rpm_limit {
             let projected = effective_rpm + in_flight_req + 1;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
-        if let Some(limit) = model.tpm_limit {
+        if let Some(limit) = tpm_limit {
             let projected = effective_tpm + in_flight_tok + estimated_tokens;
             min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
         }
@@ -609,6 +650,35 @@ mod tests {
         assert!(
             (hr_b - 0.99).abs() < 1e-5,
             "key B unaffected by key A anchor (~0.99), got {hr_b}"
+        );
+    }
+
+    #[test]
+    fn provider_limit_overrides_db_per_key() {
+        // The DB seeds RPM=10, but the provider reports key A's real ceiling is 100.
+        let tracker = UsageTracker::new();
+        let model = make_model(Some(10), None);
+        let key_a = Some(Uuid::new_v4());
+        let key_b = Some(Uuid::new_v4());
+
+        tracker.anchor_limits(model.id, key_a, Some(100), None);
+
+        // 50 in-flight on key A: against DB(10) headroom would be deeply negative, but against
+        // the provider ceiling(100) it's 1 - 51/100 = 0.49.
+        for _ in 0..50 {
+            tracker.reserve(model.id, key_a, 0);
+        }
+        let hr_a = tracker.headroom_fast(model.id, key_a, 0, &model);
+        assert!(
+            (hr_a - 0.49).abs() < 1e-5,
+            "key A should use provider ceiling 100 (~0.49), got {hr_a}"
+        );
+
+        // key B has no limit anchor → falls back to the DB limit 10 → 1/10 → 0.9.
+        let hr_b = tracker.headroom_fast(model.id, key_b, 0, &model);
+        assert!(
+            (hr_b - 0.9).abs() < 1e-5,
+            "key B falls back to DB limit (~0.9), got {hr_b}"
         );
     }
 }
