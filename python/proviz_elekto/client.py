@@ -157,6 +157,38 @@ def _collect_response_headers(response: Any) -> dict[str, str]:
         ):
             _absorb(hidden.get(key))
 
+        # Raw HTTP response object stored under various keys on some LiteLLM code
+        # paths (e.g. tool-use completions, newer versions).  Pull headers directly
+        # from the underlying httpx.Response if present.
+        for key in ("response", "httpx_response", "_response", "raw_response"):
+            raw = hidden.get(key)
+            if raw is not None:
+                for attr in ("headers", "_headers", "response_headers"):
+                    _absorb(getattr(raw, attr, None))
+
+        # Broad fallback: any remaining _hidden_params value that looks like a
+        # header container but wasn't already scanned above.  Catches future or
+        # unknown LiteLLM key names without requiring code changes here.
+        _known_keys = frozenset((
+            "additional_headers", "response_headers", "headers", "_response_headers",
+            "litellm_response_headers", "response", "httpx_response", "_response",
+            "raw_response",
+        ))
+        for key, val in hidden.items():
+            if key in _known_keys or val is None or not hasattr(val, "items"):
+                continue
+            _absorb(val)
+
+    if _logger.isEnabledFor(logging.DEBUG) and not merged:
+        _logger.debug(
+            "_collect_response_headers: no headers found — "
+            "response type=%s, direct attrs=%s, hidden_params keys=%s",
+            type(response).__name__,
+            {a: type(getattr(response, a, None)).__name__
+             for a in ("headers", "_headers", "_response_headers", "response_headers")},
+            list(hidden.keys()) if isinstance(hidden, dict) else repr(hidden),
+        )
+
     return merged
 
 
@@ -209,6 +241,13 @@ def _extract_provider_limits(
         "x-ratelimit-limit-tokens-minute",
         "anthropic-ratelimit-tokens-limit",
     ))
+
+    if remaining_requests is None and remaining_tokens is None and _logger.isEnabledFor(logging.DEBUG):
+        _logger.debug(
+            "_extract_provider_limits: no remaining_requests/tokens — "
+            "available header keys: %s",
+            sorted(headers.keys()) or "none",
+        )
 
     return remaining_requests, remaining_tokens, limit_requests, limit_tokens
 
@@ -639,6 +678,12 @@ class ProvizElekto:
                 response = fn(candidate)
                 prompt, completion, total = _extract_usage(response)
                 rem_req, rem_tok, lim_req, lim_tok = _extract_provider_limits(response)
+                if rem_req is None and rem_tok is None:
+                    _logger.debug(
+                        "call: no rate-limit headers for %s/%s (known keys: %s)",
+                        candidate.brand_slug, candidate.model_slug,
+                        list(_collect_response_headers(response).keys()) or "none",
+                    )
                 actual_cost_usd = _compute_cost(candidate, prompt, completion)
                 self.report_success(
                     candidate.model_id,
