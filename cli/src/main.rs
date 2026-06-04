@@ -74,12 +74,14 @@ enum Command {
     },
     /// Hot-reload catalog in running server
     Reload,
-    /// Seed built-in catalog (brands + common models)
+    /// Seed catalog from providers directory (brands + models)
     Seed {
+        /// Root directory containing provider subdirectories
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        /// Update rate-limit fields of models that already exist in the DB
         #[arg(long)]
-        brands: bool,
-        #[arg(long)]
-        models: bool,
+        update_limits: bool,
     },
     /// Load provider definitions from a directory of JSON files
     Providers {
@@ -897,17 +899,8 @@ fn main() {
             println!("{}", resp.text().unwrap());
         }
 
-        Command::Seed { brands, models } => {
-            if brands {
-                seed_brands(&storage);
-            }
-            if models {
-                seed_models(&storage);
-            }
-            if !brands && !models {
-                seed_brands(&storage);
-                seed_models(&storage);
-            }
+        Command::Seed { dir, update_limits } => {
+            load_providers(&storage, &dir, update_limits);
         }
 
         Command::Providers { action } => match action {
@@ -1106,200 +1099,3 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
     }
 }
 
-fn seed_brands(storage: &Arc<dyn CatalogStorage>) {
-    let entries: Vec<(&str, &str, Option<&str>, Option<&str>)> = vec![
-        ("groq", "Groq", Some("GROQ_API_KEY"), None),
-        ("mistral", "Mistral AI", Some("MISTRAL_API_KEY"), None),
-        ("ollama", "Ollama", None, Some("http://localhost:11434")),
-    ];
-    for (slug, name, api_key_env, base_url) in entries {
-        let brand = Brand {
-            id: Uuid::new_v4(),
-            slug: slug.to_string(),
-            name: name.to_string(),
-            base_url: base_url.map(|s| s.to_string()),
-            is_active: true,
-            priority: 0,
-            created_at: chrono::Utc::now(),
-            traffic_weight: 1.0,
-        };
-        storage.insert_brand(&brand).unwrap();
-        if let Some(env) = api_key_env {
-            storage
-                .insert_brand_api_key(&BrandApiKey {
-                    id: Uuid::new_v4(),
-                    brand_id: brand.id,
-                    api_key_env: env.to_string(),
-                    priority: 0,
-                    is_active: true,
-                    created_at: chrono::Utc::now(),
-                })
-                .unwrap();
-        }
-        println!("seeded brand: {slug}");
-    }
-}
-
-fn seed_models(storage: &Arc<dyn CatalogStorage>) {
-    let brands: std::collections::HashMap<String, Brand> = storage
-        .load_brands()
-        .unwrap()
-        .into_iter()
-        .map(|b| (b.slug.clone(), b))
-        .collect();
-
-    // (brand_slug, slug, display_name, max_ctx, fn_call, json_mode, price_in, price_out, tpm, rpm, quality, latency_ms)
-    #[allow(clippy::type_complexity)]
-    let models: &[(
-        &str,
-        &str,
-        &str,
-        u32,
-        bool,
-        bool,
-        Option<f64>,
-        Option<f64>,
-        Option<u32>,
-        Option<u32>,
-        Option<f64>,
-        Option<u32>,
-    )] = &[
-        // Groq
-        (
-            "groq",
-            "llama-3.3-70b-versatile",
-            "Llama 3.3 70B Versatile",
-            128_000,
-            true,
-            true,
-            Some(0.59),
-            Some(0.79),
-            Some(131_072),
-            Some(30),
-            Some(0.82),
-            Some(250),
-        ),
-        (
-            "groq",
-            "llama-3.1-8b-instant",
-            "Llama 3.1 8B Instant",
-            128_000,
-            true,
-            true,
-            Some(0.05),
-            Some(0.08),
-            Some(131_072),
-            Some(30),
-            Some(0.55),
-            Some(120),
-        ),
-        (
-            "groq",
-            "gemma2-9b-it",
-            "Gemma2 9B",
-            8_192,
-            false,
-            true,
-            Some(0.20),
-            Some(0.20),
-            None,
-            Some(30),
-            Some(0.58),
-            Some(150),
-        ),
-        // Mistral
-        (
-            "mistral",
-            "mistral-small-latest",
-            "Mistral Small",
-            32_000,
-            true,
-            true,
-            Some(0.10),
-            Some(0.30),
-            Some(500_000),
-            None,
-            Some(0.65),
-            Some(400),
-        ),
-        (
-            "mistral",
-            "mistral-large-2512",
-            "Mistral Large",
-            128_000,
-            true,
-            true,
-            Some(2.00),
-            Some(6.00),
-            Some(500_000),
-            None,
-            Some(0.90),
-            Some(800),
-        ),
-        (
-            "mistral",
-            "open-mixtral-8x7b",
-            "Mixtral 8x7B",
-            32_000,
-            false,
-            true,
-            Some(0.70),
-            Some(0.70),
-            None,
-            None,
-            Some(0.72),
-            Some(500),
-        ),
-    ];
-
-    for (
-        brand_slug,
-        slug,
-        display_name,
-        max_ctx,
-        fn_call,
-        json_mode,
-        price_in,
-        price_out,
-        tpm,
-        rpm,
-        quality,
-        latency_ms,
-    ) in models
-    {
-        let brand = match brands.get(*brand_slug) {
-            Some(b) => b,
-            None => {
-                eprintln!("brand '{brand_slug}' not found, skipping model '{slug}'");
-                continue;
-            }
-        };
-        let model = Model {
-            id: Uuid::new_v4(),
-            brand_id: brand.id,
-            slug: slug.to_string(),
-            display_name: display_name.to_string(),
-            max_context_tokens: *max_ctx,
-            max_output_tokens: None,
-            supports_function_calling: *fn_call,
-            supports_json_mode: *json_mode,
-            price_input_per_1m: *price_in,
-            price_output_per_1m: *price_out,
-            tpm_limit: *tpm,
-            rpm_limit: *rpm,
-            rpd_limit: None,
-            tpd_limit: None,
-            tpm_limit_month: None,
-            rps_limit: None,
-            quality_score: *quality,
-            avg_latency_ms: *latency_ms,
-            is_enabled: true,
-            notes: None,
-            category: None,
-            created_at: chrono::Utc::now(),
-            batch_price_multiplier: None,
-        };
-        storage.insert_model(&model).unwrap();
-        println!("seeded model: {brand_slug}/{slug}");
-    }
-}
