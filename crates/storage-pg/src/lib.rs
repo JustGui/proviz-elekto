@@ -26,7 +26,7 @@ impl PostgresStorage {
         };
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
-        proviz_elekto_core::builtin_providers::seed_if_empty(&s)
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s, "./providers")
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
     }

@@ -42,28 +42,56 @@ struct ModelDef {
     batch_price_multiplier: Option<f64>,
 }
 
-static PROVIDERS: &[(&str, &str)] = &[
-    (
-        include_str!("../../../providers/groq/brand.json"),
-        include_str!("../../../providers/groq/models.json"),
-    ),
-    (
-        include_str!("../../../providers/mistral/brand.json"),
-        include_str!("../../../providers/mistral/models.json"),
-    ),
-];
-
 /// Seeds built-in provider catalog if the DB is empty. Idempotent: no-op if any brand exists.
-pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
+/// Scans `providers_dir` for subdirectories each containing `brand.json` and `models.json`.
+pub fn seed_if_empty(storage: &dyn CatalogStorage, providers_dir: &str) -> StorageResult<()> {
     if !storage.load_brands()?.is_empty() {
         return Ok(());
     }
 
-    for (brand_json, models_json) in PROVIDERS {
-        let brand_def: BrandDef =
-            serde_json::from_str(brand_json).expect("invalid builtin brand.json");
-        let model_defs: Vec<ModelDef> =
-            serde_json::from_str(models_json).expect("invalid builtin models.json");
+    let entries = match std::fs::read_dir(providers_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("cannot read providers dir '{providers_dir}': {e} — skipping auto-seed");
+            return Ok(());
+        }
+    };
+
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let provider_name = entry.file_name().to_string_lossy().to_string();
+        let path = entry.path();
+
+        let brand_path = path.join("brand.json");
+        let models_path = path.join("models.json");
+
+        if !brand_path.exists() || !models_path.exists() {
+            continue;
+        }
+
+        let brand_def: BrandDef = match std::fs::read_to_string(&brand_path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("[{provider_name}] invalid brand.json: {e}");
+                continue;
+            }
+        };
+
+        let model_defs: Vec<ModelDef> = match std::fs::read_to_string(&models_path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("[{provider_name}] invalid models.json: {e}");
+                continue;
+            }
+        };
 
         let brand = Brand {
             id: Uuid::new_v4(),
@@ -117,6 +145,8 @@ pub fn seed_if_empty(storage: &dyn CatalogStorage) -> StorageResult<()> {
             };
             storage.insert_model(&model)?;
         }
+
+        tracing::info!("[{provider_name}] seeded {} models", model_defs.len());
     }
 
     Ok(())
