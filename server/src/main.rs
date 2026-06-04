@@ -56,12 +56,18 @@ struct Args {
         default_value = "https://api.mistral.ai"
     )]
     batch_mistral_base_url: String,
+
+    /// Directory containing provider subdirectories (brand.json + models.json).
+    /// Used for auto-seeding on first start and for POST /catalog/seed.
+    #[arg(long, env = "PROVIZ_PROVIDERS_DIR", default_value = "./providers")]
+    providers_dir: String,
 }
 
 struct AppState {
     selector: Arc<Selector>,
     batch_queue: Arc<batch::BatchQueue>,
     started_at: Instant,
+    providers_dir: String,
 }
 
 #[tokio::main]
@@ -84,15 +90,17 @@ async fn main() {
 
     let args = Args::parse();
 
+    let providers_dir = args.providers_dir.clone();
     let storage: Arc<dyn CatalogStorage> = match args.storage.as_str() {
         "postgres" | "postgresql" => {
             let url = args
                 .database_url
                 .expect("PROVIZ_DATABASE_URL required for postgres storage");
             info!("using PostgreSQL storage");
-            // postgres::Client uses block_on internally; must connect outside the async context.
+            let pdir = providers_dir.clone();
             let pg = tokio::task::spawn_blocking(move || {
-                PostgresStorage::connect(&url).expect("failed to connect to PostgreSQL")
+                PostgresStorage::connect_with_providers(&url, &pdir)
+                    .expect("failed to connect to PostgreSQL")
             })
             .await
             .expect("postgres connect task panicked");
@@ -100,8 +108,10 @@ async fn main() {
         }
         _ => {
             info!(path = %args.db_path, "using SQLite storage");
-            Arc::new(SqliteStorage::open(&args.db_path).expect("failed to open SQLite"))
-                as Arc<dyn CatalogStorage>
+            Arc::new(
+                SqliteStorage::open_with_providers(&args.db_path, &providers_dir)
+                    .expect("failed to open SQLite"),
+            ) as Arc<dyn CatalogStorage>
         }
     };
 
@@ -141,6 +151,7 @@ async fn main() {
         selector,
         batch_queue,
         started_at: Instant::now(),
+        providers_dir,
     });
 
     let app = Router::new()
@@ -148,6 +159,7 @@ async fn main() {
         .route("/report", post(handle_report))
         .route("/health", get(handle_health))
         .route("/catalog/reload", post(handle_reload))
+        .route("/catalog/seed", post(handle_catalog_seed))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
         .with_state(state)
@@ -375,6 +387,39 @@ async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let sel = state.selector.clone();
+    let dir = state.providers_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = sel.storage();
+        let summary =
+            proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), &dir, false)
+                .map_err(|e| e.to_string())?;
+        sel.reload().map_err(|e| e.to_string())?;
+        Ok::<_, String>(summary)
+    })
+    .await
+    .expect("seed task panicked");
+    match result {
+        Ok(s) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "brands_added": s.brands_added,
+                "models_added": s.models_added,
+                "models_updated": s.models_updated,
+                "models_skipped": s.models_skipped,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
         )
             .into_response(),
     }

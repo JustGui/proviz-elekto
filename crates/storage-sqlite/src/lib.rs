@@ -19,8 +19,12 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     pub fn open(path: &str) -> Result<Self, StorageError> {
+        Self::open_with_providers(path, "./providers")
+    }
+
+    pub fn open_with_providers(path: &str, providers_dir: &str) -> Result<Self, StorageError> {
         let s = Self::open_bare(path)?;
-        proviz_elekto_core::builtin_providers::seed_if_empty(&s, "./providers")
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
     }

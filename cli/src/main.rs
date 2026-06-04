@@ -8,7 +8,7 @@ use proviz_elekto_core::{
 };
 use proviz_elekto_storage_pg::PostgresStorage;
 use proviz_elekto_storage_sqlite::SqliteStorage;
-use serde::Deserialize;
+
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -106,41 +106,6 @@ enum ProvidersCmd {
         #[arg(long, default_value = "./providers")]
         dir: String,
     },
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderBrandDef {
-    slug: String,
-    name: String,
-    api_key_env: Option<String>,
-    base_url: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ProviderModelDef {
-    slug: String,
-    display_name: Option<String>,
-    #[serde(default)]
-    max_context_tokens: u32,
-    max_output_tokens: Option<u32>,
-    #[serde(default)]
-    supports_function_calling: bool,
-    #[serde(default)]
-    supports_json_mode: bool,
-    price_input_per_1m: Option<f64>,
-    price_output_per_1m: Option<f64>,
-    tpm_limit: Option<u32>,
-    rpm_limit: Option<u32>,
-    rpd_limit: Option<u32>,
-    tpd_limit: Option<u64>,
-    tpm_limit_month: Option<u64>,
-    rps_limit: Option<f64>,
-    quality_score: Option<f64>,
-    avg_latency_ms: Option<u32>,
-    notes: Option<String>,
-    category: Option<String>,
-    #[serde(default)]
-    batch_price_multiplier: Option<f64>,
 }
 
 #[derive(Subcommand)]
@@ -942,159 +907,12 @@ fn list_providers(dir: &str) {
 }
 
 fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: bool) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("cannot read providers dir '{dir}': {e}");
-            return;
-        }
-    };
-
-    let existing_brands: std::collections::HashMap<String, Brand> = storage
-        .load_brands()
-        .unwrap()
-        .into_iter()
-        .map(|b| (b.slug.clone(), b))
-        .collect();
-    let existing_models: std::collections::HashMap<(Uuid, String), Model> = storage
-        .load_models()
-        .unwrap()
-        .into_iter()
-        .map(|m| ((m.brand_id, m.slug.clone()), m))
-        .collect();
-
-    for entry in entries.flatten() {
-        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let provider_name = entry.file_name().to_string_lossy().to_string();
-        let path = entry.path();
-
-        let brand_path = path.join("brand.json");
-        let models_path = path.join("models.json");
-
-        if !brand_path.exists() {
-            eprintln!("[{provider_name}] missing brand.json, skipping");
-            continue;
-        }
-        if !models_path.exists() {
-            eprintln!("[{provider_name}] missing models.json, skipping");
-            continue;
-        }
-
-        let brand_def: ProviderBrandDef = match std::fs::read_to_string(&brand_path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
-        {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("[{provider_name}] invalid brand.json: {e}");
-                continue;
-            }
-        };
-
-        let model_defs: Vec<ProviderModelDef> = match std::fs::read_to_string(&models_path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str(&s).map_err(|e| e.to_string()))
-        {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[{provider_name}] invalid models.json: {e}");
-                continue;
-            }
-        };
-
-        // Upsert brand: reuse existing UUID if slug already exists
-        let brand_id = if let Some(existing) = existing_brands.get(&brand_def.slug) {
-            println!(
-                "[{}] brand '{}' already exists, skipping",
-                provider_name, brand_def.slug
-            );
-            existing.id
-        } else {
-            let brand = Brand {
-                id: Uuid::new_v4(),
-                slug: brand_def.slug.clone(),
-                name: brand_def.name.clone(),
-                base_url: brand_def.base_url.clone(),
-                is_active: true,
-                priority: 0,
-                created_at: chrono::Utc::now(),
-                traffic_weight: 1.0,
-            };
-            storage.insert_brand(&brand).unwrap();
-            if let Some(env) = &brand_def.api_key_env {
-                storage
-                    .insert_brand_api_key(&BrandApiKey {
-                        id: Uuid::new_v4(),
-                        brand_id: brand.id,
-                        api_key_env: env.clone(),
-                        priority: 0,
-                        is_active: true,
-                        created_at: chrono::Utc::now(),
-                    })
-                    .unwrap();
-            }
-            println!("[{}] created brand '{}'", provider_name, brand_def.slug);
-            brand.id
-        };
-
-        let mut inserted = 0usize;
-        let mut updated = 0usize;
-        let mut skipped = 0usize;
-
-        for def in &model_defs {
-            if let Some(existing) = existing_models.get(&(brand_id, def.slug.clone())) {
-                if update_limits {
-                    let model = Model {
-                        tpm_limit: def.tpm_limit.or(existing.tpm_limit),
-                        rpm_limit: def.rpm_limit.or(existing.rpm_limit),
-                        rpd_limit: def.rpd_limit.or(existing.rpd_limit),
-                        tpd_limit: def.tpd_limit.or(existing.tpd_limit),
-                        tpm_limit_month: def.tpm_limit_month.or(existing.tpm_limit_month),
-                        rps_limit: def.rps_limit.or(existing.rps_limit),
-                        ..existing.clone()
-                    };
-                    storage.insert_model(&model).unwrap();
-                    updated += 1;
-                } else {
-                    skipped += 1;
-                }
-            } else {
-                let display = def.display_name.clone().unwrap_or_else(|| def.slug.clone());
-                let model = Model {
-                    id: Uuid::new_v4(),
-                    brand_id,
-                    slug: def.slug.clone(),
-                    display_name: display,
-                    max_context_tokens: def.max_context_tokens,
-                    max_output_tokens: def.max_output_tokens,
-                    supports_function_calling: def.supports_function_calling,
-                    supports_json_mode: def.supports_json_mode,
-                    price_input_per_1m: def.price_input_per_1m,
-                    price_output_per_1m: def.price_output_per_1m,
-                    tpm_limit: def.tpm_limit,
-                    rpm_limit: def.rpm_limit,
-                    rpd_limit: def.rpd_limit,
-                    tpd_limit: def.tpd_limit,
-                    tpm_limit_month: def.tpm_limit_month,
-                    rps_limit: def.rps_limit,
-                    quality_score: def.quality_score,
-                    avg_latency_ms: def.avg_latency_ms,
-                    is_enabled: true,
-                    notes: def.notes.clone(),
-                    category: def.category.clone(),
-                    created_at: chrono::Utc::now(),
-                    batch_price_multiplier: def.batch_price_multiplier,
-                };
-                storage.insert_model(&model).unwrap();
-                inserted += 1;
-            }
-        }
-
-        println!(
-            "[{}] models: {} inserted, {} updated, {} skipped",
-            provider_name, inserted, updated, skipped
-        );
+    match proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), dir, update_limits)
+    {
+        Ok(s) => println!(
+            "providers loaded: {} brands added, {} models added, {} updated, {} skipped",
+            s.brands_added, s.models_added, s.models_updated, s.models_skipped
+        ),
+        Err(e) => eprintln!("error loading providers: {e}"),
     }
 }

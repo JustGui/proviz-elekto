@@ -19,6 +19,13 @@ pub struct PostgresStorage {
 
 impl PostgresStorage {
     pub fn connect(database_url: &str) -> Result<Self, StorageError> {
+        Self::connect_with_providers(database_url, "./providers")
+    }
+
+    pub fn connect_with_providers(
+        database_url: &str,
+        providers_dir: &str,
+    ) -> Result<Self, StorageError> {
         let client = Client::connect(database_url, NoTls)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         let s = Self {
@@ -26,7 +33,7 @@ impl PostgresStorage {
         };
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
-        proviz_elekto_core::builtin_providers::seed_if_empty(&s, "./providers")
+        proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
     }
