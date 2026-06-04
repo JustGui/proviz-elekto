@@ -62,11 +62,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/proviz-server /usr/local/bin/proviz-server
+COPY --from=builder /app/providers /app/providers
 
 EXPOSE 63130
 
 ENV PROVIZ_PORT=63130 \
     PROVIZ_STORAGE=postgres \
+    PROVIZ_PROVIDERS_DIR=/app/providers \
     RUST_LOG=proviz_server=info,proviz_elekto_core=info
 
 ENTRYPOINT ["proviz-server"]
