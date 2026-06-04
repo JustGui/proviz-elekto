@@ -1098,4 +1098,3 @@ fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: b
         );
     }
 }
-
