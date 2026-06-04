@@ -1,0 +1,6 @@
+{
+  "slug": "scaleway",
+  "name": "Scaleway",
+  "api_key_env": "SCALEWAY_API_KEY",
+  "base_url": null
+}
