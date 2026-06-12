@@ -826,6 +826,13 @@ class ProvizElekto:
         permanent_skip: list[str] = list(exclude_ids or [])
         wait_deadline = time.monotonic() + max_wait_secs if max_wait_secs > 0 else None
 
+        _SELECTION_KEYS = frozenset({
+            "step", "estimated_tokens", "requires_fn_call", "requires_json_mode",
+            "quality_min", "exclude_ids", "categories", "group_id", "group_name",
+            "use_member_priority", "max_wait_secs", "max_wait_ms",
+        })
+        litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k not in _SELECTION_KEYS}
+
         attempt = 0
         while True:
             attempt += 1
