@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::{
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -18,7 +18,7 @@ use proviz_elekto_core::{
 };
 use proviz_elekto_storage_pg::PostgresStorage;
 use proviz_elekto_storage_sqlite::SqliteStorage;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
@@ -160,6 +160,7 @@ async fn main() {
         .route("/health", get(handle_health))
         .route("/catalog/reload", post(handle_reload))
         .route("/catalog/seed", post(handle_catalog_seed))
+        .route("/catalog/models", get(handle_catalog_models))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
         .with_state(state)
@@ -417,6 +418,72 @@ async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoRes
             })),
         )
             .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CatalogModelsQuery {
+    category: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CatalogModelEntry {
+    brand_slug: String,
+    brand_name: String,
+    model_slug: String,
+    display_name: String,
+    category: Option<String>,
+    price_input_per_1m: Option<f64>,
+    price_output_per_1m: Option<f64>,
+    is_enabled: bool,
+}
+
+async fn handle_catalog_models(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CatalogModelsQuery>,
+) -> impl IntoResponse {
+    let sel = state.selector.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = sel.storage();
+        let brands = storage.load_brands().map_err(|e| e.to_string())?;
+        let models = storage.load_models().map_err(|e| e.to_string())?;
+        let brand_map: std::collections::HashMap<_, _> =
+            brands.into_iter().map(|b| (b.id, b)).collect();
+        let entries: Vec<CatalogModelEntry> = models
+            .into_iter()
+            .filter(|m| {
+                if let Some(ref cat) = params.category {
+                    m.category.as_deref() == Some(cat.as_str())
+                } else {
+                    true
+                }
+            })
+            .filter_map(|m| {
+                let brand = brand_map.get(&m.brand_id)?;
+                Some(CatalogModelEntry {
+                    brand_slug: brand.slug.clone(),
+                    brand_name: brand.name.clone(),
+                    model_slug: m.slug.clone(),
+                    display_name: m.display_name.clone(),
+                    category: m.category.clone(),
+                    price_input_per_1m: m.price_input_per_1m,
+                    price_output_per_1m: m.price_output_per_1m,
+                    is_enabled: m.is_enabled,
+                })
+            })
+            .collect();
+        Ok::<_, String>(entries)
+    })
+    .await
+    .expect("catalog_models task panicked");
+
+    match result {
+        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e })),
