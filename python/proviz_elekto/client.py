@@ -59,6 +59,8 @@ class ModelCandidate:
     estimated_input_cost_usd: Optional[float]
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
+    # Brand's OpenAI-compatible base URL (None for brands using a well-known default endpoint).
+    base_url: Optional[str] = None
     # ID of the specific brand API key selected. Echo back in report calls so the server
     # can block the key (not the model) on 429, enabling failover to other keys.
     brand_key_id: Optional[str] = None
@@ -75,6 +77,19 @@ class CallResult:
     completion_tokens: int
     total_tokens: int
     actual_cost_usd: Optional[float] = None
+
+
+@dataclass
+class CompleteResult:
+    """Result of a server-side /complete call (select + provider call + report in one round-trip)."""
+    text: str
+    model: str
+    brand: str
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: Optional[float] = None
+    # Un-executed tool calls returned by the provider (caller drives the tool loop).
+    tool_calls: Optional[Any] = None
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -522,6 +537,7 @@ class ProvizElekto:
             estimated_input_cost_usd=r.get("estimated_input_cost_usd"),
             price_input_per_1m=r.get("price_input_per_1m"),
             price_output_per_1m=r.get("price_output_per_1m"),
+            base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
         )
         _logger.debug(
@@ -529,6 +545,92 @@ class ProvizElekto:
             candidate.model_slug, candidate.brand_slug, candidate.estimated_input_cost_usd,
         )
         return candidate
+
+    def complete(
+        self,
+        step: str,
+        messages: list[dict],
+        *,
+        estimated_tokens: Optional[int] = None,
+        requires_fn_call: bool = False,
+        requires_json_mode: bool = False,
+        quality_min: float = 0.0,
+        exclude_ids: Optional[list[str]] = None,
+        categories: Optional[list[str]] = None,
+        group_id: Optional[str] = None,
+        group_name: Optional[str] = None,
+        max_wait_ms: Optional[int] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        response_format: Optional[dict] = None,
+        tools: Optional[list[dict]] = None,
+        tool_choice: Optional[Any] = None,
+        timeout_secs: Optional[int] = None,
+    ) -> CompleteResult:
+        """Server-side select + provider call + report in a single round-trip.
+
+        Unlike `call_litellm`, the LLM call happens **inside proviz-server** — the caller needs no
+        litellm or provider SDK. The server picks a model, POSTs to the provider's OpenAI-compatible
+        `/chat/completions`, reports usage back to the selector, and returns the parsed result.
+
+        `tools`/`tool_choice` are forwarded to the provider; returned `tool_calls` are NOT executed —
+        the caller drives the tool loop and re-submits.
+        """
+        if estimated_tokens is None:
+            estimated_tokens = _estimate_tokens(messages)
+        payload: dict = {
+            "step": step,
+            "estimated_tokens": estimated_tokens,
+            "requires_fn_call": requires_fn_call,
+            "requires_json_mode": requires_json_mode,
+            "quality_min": quality_min,
+            "exclude_ids": exclude_ids or [],
+            "categories": categories or [],
+            "messages": messages,
+        }
+        if group_id is not None:
+            payload["group_id"] = group_id
+        if group_name is not None:
+            payload["group_name"] = group_name
+        if max_wait_ms is not None:
+            payload["max_wait_ms"] = max_wait_ms
+        if temperature is not None:
+            payload["temperature"] = temperature
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if tools is not None:
+            payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if timeout_secs is not None:
+            payload["timeout_secs"] = timeout_secs
+
+        # /complete may block server-side for a provider call; relax the client read timeout.
+        prev_timeout = self._timeout
+        if timeout_secs is not None:
+            self._timeout = max(self._timeout, float(timeout_secs) + 5.0)
+        try:
+            r = self._post("/complete", payload)
+        finally:
+            self._timeout = prev_timeout
+
+        result = CompleteResult(
+            text=r.get("text", ""),
+            model=r.get("model", ""),
+            brand=r.get("brand", ""),
+            prompt_tokens=r.get("prompt_tokens", 0),
+            completion_tokens=r.get("completion_tokens", 0),
+            cost_usd=r.get("cost_usd"),
+            tool_calls=r.get("tool_calls"),
+        )
+        _logger.debug(
+            "complete: model=%s/%s prompt=%d completion=%d cost_usd=%s",
+            result.brand, result.model, result.prompt_tokens, result.completion_tokens,
+            result.cost_usd,
+        )
+        return result
 
     def report_success(
         self,
