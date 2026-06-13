@@ -54,6 +54,7 @@ Response `200`:
   "brand_slug": "groq",
   "model_slug": "llama-3.3-70b-versatile",
   "api_key_env": "GROQ_API_KEY",
+  "base_url": null,
   "max_context_tokens": 128000,
   "supports_function_calling": true,
   "supports_json_mode": true,
@@ -94,6 +95,53 @@ Response `409` (all candidates exhausted):
 | `remaining_tokens` | optional | Value of `x-ratelimit-remaining-tokens` (or `anthropic-ratelimit-tokens-remaining`) from the provider response. Anchors the TPM window floor to provider reality. |
 
 All fields except `model_id` and `outcome` are optional for backward compatibility. `remaining_requests`/`remaining_tokens` should be sent on every `success` outcome when the provider includes rate-limit headers — they prevent internal window estimates from drifting below what the provider actually sees, reducing unnecessary over-booking.
+
+## `POST /complete`
+
+Does **select + provider call + report in one round-trip**. The server picks a model, calls the provider's OpenAI-compatible `/chat/completions`, reports usage back to the selector internally, and returns the parsed result. Callers need no litellm or provider SDK.
+
+```json
+{
+  "step": "verdict",
+  "estimated_tokens": 2500,
+  "requires_json_mode": true,
+  "messages": [
+    { "role": "user", "content": "Summarize this document..." }
+  ],
+  "temperature": 0.2,
+  "max_tokens": 512,
+  "response_format": { "type": "json_object" }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `step` | yes | Routing step name |
+| `messages` | yes | `[{role, content}]` chat messages |
+| `estimated_tokens` | no | Estimated input tokens (default `1000`) |
+| `requires_fn_call` / `requires_json_mode` / `quality_min` / `exclude_ids` / `categories` / `group_id` / `group_name` / `max_wait_ms` | no | Same selection fields as `/select` |
+| `temperature` | no | Sampling temperature (pass-through) |
+| `max_tokens` | no | Max output tokens (pass-through) |
+| `response_format` | no | Pass-through, e.g. `{"type":"json_object"}` |
+| `tools` / `tool_choice` | no | Forwarded to the provider; returned `tool_calls` are **not** executed — the caller drives the loop |
+| `timeout_secs` | no | Per-call provider HTTP timeout (default `120`) |
+
+Response `200`:
+```json
+{
+  "text": "{\"verdict\": \"...\"}",
+  "tool_calls": null,
+  "model": "llama-3.3-70b-versatile",
+  "brand": "groq",
+  "prompt_tokens": 2487,
+  "completion_tokens": 312,
+  "cost_usd": 0.00031
+}
+```
+
+On provider HTTP error/timeout the server reports the failure, excludes that model, and re-selects the next-best candidate (up to 4 attempts). If all fail it returns `502 { "error": "all_providers_failed", "detail": "..." }`. Selection-time exhaustion returns `409` (same body as `/select`); a missing group returns `404`.
+
+The legacy `/select` + client-side LLM call + `/report` flow stays fully supported and is the right choice when the caller wants to own the provider call. `/complete` is additive.
 
 ## `GET /health`
 
