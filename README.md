@@ -18,6 +18,8 @@ Your app → pz.call(step, fn)               → CallResult
 
 In the **regular flow**, the server is a pure router — it picks the model and returns credentials; your code makes the actual LLM call.
 
+In the **synchronous `/complete` flow**, the server is the caller — it selects, calls the provider, and reports, all in one round-trip — so your code needs no litellm or provider SDK.
+
 In the **batch flow**, the server becomes the caller:
 
 ```
@@ -25,6 +27,9 @@ In the **batch flow**, the server becomes the caller:
 Your app → POST /select → ModelCandidate → your code → Mistral/OpenAI/...
                                                 ↓
                                         POST /report
+
+# Synchronous: the SERVER calls the provider for you
+Your app → POST /complete → server selects + calls provider + reports → {text, usage, cost}
 
 # Batch: the SERVER calls Mistral on your behalf
 Worker A ──┐
@@ -77,7 +82,7 @@ proviz --help
 
 - [Catalog Setup](docs/catalog-setup.md) — Seeding brands/models, adding rules, model groups
 - [Selection Algorithm](docs/selection-algorithm.md) — Scoring, headroom, priority, quality scores, retry hints
-- [HTTP API Reference](docs/http-api.md) — `/select`, `/report`, `/health`, `/catalog/reload`
+- [HTTP API Reference](docs/http-api.md) — `/select`, `/report`, `/complete`, `/health`, `/catalog/reload`
 - [Deployment & Docker](docs/deployment.md) — Running the server, env vars, Docker, building from source
 - [Data Model](docs/data-model.md) — Table schemas for all `pz_*` tables
 
@@ -102,6 +107,25 @@ print(result.provider, result.candidate.model_slug, result.total_tokens)
 ```
 
 `call_litellm()` selects the best available model, calls it, reports the outcome, and retries with the next eligible model on any failure — automatically.
+
+### Without litellm (server-side `/complete`)
+
+The server calls the provider for you — no litellm or provider SDK in your environment. Best for thin/non-Python callers and minimal dependency footprints.
+
+```python
+result = pz.complete(
+    step="verdict",
+    messages=[{"role": "user", "content": "Summarize this document..."}],
+    estimated_tokens=2500,
+    response_format={"type": "json_object"},
+)
+print(result.brand, result.model, result.prompt_tokens, result.completion_tokens, result.cost_usd)
+# → mistral mistral-small-latest 2487 312 0.00031
+```
+
+`complete()` does select + provider call + report in a single round-trip. On provider failure it excludes the model and retries the next-best candidate server-side (up to 4 attempts). Pass `tools=`/`tool_choice=` to get un-executed `tool_calls` back and drive the tool loop yourself. Any OpenAI-compatible provider (groq, mistral, ovh, scaleway) works.
+
+The legacy `/select` + client-side call + `/report` flow (below) stays fully supported — use it when you want to own the provider call (streaming, custom SDK).
 
 ### With a custom LLM caller
 
