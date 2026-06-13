@@ -1,30 +1,16 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use axum::{
-    extract::{ConnectInfo, Path, Query, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
 use clap::Parser;
-use proviz_elekto_core::{
-    models::{RateLimitErrorType, ReportOutcome, ReportRequest, ReportResponse, SelectRequest},
-    selector::Selector,
-    storage::CatalogStorage,
-};
+use proviz_elekto_core::{selector::Selector, storage::CatalogStorage};
 use proviz_elekto_storage_pg::PostgresStorage;
 use proviz_elekto_storage_sqlite::SqliteStorage;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::net::TcpListener;
-use tracing::{debug, error, info};
-use uuid::Uuid;
+use tracing::{error, info};
 
-mod batch;
+use proviz_server::{batch, build_router, AppState};
 
 #[derive(Parser)]
 #[command(name = "proviz-server", about = "ProvizElekto LLM model router")]
@@ -60,13 +46,6 @@ struct Args {
     /// Directory containing provider subdirectories (brand.json + models.json).
     /// Used for auto-seeding on first start and for POST /catalog/seed.
     #[arg(long, env = "PROVIZ_PROVIDERS_DIR", default_value = "./providers")]
-    providers_dir: String,
-}
-
-struct AppState {
-    selector: Arc<Selector>,
-    batch_queue: Arc<batch::BatchQueue>,
-    started_at: Instant,
     providers_dir: String,
 }
 
@@ -129,17 +108,15 @@ async fn main() {
 
     let selector = Arc::new(selector);
 
+    let http = reqwest::Client::new();
+
     let batch_queue = Arc::new(batch::BatchQueue::new(
         args.batch_window_secs,
         args.batch_max_size,
         args.batch_mistral_base_url.clone(),
     ));
 
-    batch::spawn_flush_task(
-        batch_queue.clone(),
-        selector.clone(),
-        reqwest::Client::new(),
-    );
+    batch::spawn_flush_task(batch_queue.clone(), selector.clone(), http.clone());
 
     info!(
         window_secs = args.batch_window_secs,
@@ -152,19 +129,10 @@ async fn main() {
         batch_queue,
         started_at: Instant::now(),
         providers_dir,
+        http,
     });
 
-    let app = Router::new()
-        .route("/select", post(handle_select))
-        .route("/report", post(handle_report))
-        .route("/health", get(handle_health))
-        .route("/catalog/reload", post(handle_reload))
-        .route("/catalog/seed", post(handle_catalog_seed))
-        .route("/catalog/models", get(handle_catalog_models))
-        .route("/batch/submit", post(handle_batch_submit))
-        .route("/batch/result/{request_id}", get(handle_batch_result))
-        .with_state(state)
-        .layer(tower_http::cors::CorsLayer::permissive());
+    let app = build_router(state);
 
     let addr = format!("0.0.0.0:{}", args.port);
     let listener = TcpListener::bind(&addr).await.unwrap();
@@ -178,338 +146,4 @@ async fn main() {
     )
     .await
     .unwrap();
-}
-
-async fn handle_select(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<SelectRequest>,
-) -> impl IntoResponse {
-    debug!(
-        peer = %peer,
-        step = %req.step,
-        estimated_tokens = req.estimated_tokens,
-        group_name = ?req.group_name,
-        group_id = ?req.group_id,
-        requires_fn_call = req.requires_fn_call,
-        requires_json_mode = req.requires_json_mode,
-        quality_min = req.quality_min,
-        "select request"
-    );
-
-    let max_wait_ms = req.max_wait_ms;
-
-    // First attempt.
-    let result = {
-        let sel = state.selector.clone();
-        let req2 = req.clone();
-        tokio::task::spawn_blocking(move || sel.select(&req2))
-            .await
-            .expect("select task panicked")
-    };
-
-    // If all models are exhausted and the caller supplied a wait budget that covers the hint,
-    // sleep until the soonest model's window drains, then retry once.
-    let result = match result {
-        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted {
-            ref step,
-            tried,
-            retry_after_ms,
-        }) if max_wait_ms.map_or(false, |max| retry_after_ms > 0 && retry_after_ms <= max) => {
-            debug!(
-                peer = %peer,
-                step = %step,
-                tried,
-                retry_after_ms,
-                "all models exhausted — sleeping before retry"
-            );
-            tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
-            let sel = state.selector.clone();
-            tokio::task::spawn_blocking(move || sel.select(&req))
-                .await
-                .expect("select retry panicked")
-        }
-        other => other,
-    };
-
-    match result {
-        Ok(candidate) => {
-            debug!(
-                peer = %peer,
-                model = %candidate.model_slug,
-                brand = %candidate.brand_slug,
-                estimated_tokens = candidate.estimated_tokens,
-                cost_usd = ?candidate.estimated_input_cost_usd,
-                "select response"
-            );
-            (StatusCode::OK, Json(json!(candidate))).into_response()
-        }
-        Err(proviz_elekto_core::error::ProvizError::AllModelsExhausted {
-            step,
-            tried,
-            retry_after_ms,
-        }) => {
-            debug!(peer = %peer, step = %step, tried, retry_after_ms, "select exhausted");
-            (
-                StatusCode::CONFLICT,
-                Json(json!({
-                    "error": "all_models_exhausted",
-                    "step": step,
-                    "tried": tried,
-                    "retry_after_ms": retry_after_ms
-                })),
-            )
-                .into_response()
-        }
-        Err(proviz_elekto_core::error::ProvizError::GroupNotFound(name)) => {
-            debug!(peer = %peer, group = %name, "select group not found");
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "group_not_found", "group": name })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn handle_report(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<ReportRequest>,
-) -> impl IntoResponse {
-    debug!(
-        peer = %peer,
-        model_id = %req.model_id,
-        outcome = ?req.outcome,
-        error_type = ?req.error_type,
-        actual_tokens = ?req.actual_tokens,
-        remaining_requests = ?req.remaining_requests,
-        remaining_tokens = ?req.remaining_tokens,
-        "report"
-    );
-    let sel = state.selector.clone();
-    let actual_cost_usd = tokio::task::spawn_blocking(move || {
-        let estimated = req.estimated_tokens.unwrap_or(0);
-        let actual = req.actual_tokens;
-        let prompt = req.prompt_tokens;
-        let completion = req.completion_tokens;
-        let rem_req = req.remaining_requests;
-        let rem_tok = req.remaining_tokens;
-        let brand_key_id = req.brand_key_id;
-        let cost = match req.outcome {
-            ReportOutcome::Success => sel.report_success(
-                req.model_id,
-                brand_key_id,
-                estimated,
-                actual,
-                prompt,
-                completion,
-                rem_req,
-                rem_tok,
-            ),
-            ReportOutcome::RateLimit => {
-                let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                sel.report_rate_limit(
-                    req.model_id,
-                    brand_key_id,
-                    et,
-                    estimated,
-                    actual,
-                    rem_req,
-                    rem_tok,
-                );
-                None
-            }
-            ReportOutcome::Error => {
-                let et = req.error_type.unwrap_or(RateLimitErrorType::Other);
-                sel.report_error(
-                    req.model_id,
-                    brand_key_id,
-                    et,
-                    estimated,
-                    actual,
-                    rem_req,
-                    rem_tok,
-                );
-                None
-            }
-        };
-        if req.sync_limits {
-            sel.sync_provider_limits(
-                req.model_id,
-                brand_key_id,
-                req.limit_requests,
-                req.limit_tokens,
-            );
-        }
-        cost
-    })
-    .await
-    .expect("report task panicked");
-    (
-        StatusCode::OK,
-        Json(ReportResponse {
-            status: "ok",
-            actual_cost_usd,
-        }),
-    )
-        .into_response()
-}
-
-#[derive(Serialize)]
-struct HealthResponse {
-    status: &'static str,
-    uptime_secs: u64,
-}
-
-async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    Json(HealthResponse {
-        status: "ok",
-        uptime_secs: state.started_at.elapsed().as_secs(),
-    })
-}
-
-async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let sel = state.selector.clone();
-    let result = tokio::task::spawn_blocking(move || sel.reload())
-        .await
-        .expect("reload task panicked");
-    match result {
-        Ok((models, rules)) => (
-            StatusCode::OK,
-            Json(json!({ "status": "ok", "models_loaded": models, "rules_loaded": rules })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e.to_string() })),
-        )
-            .into_response(),
-    }
-}
-
-async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let sel = state.selector.clone();
-    let dir = state.providers_dir.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let storage = sel.storage();
-        let summary =
-            proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), &dir, false)
-                .map_err(|e| e.to_string())?;
-        sel.reload().map_err(|e| e.to_string())?;
-        Ok::<_, String>(summary)
-    })
-    .await
-    .expect("seed task panicked");
-    match result {
-        Ok(s) => (
-            StatusCode::OK,
-            Json(json!({
-                "status": "ok",
-                "brands_added": s.brands_added,
-                "models_added": s.models_added,
-                "models_updated": s.models_updated,
-                "models_skipped": s.models_skipped,
-            })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e })),
-        )
-            .into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-struct CatalogModelsQuery {
-    category: Option<String>,
-}
-
-#[derive(Serialize)]
-struct CatalogModelEntry {
-    brand_slug: String,
-    brand_name: String,
-    model_slug: String,
-    display_name: String,
-    category: Option<String>,
-    price_input_per_1m: Option<f64>,
-    price_output_per_1m: Option<f64>,
-    is_enabled: bool,
-}
-
-async fn handle_catalog_models(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<CatalogModelsQuery>,
-) -> impl IntoResponse {
-    let sel = state.selector.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        let storage = sel.storage();
-        let brands = storage.load_brands().map_err(|e| e.to_string())?;
-        let models = storage.load_models().map_err(|e| e.to_string())?;
-        let brand_map: std::collections::HashMap<_, _> =
-            brands.into_iter().map(|b| (b.id, b)).collect();
-        let entries: Vec<CatalogModelEntry> = models
-            .into_iter()
-            .filter(|m| {
-                if let Some(ref cat) = params.category {
-                    m.category.as_deref() == Some(cat.as_str())
-                } else {
-                    true
-                }
-            })
-            .filter_map(|m| {
-                let brand = brand_map.get(&m.brand_id)?;
-                Some(CatalogModelEntry {
-                    brand_slug: brand.slug.clone(),
-                    brand_name: brand.name.clone(),
-                    model_slug: m.slug.clone(),
-                    display_name: m.display_name.clone(),
-                    category: m.category.clone(),
-                    price_input_per_1m: m.price_input_per_1m,
-                    price_output_per_1m: m.price_output_per_1m,
-                    is_enabled: m.is_enabled,
-                })
-            })
-            .collect();
-        Ok::<_, String>(entries)
-    })
-    .await
-    .expect("catalog_models task panicked");
-
-    match result {
-        Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": e })),
-        )
-            .into_response(),
-    }
-}
-
-async fn handle_batch_submit(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    Json(req): Json<batch::BatchSubmitRequest>,
-) -> impl IntoResponse {
-    debug!(peer = %peer, step = %req.step, "batch/submit");
-    match batch::handle_batch_submit(state.batch_queue.clone(), state.selector.clone(), req).await {
-        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
-        Err((code, msg)) => (code, Json(json!({ "error": msg }))).into_response(),
-    }
-}
-
-async fn handle_batch_result(
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    State(state): State<Arc<AppState>>,
-    Path(request_id): Path<Uuid>,
-) -> impl IntoResponse {
-    debug!(peer = %peer, %request_id, "batch/result");
-    let resp = batch::handle_batch_result(&state.batch_queue, request_id);
-    (StatusCode::OK, Json(json!(resp))).into_response()
 }

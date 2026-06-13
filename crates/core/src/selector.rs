@@ -719,6 +719,7 @@ impl Selector {
             brand_slug: winner.brand.slug.clone(),
             model_slug: winner.model.slug.clone(),
             api_key_env,
+            base_url: winner.brand.base_url.clone(),
             brand_key_id,
             max_context_tokens: winner.model.max_context_tokens,
             supports_function_calling: winner.model.supports_function_calling,

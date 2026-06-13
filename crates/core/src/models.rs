@@ -197,6 +197,11 @@ pub struct ModelCandidate {
     pub brand_slug: String,
     pub model_slug: String,
     pub api_key_env: Option<String>,
+    /// Brand's OpenAI-compatible API base URL (e.g. `https://api.scaleway.ai/v1`). `None` when the
+    /// brand relies on a well-known default endpoint (e.g. groq/mistral). Exposed so the server-side
+    /// `/complete` path can build the `{base_url}/chat/completions` request without a catalog lookup.
+    #[serde(default)]
+    pub base_url: Option<String>,
     /// ID of the specific BrandApiKey selected for this call. Present when the brand has rows in
     /// pz_brand_api_keys; None for legacy single-key brands. Echo back in ReportRequest so the
     /// server knows which key to mark rate-limited on a 429.
