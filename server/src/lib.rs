@@ -74,7 +74,7 @@ pub(crate) async fn select_with_wait(
             ref step,
             tried,
             retry_after_ms,
-        }) if max_wait_ms.map_or(false, |max| retry_after_ms > 0 && retry_after_ms <= max) => {
+        }) if max_wait_ms.is_some_and(|max| retry_after_ms > 0 && retry_after_ms <= max) => {
             debug!(
                 step = %step,
                 tried,
