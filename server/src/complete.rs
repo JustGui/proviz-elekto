@@ -28,7 +28,15 @@ const MAX_PROVIDER_ATTEMPTS: usize = 4;
 #[derive(Debug, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
+    #[serde(default)]
     pub content: String,
+    /// Assistant turns in a tool-use loop carry the provider's tool_calls; must be forwarded
+    /// verbatim or the provider rejects the following tool result ("missing field tool_call_id").
+    #[serde(default)]
+    pub tool_calls: Option<Value>,
+    /// Tool-result turns (`role:"tool"`) reference the originating call; required by the provider.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,7 +119,18 @@ impl CompleteRequest {
         let messages: Vec<Value> = self
             .messages
             .iter()
-            .map(|m| json!({ "role": m.role, "content": m.content }))
+            .map(|m| {
+                let mut msg = json!({ "role": m.role, "content": m.content });
+                let obj = msg.as_object_mut().expect("message is object");
+                // Preserve tool-use linkage so multi-round tool loops survive the proxy.
+                if let Some(ref tc) = m.tool_calls {
+                    obj.insert("tool_calls".into(), tc.clone());
+                }
+                if let Some(ref id) = m.tool_call_id {
+                    obj.insert("tool_call_id".into(), json!(id));
+                }
+                msg
+            })
             .collect();
         let mut body = json!({
             "model": model_slug,
