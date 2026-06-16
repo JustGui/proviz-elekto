@@ -1072,6 +1072,59 @@ class ProvizElekto:
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
 
+    def complete_batch(
+        self,
+        step: str,
+        messages: list[dict],
+        *,
+        group_name: Optional[str] = None,
+        categories: Optional[list[str]] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout_secs: float = 600.0,
+    ) -> CompleteResult:
+        """Batch variant of complete(): select a Mistral model, queue via Mistral Batch API.
+
+        Submits to the server-side batch queue (``/batch/submit``), then polls
+        ``/batch/result/{id}`` until the Mistral batch job completes.  Blocks for up
+        to *timeout_secs* (default 10 min) before raising ``BatchTimeoutError``.
+
+        Only Mistral text/code models are eligible — the server enforces this.
+        Cost is ~50% of the synchronous path due to Mistral's batch pricing.
+
+        Returns a :class:`CompleteResult` with the same shape as :meth:`complete`.
+        """
+        from . import batch as batch_module
+
+        select_kwargs: dict = {}
+        if group_name is not None:
+            select_kwargs["group_name"] = group_name
+        if categories:
+            select_kwargs["categories"] = categories
+
+        queue = batch_module.BatchQueue(proviz=self, step=step, **select_kwargs)
+
+        extra: dict = {}
+        if temperature is not None:
+            extra["temperature"] = temperature
+        if max_tokens is not None:
+            extra["max_tokens"] = max_tokens
+
+        job = queue.submit(messages, **extra)
+        result = job.result(timeout=timeout_secs)
+
+        raw_model: str = result.body.get("model", "")
+        content: str = result.content or ""
+
+        return CompleteResult(
+            text=content,
+            model=raw_model,
+            brand="mistral",
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cost_usd=result.actual_cost_usd,
+        )
+
     def create_batch_queue(self, step: str, **select_kwargs: Any) -> "batch_module.BatchQueue":
         """Create a BatchQueue that routes requests through Mistral's Batch API (50% cost reduction).
 
