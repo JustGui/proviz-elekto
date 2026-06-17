@@ -1081,7 +1081,7 @@ class ProvizElekto:
         categories: Optional[list[str]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        timeout_secs: float = 600.0,
+        timeout_secs: float = 300.0,
     ) -> CompleteResult:
         """Batch variant of complete(): select a Mistral model, queue via Mistral Batch API.
 

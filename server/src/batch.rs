@@ -424,15 +424,22 @@ async fn poll_until_complete(
             return Err(format!("polling timed out after {timeout_secs}s"));
         }
 
-        let resp = http
-            .get(url)
-            .bearer_auth(api_key)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let resp = match http.get(url).bearer_auth(api_key).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(error = %e, "network error polling batch job — retrying");
+                continue;
+            }
+        };
 
         let status = resp.status();
-        let body: Value = resp.json().await.map_err(|e| e.to_string())?;
+        let body: Value = match resp.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "failed to parse poll response — retrying");
+                continue;
+            }
+        };
 
         if !status.is_success() {
             return Err(format!("HTTP {status} polling job: {body}"));
