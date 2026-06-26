@@ -70,8 +70,8 @@
     "price_output_per_1m": 0.31
   },
   {
-    "slug": "qwen3-32b",
-    "display_name": "Qwen3 32B",
+    "slug": "Qwen3.6-27B",
+    "display_name": "Qwen3.6 27B",
     "category": "text",
     "max_context_tokens": 32768,
     "supports_function_calling": false,
@@ -80,8 +80,8 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "price_input_per_1m": 0.09,
-    "price_output_per_1m": 0.25
+    "price_input_per_1m": 0.4,
+    "price_output_per_1m": 2.7
   },
   {
     "slug": "qwen3guard-gen-0.6b",
