@@ -1,0 +1,44 @@
+[
+  {
+    "slug": "scribe_v1",
+    "display_name": "Scribe v1 (batch)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": 0.0029,
+    "price_output_per_1m": 0.0
+  },
+  {
+    "slug": "scribe_v2",
+    "display_name": "Scribe v2 (batch)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": 0.0029,
+    "price_output_per_1m": 0.0
+  },
+  {
+    "slug": "scribe_v2_realtime",
+    "display_name": "Scribe v2 Realtime (live)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": 0.004,
+    "price_output_per_1m": 0.0
+  }
+]
