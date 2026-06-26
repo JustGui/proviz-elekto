@@ -68,21 +68,6 @@
     "price_output_per_1m": 0
   },
   {
-    "slug": "llama-3.1-8b-instant",
-    "display_name": "Llama 3.1 8B Instant",
-    "category": "text",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "rpm_limit": 30,
-    "rpd_limit": 14400,
-    "tpm_limit": 6000,
-    "tpd_limit": 500000,
-    "quality_score": 0.8,
-    "price_input_per_1m": 0,
-    "price_output_per_1m": 0
-  },
-  {
     "slug": "llama-3.3-70b-versatile",
     "display_name": "Llama 3.3 70B Versatile",
     "category": "text",
