@@ -19,8 +19,7 @@ struct BrandDef {
 struct ModelDef {
     slug: String,
     display_name: Option<String>,
-    #[serde(default)]
-    max_context_tokens: u32,
+    max_context_tokens: Option<u32>,
     max_output_tokens: Option<u32>,
     #[serde(default)]
     supports_function_calling: bool,
@@ -185,7 +184,7 @@ pub fn load_from_dir(
                     brand_id,
                     slug: def.slug.clone(),
                     display_name: display,
-                    max_context_tokens: def.max_context_tokens,
+                    max_context_tokens: def.max_context_tokens.unwrap_or(0),
                     max_output_tokens: def.max_output_tokens,
                     supports_function_calling: def.supports_function_calling,
                     supports_json_mode: def.supports_json_mode,
