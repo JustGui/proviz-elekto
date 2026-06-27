@@ -11,6 +11,11 @@ proviz seed --brands --models --storage postgres --database-url $DATABASE_URL
 proviz seed --brands --models --storage sqlite --db-path ./proviz.db
 ```
 
+```bash
+# Update your catalog via Docker
+curl -X POST http://localhost:63130/catalog/seed
+```
+
 ## 2. Add selection rules per step (optional)
 
 Rules are optional. When no rules are defined for a step, ProvizElekto falls back to
@@ -137,13 +142,6 @@ Response `404` when group slug/UUID is unknown or the group is inactive:
 ```json
 { "error": "group_not_found", "group": "fast-chat" }
 ```
-
-## Supported Providers (built-in seed)
-
-| slug | Name |
-|------|------|
-| `groq` | Groq |
-| `mistral` | Mistral AI |
-| `ollama` | Ollama |
+### Providers
 
 Add any provider supported by LiteLLM via `proviz brand add`.
