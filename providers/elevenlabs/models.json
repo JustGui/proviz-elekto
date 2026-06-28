@@ -11,7 +11,11 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0029,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "diarization": true,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": true
   },
   {
     "slug": "scribe_v2_realtime",
@@ -25,6 +29,10 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.004,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "diarization": true,
+    "streaming": true,
+    "http_batch": false,
+    "word_timestamps": true
   }
 ]
