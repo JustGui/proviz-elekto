@@ -13,7 +13,9 @@ proviz seed --brands --models --storage sqlite --db-path ./proviz.db
 
 ```bash
 # Update your catalog via Docker
-curl -X POST http://localhost:63130/catalog/seed
+curl -X POST http://localhost:63130/catalog/seed 
+# Refrehs prices
+curl -X POST http://localhost:63130/catalog/refresh
 ```
 
 ## 2. Add selection rules per step (optional)
