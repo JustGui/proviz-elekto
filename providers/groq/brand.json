@@ -2,5 +2,9 @@
   "slug": "groq",
   "name": "Groq",
   "api_key_env": "GROQ_API_KEY",
-  "base_url": null
+  "base_url": null,
+  "endpoints": {
+    "stt": "/v1/audio/transcriptions",
+    "tts": "/v1/audio/speech"
+  }
 }
