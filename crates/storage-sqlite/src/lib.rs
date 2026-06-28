@@ -43,6 +43,7 @@ impl SqliteStorage {
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
         s.migrate_stt_fields()?;
+        s.migrate_endpoints()?;
         Ok(s)
     }
 
@@ -94,6 +95,23 @@ impl SqliteStorage {
         conn.execute_batch("ALTER TABLE pz_brands DROP COLUMN api_key_env;")
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
+        Ok(())
+    }
+
+    fn migrate_endpoints(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_brands') WHERE name='endpoints'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !exists {
+            conn.execute_batch("ALTER TABLE pz_brands ADD COLUMN endpoints TEXT;")
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -241,13 +259,18 @@ impl CatalogStorage for SqliteStorage {
 
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
+        let endpoints_json = brand
+            .endpoints
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
         conn.execute(
-            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
+            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, base_url=excluded.base_url,
                is_active=excluded.is_active, priority=excluded.priority,
-               traffic_weight=excluded.traffic_weight",
+               traffic_weight=excluded.traffic_weight,
+               endpoints=excluded.endpoints",
             params![
                 brand.id.to_string(),
                 brand.slug,
@@ -257,6 +280,7 @@ impl CatalogStorage for SqliteStorage {
                 brand.priority as i64,
                 brand.created_at.to_rfc3339(),
                 brand.traffic_weight,
+                endpoints_json,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -571,7 +595,8 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     is_active      INTEGER NOT NULL DEFAULT 1,
     priority       INTEGER NOT NULL DEFAULT 0,
     created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-    traffic_weight REAL NOT NULL DEFAULT 1.0
+    traffic_weight REAL NOT NULL DEFAULT 1.0,
+    endpoints      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (
@@ -684,6 +709,7 @@ mod tests {
             priority: 0,
             created_at: Utc::now(),
             traffic_weight: 1.0,
+            endpoints: None,
         }
     }
 

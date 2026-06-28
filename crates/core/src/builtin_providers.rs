@@ -1,5 +1,6 @@
 use chrono::Utc;
 use serde::Deserialize;
+use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 use crate::{
@@ -13,6 +14,7 @@ struct BrandDef {
     name: String,
     api_key_env: Option<String>,
     base_url: Option<String>,
+    endpoints: Option<JsonValue>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +148,7 @@ pub fn load_from_dir(
                 priority: 0,
                 created_at: Utc::now(),
                 traffic_weight: 1.0,
+                endpoints: brand_def.endpoints.clone(),
             };
             let id = brand.id;
             storage.insert_brand(&brand)?;

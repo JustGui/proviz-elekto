@@ -69,6 +69,7 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         priority: 0,
         created_at: Utc::now(),
         traffic_weight: 1.0,
+        endpoints: None,
     };
     let model = Model {
         id: Uuid::new_v4(),

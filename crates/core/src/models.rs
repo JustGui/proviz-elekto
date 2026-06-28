@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use uuid::Uuid;
 
 /// One API account (key) for a brand. Multiple accounts can exist per brand
@@ -30,6 +31,9 @@ pub struct Brand {
     /// Higher weight = more traffic directed here. Default 1.0 (equal share with peers).
     /// Used together with per-brand selection history to steer toward under-served brands.
     pub traffic_weight: f64,
+    /// Provider-specific endpoint paths keyed by capability (e.g. "stt", "tts").
+    /// Stored as JSON; None for brands that don't declare custom endpoints.
+    pub endpoints: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

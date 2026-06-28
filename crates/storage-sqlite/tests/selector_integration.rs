@@ -20,6 +20,7 @@ fn make_brand(slug: &str, priority: i16) -> Brand {
         priority,
         created_at: Utc::now(),
         traffic_weight: 1.0,
+        endpoints: None,
     }
 }
 

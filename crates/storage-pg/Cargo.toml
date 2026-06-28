@@ -10,6 +10,7 @@ proviz-elekto-core = { path = "../core" }
 proviz-elekto-storage-common = { path = "../storage-common" }
 uuid.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
 postgres = { version = "0.19", features = ["with-uuid-1", "with-chrono-0_4"] }

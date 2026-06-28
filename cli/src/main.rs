@@ -395,6 +395,7 @@ fn main() {
                     priority,
                     created_at: chrono::Utc::now(),
                     traffic_weight,
+                    endpoints: None,
                 };
                 storage.insert_brand(&brand).unwrap();
                 if let Some(env) = api_key_env {

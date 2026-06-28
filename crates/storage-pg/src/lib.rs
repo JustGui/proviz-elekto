@@ -34,6 +34,7 @@ impl PostgresStorage {
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
         s.migrate_stt_fields()?;
+        s.migrate_endpoints()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -66,6 +67,14 @@ impl PostgresStorage {
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
 
+        Ok(())
+    }
+
+    fn migrate_endpoints(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute("ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS endpoints TEXT;")
+            .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
 
@@ -178,14 +187,19 @@ impl CatalogStorage for PostgresStorage {
 
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
         let mut client = self.client.lock().unwrap();
+        let endpoints_json: Option<String> = brand
+            .endpoints
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_default());
         client.execute(
-            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
              ON CONFLICT (slug) DO UPDATE SET
                name=EXCLUDED.name, base_url=EXCLUDED.base_url,
                is_active=EXCLUDED.is_active, priority=EXCLUDED.priority,
-               traffic_weight=EXCLUDED.traffic_weight",
-            &[&brand.id, &brand.slug, &brand.name, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight],
+               traffic_weight=EXCLUDED.traffic_weight,
+               endpoints=EXCLUDED.endpoints",
+            &[&brand.id, &brand.slug, &brand.name, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight, &endpoints_json],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -486,7 +500,8 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     is_active      BOOLEAN          NOT NULL DEFAULT TRUE,
     priority       SMALLINT         NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
-    traffic_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0
+    traffic_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    endpoints      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (
