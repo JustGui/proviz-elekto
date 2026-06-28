@@ -465,7 +465,9 @@ async fn handle_stt_model_info(
         let storage = sel.storage();
         let brands = storage.load_brands().map_err(|e| e.to_string())?;
         let models = storage.load_models().map_err(|e| e.to_string())?;
-        let keys = storage.load_all_brand_api_keys().map_err(|e| e.to_string())?;
+        let keys = storage
+            .load_all_brand_api_keys()
+            .map_err(|e| e.to_string())?;
 
         let brand = brands
             .iter()
@@ -502,7 +504,10 @@ async fn handle_stt_model_info(
             })
             .ok_or_else(|| format!("no base_url configured for brand '{}'", brand_slug))?;
 
-        let api_key_env = keys.into_iter().find(|k| k.brand_id == brand.id).map(|k| k.api_key_env);
+        let api_key_env = keys
+            .into_iter()
+            .find(|k| k.brand_id == brand.id)
+            .map(|k| k.api_key_env);
 
         Ok::<_, String>(SttModelInfoResponse {
             brand_slug: brand.slug.clone(),
