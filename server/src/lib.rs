@@ -16,7 +16,6 @@ use proviz_elekto_core::{
         SelectRequest,
     },
     selector::Selector,
-    storage::CatalogStorage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
