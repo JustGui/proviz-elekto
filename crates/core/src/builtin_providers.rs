@@ -137,6 +137,13 @@ pub fn load_from_dir(
 
         // Reuse existing UUID so FK references on pz_models stay valid.
         let brand_id = if let Some(existing) = existing_brands.get(&brand_def.slug) {
+            let updated = Brand {
+                endpoints: brand_def.endpoints.clone(),
+                base_url: brand_def.base_url.clone(),
+                name: brand_def.name.clone(),
+                ..existing.clone()
+            };
+            storage.insert_brand(&updated)?;
             existing.id
         } else {
             let brand = Brand {
