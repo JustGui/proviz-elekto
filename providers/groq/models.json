@@ -190,7 +190,11 @@
     "rpm_limit": 20,
     "rpd_limit": 2000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "diarization": true,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": true
   },
   {
     "slug": "whisper-large-v3-turbo",
@@ -202,6 +206,10 @@
     "rpm_limit": 20,
     "rpd_limit": 2000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "diarization": true,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": true
   }
 ]
