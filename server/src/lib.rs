@@ -16,6 +16,7 @@ use proviz_elekto_core::{
         SelectRequest,
     },
     selector::Selector,
+    storage::CatalogStorage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -47,6 +48,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/catalog/seed", post(handle_catalog_seed))
         .route("/catalog/refresh", post(handle_catalog_refresh))
         .route("/catalog/models", get(handle_catalog_models))
+        .route("/stt/model-info", get(handle_stt_model_info))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
         .with_state(state)
@@ -420,6 +422,107 @@ async fn handle_catalog_models(
             Json(json!({ "error": e })),
         )
             .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SttModelInfoQuery {
+    provider: String,
+}
+
+#[derive(Serialize)]
+struct SttModelInfoResponse {
+    brand_slug: String,
+    model_slug: String,
+    base_url: String,
+    stt_path: String,
+    api_key_env: Option<String>,
+    /// False for ElevenLabs (own request format + auth header); true for all OAI-compatible brands.
+    openai_compatible: bool,
+    diarization: bool,
+    streaming: bool,
+    http_batch: bool,
+    word_timestamps: bool,
+}
+
+async fn handle_stt_model_info(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SttModelInfoQuery>,
+) -> impl IntoResponse {
+    let provider = params.provider;
+    let Some((brand_slug, model_slug)) = provider.split_once('/') else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "provider must be brand/model" })),
+        )
+            .into_response();
+    };
+    let brand_slug = brand_slug.to_string();
+    let model_slug = model_slug.to_string();
+
+    let sel = state.selector.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = sel.storage();
+        let brands = storage.load_brands().map_err(|e| e.to_string())?;
+        let models = storage.load_models().map_err(|e| e.to_string())?;
+        let keys = storage.load_all_brand_api_keys().map_err(|e| e.to_string())?;
+
+        let brand = brands
+            .iter()
+            .find(|b| b.slug == brand_slug)
+            .ok_or_else(|| format!("brand '{}' not found", brand_slug))?;
+        let model = models
+            .iter()
+            .find(|m| m.brand_id == brand.id && m.slug == model_slug)
+            .ok_or_else(|| format!("model '{}/{}' not found", brand_slug, model_slug))?;
+
+        let stt_path = brand
+            .endpoints
+            .as_ref()
+            .and_then(|e| e.get("stt"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("/audio/transcriptions")
+            .to_string();
+
+        let openai_compatible = stt_path != "/v1/speech-to-text";
+
+        let base_url = brand
+            .base_url
+            .as_deref()
+            .filter(|u| !u.is_empty())
+            .map(|u| u.trim_end_matches('/').to_string())
+            .or_else(|| {
+                let prefix = brand_slug.split('-').next().unwrap_or(&brand_slug);
+                match prefix {
+                    "scaleway" => Some("https://api.scaleway.ai/v1".to_string()),
+                    "mistral" => Some("https://api.mistral.ai/v1".to_string()),
+                    "elevenlabs" => Some("https://api.elevenlabs.io".to_string()),
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| format!("no base_url configured for brand '{}'", brand_slug))?;
+
+        let api_key_env = keys.into_iter().find(|k| k.brand_id == brand.id).map(|k| k.api_key_env);
+
+        Ok::<_, String>(SttModelInfoResponse {
+            brand_slug: brand.slug.clone(),
+            model_slug: model.slug.clone(),
+            base_url,
+            stt_path,
+            api_key_env,
+            openai_compatible,
+            diarization: model.diarization.unwrap_or(false),
+            streaming: model.streaming.unwrap_or(false),
+            http_batch: model.http_batch.unwrap_or(false),
+            word_timestamps: model.word_timestamps.unwrap_or(false),
+        })
+    })
+    .await
+    .expect("stt_model_info task panicked");
+
+    match result {
+        Ok(info) => (StatusCode::OK, Json(info)).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(json!({ "error": e }))).into_response(),
     }
 }
 
