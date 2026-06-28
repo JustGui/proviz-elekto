@@ -39,6 +39,10 @@ struct ModelDef {
     category: Option<String>,
     #[serde(default)]
     batch_price_multiplier: Option<f64>,
+    diarization: Option<bool>,
+    streaming: Option<bool>,
+    http_batch: Option<bool>,
+    word_timestamps: Option<bool>,
 }
 
 pub struct LoadSummary {
@@ -162,21 +166,46 @@ pub fn load_from_dir(
 
         for def in &model_defs {
             if let Some(existing) = existing_models.get(&(brand_id, def.slug.clone())) {
-                if update_limits {
-                    let model = Model {
-                        tpm_limit: def.tpm_limit.or(existing.tpm_limit),
-                        rpm_limit: def.rpm_limit.or(existing.rpm_limit),
-                        rpd_limit: def.rpd_limit.or(existing.rpd_limit),
-                        tpd_limit: def.tpd_limit.or(existing.tpd_limit),
-                        tpm_limit_month: def.tpm_limit_month.or(existing.tpm_limit_month),
-                        rps_limit: def.rps_limit.or(existing.rps_limit),
-                        ..existing.clone()
-                    };
-                    storage.insert_model(&model)?;
-                    summary.models_updated += 1;
-                } else {
-                    summary.models_skipped += 1;
-                }
+                // Always update capability fields from JSON; only update limits when requested.
+                let model = Model {
+                    diarization: def.diarization,
+                    streaming: def.streaming,
+                    http_batch: def.http_batch,
+                    word_timestamps: def.word_timestamps,
+                    tpm_limit: if update_limits {
+                        def.tpm_limit.or(existing.tpm_limit)
+                    } else {
+                        existing.tpm_limit
+                    },
+                    rpm_limit: if update_limits {
+                        def.rpm_limit.or(existing.rpm_limit)
+                    } else {
+                        existing.rpm_limit
+                    },
+                    rpd_limit: if update_limits {
+                        def.rpd_limit.or(existing.rpd_limit)
+                    } else {
+                        existing.rpd_limit
+                    },
+                    tpd_limit: if update_limits {
+                        def.tpd_limit.or(existing.tpd_limit)
+                    } else {
+                        existing.tpd_limit
+                    },
+                    tpm_limit_month: if update_limits {
+                        def.tpm_limit_month.or(existing.tpm_limit_month)
+                    } else {
+                        existing.tpm_limit_month
+                    },
+                    rps_limit: if update_limits {
+                        def.rps_limit.or(existing.rps_limit)
+                    } else {
+                        existing.rps_limit
+                    },
+                    ..existing.clone()
+                };
+                storage.insert_model(&model)?;
+                summary.models_updated += 1;
             } else {
                 let display = def.display_name.clone().unwrap_or_else(|| def.slug.clone());
                 let model = Model {
@@ -203,6 +232,10 @@ pub fn load_from_dir(
                     category: def.category.clone(),
                     created_at: Utc::now(),
                     batch_price_multiplier: def.batch_price_multiplier,
+                    diarization: def.diarization,
+                    streaming: def.streaming,
+                    http_batch: def.http_batch,
+                    word_timestamps: def.word_timestamps,
                 };
                 storage.insert_model(&model)?;
                 summary.models_added += 1;

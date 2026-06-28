@@ -61,6 +61,14 @@ pub struct Model {
     /// Multiplier applied to pricing when this model is used via batch API (e.g. 0.5 for 50% discount).
     /// None means no batch pricing is configured (standard prices apply).
     pub batch_price_multiplier: Option<f64>,
+    /// STT capability: supports speaker diarization. None = unknown / not an STT model.
+    pub diarization: Option<bool>,
+    /// STT capability: supports real-time streaming transcription.
+    pub streaming: Option<bool>,
+    /// STT capability: supports HTTP batch transcription.
+    pub http_batch: Option<bool>,
+    /// STT capability: returns per-word timestamps.
+    pub word_timestamps: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -48,6 +48,10 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         category: None,
         created_at: Utc::now(),
         batch_price_multiplier: None,
+        diarization: None,
+        streaming: None,
+        http_batch: None,
+        word_timestamps: None,
     }
 }
 

@@ -42,6 +42,7 @@ impl SqliteStorage {
         };
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
+        s.migrate_stt_fields()?;
         Ok(s)
     }
 
@@ -95,6 +96,25 @@ impl SqliteStorage {
 
         Ok(())
     }
+
+    fn migrate_stt_fields(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        for col in &["diarization", "streaming", "http_batch", "word_timestamps"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name=?1",
+                    [col],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|n| n > 0)
+                .unwrap_or(false);
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE pz_models ADD COLUMN {col} INTEGER;"))
+                    .map_err(|e| StorageError::Database(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
@@ -111,6 +131,9 @@ impl RowReader for SqliteRow<'_> {
     }
     fn bool_val(&self, idx: usize) -> bool {
         self.0.get(idx).unwrap()
+    }
+    fn opt_bool(&self, idx: usize) -> Option<bool> {
+        self.0.get::<_, Option<i64>>(idx).unwrap().map(|v| v != 0)
     }
     fn i16_val(&self, idx: usize) -> i16 {
         self.0.get::<_, i64>(idx).unwrap() as i16
@@ -247,8 +270,9 @@ impl CatalogStorage for SqliteStorage {
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
-              is_enabled,notes,category,created_at,batch_price_multiplier)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+              is_enabled,notes,category,created_at,batch_price_multiplier,
+              diarization,streaming,http_batch,word_timestamps)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -273,6 +297,10 @@ impl CatalogStorage for SqliteStorage {
                 model.category,
                 model.created_at.to_rfc3339(),
                 model.batch_price_multiplier,
+                model.diarization.map(|v| v as i64),
+                model.streaming.map(|v| v as i64),
+                model.http_batch.map(|v| v as i64),
+                model.word_timestamps.map(|v| v as i64),
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -569,7 +597,11 @@ CREATE TABLE IF NOT EXISTS pz_models (
     notes                     TEXT,
     category                  TEXT,
     created_at                TEXT NOT NULL DEFAULT (datetime('now')),
-    batch_price_multiplier    REAL
+    batch_price_multiplier    REAL,
+    diarization               INTEGER,
+    streaming                 INTEGER,
+    http_batch                INTEGER,
+    word_timestamps           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -680,6 +712,10 @@ mod tests {
             category: None,
             created_at: Utc::now(),
             batch_price_multiplier: None,
+            diarization: None,
+            streaming: None,
+            http_batch: None,
+            word_timestamps: None,
         }
     }
 

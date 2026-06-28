@@ -545,6 +545,10 @@ fn main() {
                     category,
                     created_at: chrono::Utc::now(),
                     batch_price_multiplier: None,
+                    diarization: None,
+                    streaming: None,
+                    http_batch: None,
+                    word_timestamps: None,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -633,6 +637,10 @@ fn main() {
                         category: v["category"].as_str().map(|s| s.to_string()),
                         created_at: chrono::Utc::now(),
                         batch_price_multiplier: v["batch_price_multiplier"].as_f64(),
+                        diarization: v["diarization"].as_bool(),
+                        streaming: v["streaming"].as_bool(),
+                        http_batch: v["http_batch"].as_bool(),
+                        word_timestamps: v["word_timestamps"].as_bool(),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;

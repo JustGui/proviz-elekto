@@ -94,6 +94,10 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         category: None,
         created_at: Utc::now(),
         batch_price_multiplier: None,
+        diarization: None,
+        streaming: None,
+        http_batch: None,
+        word_timestamps: None,
     };
     let rule = SelectionRule {
         id: Uuid::new_v4(),

@@ -45,6 +45,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/health", get(handle_health))
         .route("/catalog/reload", post(handle_reload))
         .route("/catalog/seed", post(handle_catalog_seed))
+        .route("/catalog/refresh", post(handle_catalog_refresh))
         .route("/catalog/models", get(handle_catalog_models))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
@@ -300,6 +301,42 @@ async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoRes
     })
     .await
     .expect("seed task panicked");
+    match result {
+        Ok(s) => (
+            StatusCode::OK,
+            Json(json!({
+                "status": "ok",
+                "brands_added": s.brands_added,
+                "models_added": s.models_added,
+                "models_updated": s.models_updated,
+                "models_skipped": s.models_skipped,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// Upserts capability fields (incl. STT flags) for all providers from JSON files, then reloads
+/// the in-memory cache. Unlike /catalog/seed this always runs even if brands already exist,
+/// and unlike /catalog/reload it writes to the DB first so new JSON fields reach existing rows.
+async fn handle_catalog_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let sel = state.selector.clone();
+    let dir = state.providers_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = sel.storage();
+        let summary =
+            proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), &dir, false)
+                .map_err(|e| e.to_string())?;
+        sel.reload().map_err(|e| e.to_string())?;
+        Ok::<_, String>(summary)
+    })
+    .await
+    .expect("refresh task panicked");
     match result {
         Ok(s) => (
             StatusCode::OK,

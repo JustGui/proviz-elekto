@@ -11,7 +11,8 @@ pub const Q_MODELS: &str =
     "SELECT id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,\
      supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,\
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
-     avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier \
+     avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
+     diarization,streaming,http_batch,word_timestamps \
      FROM pz_models";
 
 pub const Q_RULES: &str =
@@ -35,6 +36,7 @@ pub trait RowReader {
     fn string(&self, idx: usize) -> String;
     fn opt_string(&self, idx: usize) -> Option<String>;
     fn bool_val(&self, idx: usize) -> bool;
+    fn opt_bool(&self, idx: usize) -> Option<bool>;
     fn i16_val(&self, idx: usize) -> i16;
     fn i32_val(&self, idx: usize) -> i32;
     fn opt_i32(&self, idx: usize) -> Option<i32>;
@@ -81,6 +83,10 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         category: row.opt_string(20),
         created_at: row.datetime(21),
         batch_price_multiplier: row.opt_f64(22),
+        diarization: row.opt_bool(23),
+        streaming: row.opt_bool(24),
+        http_batch: row.opt_bool(25),
+        word_timestamps: row.opt_bool(26),
     }
 }
 
