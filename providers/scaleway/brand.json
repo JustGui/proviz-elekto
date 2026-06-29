@@ -2,7 +2,7 @@
   "slug": "scaleway",
   "name": "Scaleway",
   "api_key_env": "SCALEWAY_API_KEY",
-  "base_url": "https://api.scaleway.ai/v1",
+  "base_url": "https://api.scaleway.ai",
   "endpoints": {
     "stt": "/v1/audio/transcriptions",
     "tts": "/v1/audio/speech"
