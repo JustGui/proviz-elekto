@@ -230,6 +230,8 @@
     "max_context_tokens": 32768,
     "supports_function_calling": false,
     "supports_json_mode": false,
+    "http_batch": true,
+    "word_timestamps": true,
     "rpm_limit": null,
     "rpd_limit": null,
     "tpm_limit": null,
