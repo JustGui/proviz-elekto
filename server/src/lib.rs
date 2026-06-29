@@ -487,11 +487,18 @@ async fn handle_stt_model_info(
 
         let openai_compatible = stt_path != "/v1/speech-to-text";
 
-        let base_url = brand
+        let base_url = model
             .base_url
             .as_deref()
             .filter(|u| !u.is_empty())
             .map(|u| u.trim_end_matches('/').to_string())
+            .or_else(|| {
+                brand
+                    .base_url
+                    .as_deref()
+                    .filter(|u| !u.is_empty())
+                    .map(|u| u.trim_end_matches('/').to_string())
+            })
             .or_else(|| {
                 let prefix = brand_slug.split('-').next().unwrap_or(&brand_slug);
                 match prefix {
