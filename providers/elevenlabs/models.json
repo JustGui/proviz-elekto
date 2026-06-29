@@ -30,7 +30,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.004,
     "price_output_per_1m": 0.0,
-    "diarization": true,
+    "diarization": false,
     "streaming": true,
     "http_batch": false,
     "word_timestamps": true,
