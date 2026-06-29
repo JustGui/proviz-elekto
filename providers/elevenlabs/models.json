@@ -33,6 +33,7 @@
     "diarization": true,
     "streaming": true,
     "http_batch": false,
-    "word_timestamps": true
+    "word_timestamps": true,
+    "base_url": "wss://api.elevenlabs.io"
   }
 ]
