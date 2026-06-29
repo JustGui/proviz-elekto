@@ -550,6 +550,7 @@ fn main() {
                     streaming: None,
                     http_batch: None,
                     word_timestamps: None,
+                    base_url: None,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -642,6 +643,7 @@ fn main() {
                         streaming: v["streaming"].as_bool(),
                         http_batch: v["http_batch"].as_bool(),
                         word_timestamps: v["word_timestamps"].as_bool(),
+                        base_url: v["base_url"].as_str().map(|s| s.to_string()),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;

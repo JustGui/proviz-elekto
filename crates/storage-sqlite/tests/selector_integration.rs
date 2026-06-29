@@ -53,6 +53,7 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         streaming: None,
         http_batch: None,
         word_timestamps: None,
+        base_url: None,
     }
 }
 

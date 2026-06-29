@@ -45,6 +45,7 @@ struct ModelDef {
     streaming: Option<bool>,
     http_batch: Option<bool>,
     word_timestamps: Option<bool>,
+    base_url: Option<String>,
 }
 
 pub struct LoadSummary {
@@ -182,6 +183,7 @@ pub fn load_from_dir(
                     streaming: def.streaming,
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
+                    base_url: def.base_url.clone(),
                     tpm_limit: if update_limits {
                         def.tpm_limit.or(existing.tpm_limit)
                     } else {
@@ -246,6 +248,7 @@ pub fn load_from_dir(
                     streaming: def.streaming,
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
+                    base_url: def.base_url.clone(),
                 };
                 storage.insert_model(&model)?;
                 summary.models_added += 1;

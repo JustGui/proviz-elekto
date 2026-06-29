@@ -73,6 +73,8 @@ pub struct Model {
     pub http_batch: Option<bool>,
     /// STT capability: returns per-word timestamps.
     pub word_timestamps: Option<bool>,
+    /// STT capability: returns new base url if different.
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

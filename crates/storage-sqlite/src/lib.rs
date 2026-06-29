@@ -117,7 +117,13 @@ impl SqliteStorage {
 
     fn migrate_stt_fields(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().unwrap();
-        for col in &["diarization", "streaming", "http_batch", "word_timestamps"] {
+        for col in &[
+            "diarization",
+            "streaming",
+            "http_batch",
+            "word_timestamps",
+            "base_url",
+        ] {
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name=?1",
@@ -127,7 +133,7 @@ impl SqliteStorage {
                 .map(|n| n > 0)
                 .unwrap_or(false);
             if !exists {
-                conn.execute_batch(&format!("ALTER TABLE pz_models ADD COLUMN {col} INTEGER;"))
+                conn.execute_batch(&format!("ALTER TABLE pz_models ADD COLUMN {col} TEXT;"))
                     .map_err(|e| StorageError::Database(e.to_string()))?;
             }
         }
@@ -295,8 +301,8 @@ impl CatalogStorage for SqliteStorage {
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
-              diarization,streaming,http_batch,word_timestamps)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27)",
+              diarization,streaming,http_batch,word_timestamps, base_url)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -325,6 +331,7 @@ impl CatalogStorage for SqliteStorage {
                 model.streaming.map(|v| v as i64),
                 model.http_batch.map(|v| v as i64),
                 model.word_timestamps.map(|v| v as i64),
+                model.base_url,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -626,7 +633,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     diarization               INTEGER,
     streaming                 INTEGER,
     http_batch                INTEGER,
-    word_timestamps           INTEGER
+    word_timestamps           INTEGER,
+    base_url                  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -742,6 +750,7 @@ mod tests {
             streaming: None,
             http_batch: None,
             word_timestamps: None,
+            base_url: None,
         }
     }
 

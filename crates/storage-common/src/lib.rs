@@ -12,7 +12,7 @@ pub const Q_MODELS: &str =
      supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,\
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
-     diarization,streaming,http_batch,word_timestamps \
+     diarization,streaming,http_batch,word_timestamps,base_url \
      FROM pz_models";
 
 pub const Q_RULES: &str =
@@ -90,6 +90,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         streaming: row.opt_bool(24),
         http_batch: row.opt_bool(25),
         word_timestamps: row.opt_bool(26),
+        base_url: row.opt_string(27),
     }
 }
 
