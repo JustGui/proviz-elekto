@@ -1,0 +1,10 @@
+{
+  "slug": "deepgram",
+  "name": "Deepgram",
+  "api_key_env": "DEEPGRAM_API_KEY",
+  "base_url": "https://api.deepgram.com",
+  "endpoints": {
+    "stt": "/v1/listen",
+    "tts": "/v1/speak"
+  }
+}
