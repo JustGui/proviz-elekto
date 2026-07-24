@@ -665,5 +665,8 @@ fn account_scoped_error_still_blocks_whole_shared_key() {
     );
 
     let err = sel.select(&base_req()).unwrap_err();
-    assert!(matches!(err, ProvizError::AllModelsExhausted { tried: 2, .. }));
+    assert!(matches!(
+        err,
+        ProvizError::AllModelsExhausted { tried: 2, .. }
+    ));
 }

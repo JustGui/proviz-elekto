@@ -410,7 +410,8 @@ impl Selector {
             let key_blocked = match brand_key_pool {
                 Some(keys) => {
                     let active: Vec<&BrandApiKey> = keys.iter().filter(|k| k.is_active).collect();
-                    !active.is_empty() && active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
+                    !active.is_empty()
+                        && active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
                 }
                 None => false,
             };
