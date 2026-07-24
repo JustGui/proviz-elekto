@@ -101,6 +101,20 @@ pub enum RateLimitErrorType {
 }
 
 impl RateLimitErrorType {
+    /// True for error types that indicate a problem with the account/key itself
+    /// (quota exhaustion, bad credentials) rather than the specific model that
+    /// happened to be called. These should block the shared key so every model
+    /// behind it backs off together. Model-scoped types (a slow/flaky model
+    /// timing out, a malformed response, a one-off error) must NOT block sibling
+    /// models that happen to share the same key — see report_error/report_rate_limit,
+    /// which route by this instead of unconditionally keying off brand_key_id.
+    /// Without this split, a single-key brand with multiple models (e.g. one
+    /// OVHCloud key serving four Qwen variants) has one flaky model repeatedly
+    /// locking out its perfectly healthy siblings for cooldown_secs() at a time.
+    pub fn is_account_scoped(&self) -> bool {
+        matches!(self, Self::Auth | Self::Rpm | Self::Tpm | Self::Tpd)
+    }
+
     /// TTL in seconds before a model blocked by this error type is retried.
     pub fn cooldown_secs(&self) -> u64 {
         match self {

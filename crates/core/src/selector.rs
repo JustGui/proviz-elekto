@@ -399,30 +399,34 @@ impl Selector {
                 continue;
             }
 
-            // Rate-limit check: multi-key brands are blocked only when ALL active keys are
-            // rate-limited. Single-key (legacy) brands use the model-level rate_state.
+            // Rate-limit check has two independent parts:
+            //  - key_blocked:   ALL active keys for the brand are rate-limited (an
+            //                   account/quota-level signal — see is_account_scoped()).
+            //  - model_blocked: this specific model is rate-limited (a model-scoped
+            //                   signal, e.g. a timeout). Checked regardless of whether
+            //                   the brand also has a healthy key pool, so a flaky model
+            //                   doesn't hide behind — or take down — its siblings.
             let brand_key_pool = cache.brand_keys.get(&brand.id);
-            let is_rate_blocked = match brand_key_pool {
+            let key_blocked = match brand_key_pool {
                 Some(keys) => {
                     let active: Vec<&BrandApiKey> = keys.iter().filter(|k| k.is_active).collect();
-                    if active.is_empty() {
-                        // Keys table has rows but none active — fall back to model-level check.
-                        self.rate_state.is_limited(&model.id)
-                    } else {
-                        active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
+                    !active.is_empty() && active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
+                }
+                None => false,
+            };
+            let model_blocked = self.rate_state.is_limited(&model.id);
+
+            if key_blocked || model_blocked {
+                debug!(model = %model.slug, key_blocked, model_blocked, "skipped: rate limited (reactive)");
+                tried += 1;
+                if key_blocked {
+                    if let Some(keys) = brand_key_pool {
+                        for k in keys.iter().filter(|k| k.is_active) {
+                            blocked_key_ids.push(k.id);
+                        }
                     }
                 }
-                None => self.rate_state.is_limited(&model.id),
-            };
-
-            if is_rate_blocked {
-                debug!(model = %model.slug, "skipped: rate limited (reactive)");
-                tried += 1;
-                if let Some(keys) = brand_key_pool {
-                    for k in keys.iter().filter(|k| k.is_active) {
-                        blocked_key_ids.push(k.id);
-                    }
-                } else {
+                if model_blocked {
                     rate_limited_ids.push(model.id);
                 }
                 continue;
@@ -747,12 +751,15 @@ impl Selector {
         remaining_tokens: Option<u64>,
     ) {
         match brand_key_id {
-            Some(key_id) => {
-                // Multi-key brand: block the specific key, not the model.
-                // Other keys for the same brand remain available.
+            // Account-scoped signal (quota/auth) on a key-pooled brand: block the
+            // specific key. Other keys for the same brand remain available.
+            Some(key_id) if error_type.is_account_scoped() => {
                 self.key_rate_state.mark(key_id, &error_type);
             }
-            None => {
+            // Model-scoped signal (e.g. a timeout): block only this model, even
+            // if it has a brand_key_id — sibling models sharing the same key
+            // must not be penalised for one flaky model.
+            _ => {
                 self.rate_state.mark(model_id, &error_type);
             }
         }
@@ -833,8 +840,10 @@ impl Selector {
         remaining_tokens: Option<u64>,
     ) {
         match brand_key_id {
-            Some(key_id) => self.key_rate_state.mark(key_id, &error_type),
-            None => self.rate_state.mark(model_id, &error_type),
+            Some(key_id) if error_type.is_account_scoped() => {
+                self.key_rate_state.mark(key_id, &error_type)
+            }
+            _ => self.rate_state.mark(model_id, &error_type),
         }
         self.usage_tracker
             .release(model_id, brand_key_id, estimated_tokens, actual_tokens);

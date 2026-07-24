@@ -581,3 +581,89 @@ fn headroom_scoring_causes_fallback_when_loaded() {
     let c4 = sel.select(&base_req()).unwrap();
     assert_eq!(c4.model_slug, "backup");
 }
+
+// ── single-key, multi-model brands: model-scoped vs account-scoped errors ──
+//
+// Regression coverage for a real production bug: a brand with exactly one
+// active API key serving several models (e.g. one OVHCloud key behind four
+// Qwen variants). A timeout on one model must not lock out its siblings —
+// only a genuinely account-scoped signal (quota/auth) should block the
+// shared key. Before this fix, report_error/report_rate_limit keyed purely
+// off "is there a brand_key_id" and always marked the shared key, so one
+// flaky model repeatedly took down every sibling model behind the same key.
+
+fn make_brand_key(brand_id: Uuid, env: &str) -> proviz_elekto_core::models::BrandApiKey {
+    proviz_elekto_core::models::BrandApiKey {
+        id: Uuid::new_v4(),
+        brand_id,
+        api_key_env: env.to_string(),
+        priority: 0,
+        is_active: true,
+        created_at: Utc::now(),
+    }
+}
+
+#[test]
+fn model_scoped_timeout_does_not_block_sibling_on_shared_key() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let flaky = make_model(brand.id, "flaky", 32_000);
+    let steady = make_model(brand.id, "steady", 32_000);
+    let key = make_brand_key(brand.id, "ACME_API_KEY");
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&flaky).unwrap();
+    db.insert_model(&steady).unwrap();
+    db.insert_brand_api_key(&key).unwrap();
+    db.insert_rule(&make_rule("chat", flaky.id, 0)).unwrap();
+    db.insert_rule(&make_rule("chat", steady.id, 1)).unwrap();
+
+    let sel = selector(db);
+    // "flaky" times out; it was served by the brand's one key.
+    sel.report_error(
+        flaky.id,
+        Some(key.id),
+        RateLimitErrorType::Timeout,
+        0,
+        None,
+        None,
+        None,
+    );
+
+    // "steady" must still be selectable — the shared key must not be blocked
+    // by a model-scoped error on a different model.
+    let c = sel.select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "steady");
+}
+
+#[test]
+fn account_scoped_error_still_blocks_whole_shared_key() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let m1 = make_model(brand.id, "m1", 32_000);
+    let m2 = make_model(brand.id, "m2", 32_000);
+    let key = make_brand_key(brand.id, "ACME_API_KEY");
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&m1).unwrap();
+    db.insert_model(&m2).unwrap();
+    db.insert_brand_api_key(&key).unwrap();
+    db.insert_rule(&make_rule("chat", m1.id, 0)).unwrap();
+    db.insert_rule(&make_rule("chat", m2.id, 1)).unwrap();
+
+    let sel = selector(db);
+    // Auth failure on m1 is a real account-level problem (bad/expired key) —
+    // both models sharing that key should become unavailable.
+    sel.report_error(
+        m1.id,
+        Some(key.id),
+        RateLimitErrorType::Auth,
+        0,
+        None,
+        None,
+        None,
+    );
+
+    let err = sel.select(&base_req()).unwrap_err();
+    assert!(matches!(err, ProvizError::AllModelsExhausted { tried: 2, .. }));
+}
