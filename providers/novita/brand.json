@@ -1,0 +1,11 @@
+{
+  "slug": "novita-ai",
+  "name": "Novita AI",
+  "api_key_env": "NOVITA_API_KEY",
+  "base_url": "https://api.novita.ai",
+  "endpoints": {
+    "chat": "/openai/v1/chat/completions",
+    "embeddings": "/openai/v1/embeddings",
+    "images": "/v3/async/txt2img"
+  }
+}
