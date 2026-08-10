@@ -249,6 +249,11 @@ pub struct ModelCandidate {
     /// Multiplier applied to pricing when this model is used via batch API (e.g. 0.5 for 50% discount).
     #[serde(default)]
     pub batch_price_multiplier: Option<f64>,
+    /// Brand's chat-completions path (e.g. `/openai/v1/chat/completions`), read from
+    /// `brand.endpoints.chat`. `None` when the brand relies on the default `/chat/completions`
+    /// suffix. Lets `/complete` build the request URL without a catalog lookup.
+    #[serde(default)]
+    pub chat_path: Option<String>,
 }
 
 /// Input to /report

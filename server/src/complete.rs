@@ -170,7 +170,11 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Err(e) => return select_error_to_response(e),
         };
 
-        let base_url = match resolve_base_url(&candidate.brand_slug, &candidate.base_url) {
+        let url = match resolve_chat_url(
+            &candidate.brand_slug,
+            &candidate.base_url,
+            &candidate.chat_path,
+        ) {
             Some(u) => u,
             None => {
                 warn!(brand = %candidate.brand_slug, "no base_url and no default endpoint known");
@@ -214,7 +218,6 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             }
         };
 
-        let url = format!("{base_url}/chat/completions");
         let payload = req.payload(&candidate.model_slug);
         debug!(
             attempt,
@@ -321,14 +324,29 @@ fn select_error_to_response(e: proviz_elekto_core::error::ProvizError) -> axum::
     }
 }
 
-/// Resolve the OpenAI-compatible base URL for a brand. Brands that store a `base_url` (ovh,
-/// scaleway) use it verbatim; brands that rely on a well-known endpoint (groq, mistral) fall back
-/// to the canonical default. The brand slug may carry a multi-account suffix (e.g. `groq-free`),
-/// so we match on the leading segment.
-fn resolve_base_url(brand_slug: &str, base_url: &Option<String>) -> Option<String> {
+/// Resolve the full chat-completions URL for a brand. Brands that store a `base_url` (ovh,
+/// scaleway, novita) use it verbatim; brands that rely on a well-known endpoint (groq, mistral)
+/// fall back to the canonical default. The brand slug may carry a multi-account suffix (e.g.
+/// `groq-free`), so we match on the leading segment.
+///
+/// The path appended is `brand.endpoints.chat` (from `brand.json`) when set, else
+/// `/chat/completions`. This is what lets a new OpenAI-compatible provider be onboarded with
+/// only `brand.json` + `models.json` — no code change — as long as `base_url` combined with the
+/// default `/chat/completions` suffix isn't already correct (set `endpoints.chat` explicitly when
+/// it isn't, as novita does).
+fn resolve_chat_url(
+    brand_slug: &str,
+    base_url: &Option<String>,
+    chat_path: &Option<String>,
+) -> Option<String> {
+    let path = chat_path
+        .as_deref()
+        .filter(|p| !p.is_empty())
+        .unwrap_or("/chat/completions");
+
     if let Some(u) = base_url {
         if !u.is_empty() {
-            return Some(u.trim_end_matches('/').to_string());
+            return Some(format!("{}{path}", u.trim_end_matches('/')));
         }
     }
     let prefix = brand_slug.split('-').next().unwrap_or(brand_slug);
@@ -337,7 +355,7 @@ fn resolve_base_url(brand_slug: &str, base_url: &Option<String>) -> Option<Strin
         "mistral" => "https://api.mistral.ai/v1",
         _ => return None,
     };
-    Some(default.to_string())
+    Some(format!("{default}{path}"))
 }
 
 struct ParsedCompletion {

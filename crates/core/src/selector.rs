@@ -738,6 +738,13 @@ impl Selector {
             price_input_per_1m: winner.model.price_input_per_1m,
             price_output_per_1m: winner.model.price_output_per_1m,
             batch_price_multiplier: winner.model.batch_price_multiplier,
+            chat_path: winner
+                .brand
+                .endpoints
+                .as_ref()
+                .and_then(|e| e.get("chat"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
         })
     }
 
