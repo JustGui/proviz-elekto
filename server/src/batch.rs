@@ -532,6 +532,7 @@ pub async fn handle_batch_submit(
         estimated_tokens: req.estimated_tokens,
         requires_fn_call: req.requires_fn_call,
         requires_json_mode: req.requires_json_mode,
+        requires_streaming: None,
         quality_min: req.quality_min,
         exclude_ids: req.exclude_ids,
         categories,

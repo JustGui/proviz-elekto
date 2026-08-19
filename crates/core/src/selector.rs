@@ -395,6 +395,13 @@ impl Selector {
                 continue;
             }
 
+            if let Some(wants_streaming) = req.requires_streaming {
+                if model.streaming.unwrap_or(false) != wants_streaming {
+                    debug!(model = %model.slug, wants_streaming, "skipped: call-mode variant mismatch");
+                    continue;
+                }
+            }
+
             if req.quality_min > 0.0 {
                 match model.quality_score {
                     None => {

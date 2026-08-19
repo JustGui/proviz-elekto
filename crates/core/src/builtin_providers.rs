@@ -95,10 +95,20 @@ pub fn load_from_dir(
         .map(|b| (b.slug.clone(), b))
         .collect();
 
-    let existing_models: std::collections::HashMap<(Uuid, String), Model> = storage
+    let existing_models: std::collections::HashMap<(Uuid, String, bool, bool), Model> = storage
         .load_models()?
         .into_iter()
-        .map(|m| ((m.brand_id, m.slug.clone()), m))
+        .map(|m| {
+            (
+                (
+                    m.brand_id,
+                    m.slug.clone(),
+                    m.streaming.unwrap_or(false),
+                    m.http_batch.unwrap_or(false),
+                ),
+                m,
+            )
+        })
         .collect();
 
     for entry in entries.flatten() {
@@ -177,7 +187,13 @@ pub fn load_from_dir(
         };
 
         for def in &model_defs {
-            if let Some(existing) = existing_models.get(&(brand_id, def.slug.clone())) {
+            let variant_key = (
+                brand_id,
+                def.slug.clone(),
+                def.streaming.unwrap_or(false),
+                def.http_batch.unwrap_or(false),
+            );
+            if let Some(existing) = existing_models.get(&variant_key) {
                 // Always update capability fields from JSON; only update limits when requested.
                 let model = Model {
                     diarization: def.diarization,

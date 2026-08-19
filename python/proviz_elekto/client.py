@@ -497,6 +497,7 @@ class ProvizElekto:
         estimated_tokens: int,
         requires_fn_call: bool = False,
         requires_json_mode: bool = False,
+        requires_streaming: Optional[bool] = None,
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
@@ -517,6 +518,8 @@ class ProvizElekto:
             "languages": languages or [],
             "use_member_priority": use_member_priority,
         }
+        if requires_streaming is not None:
+            payload["requires_streaming"] = requires_streaming
         if group_id is not None:
             payload["group_id"] = group_id
         if group_name is not None:

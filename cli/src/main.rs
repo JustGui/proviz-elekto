@@ -838,6 +838,7 @@ fn main() {
                 estimated_tokens: tokens,
                 requires_fn_call: fn_call,
                 requires_json_mode: json_mode,
+                requires_streaming: None,
                 quality_min,
                 exclude_ids: vec![],
                 categories: vec![],

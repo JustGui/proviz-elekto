@@ -195,6 +195,12 @@ pub struct SelectRequest {
     pub requires_fn_call: bool,
     #[serde(default)]
     pub requires_json_mode: bool,
+    /// STT-only: pick the streaming-mode row (true) or the HTTP-batch-mode row (false) when a
+    /// model has both (see `Model.streaming`/`Model.http_batch`). `None` (default) doesn't
+    /// filter on call mode — irrelevant for non-STT models, which never have more than one row
+    /// per slug.
+    #[serde(default)]
+    pub requires_streaming: Option<bool>,
     #[serde(default)]
     pub quality_min: f32,
     #[serde(default)]

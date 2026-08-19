@@ -107,6 +107,7 @@ impl CompleteRequest {
             estimated_tokens: self.estimated_tokens,
             requires_fn_call: self.requires_fn_call || self.tools.is_some(),
             requires_json_mode: self.requires_json_mode,
+            requires_streaming: None,
             quality_min: self.quality_min,
             exclude_ids,
             categories: self.categories.clone(),

@@ -91,6 +91,7 @@ fn base_req() -> SelectRequest {
         estimated_tokens: 1_000,
         requires_fn_call: false,
         requires_json_mode: false,
+        requires_streaming: None,
         quality_min: 0.0,
         exclude_ids: vec![],
         categories: vec![],
