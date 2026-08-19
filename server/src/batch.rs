@@ -63,6 +63,8 @@ pub struct BatchSubmitRequest {
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
     pub group_id: Option<Uuid>,
     #[serde(default)]
     pub group_name: Option<String>,
@@ -530,9 +532,11 @@ pub async fn handle_batch_submit(
         estimated_tokens: req.estimated_tokens,
         requires_fn_call: req.requires_fn_call,
         requires_json_mode: req.requires_json_mode,
+        requires_streaming: None,
         quality_min: req.quality_min,
         exclude_ids: req.exclude_ids,
         categories,
+        languages: req.languages,
         group_id: req.group_id,
         group_name: req.group_name,
         use_member_priority: true,

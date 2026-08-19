@@ -56,6 +56,8 @@ pub struct CompleteRequest {
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
     pub group_id: Option<Uuid>,
     #[serde(default)]
     pub group_name: Option<String>,
@@ -71,6 +73,11 @@ pub struct CompleteRequest {
     /// Pass-through to the provider, e.g. `{"type":"json_object"}`.
     #[serde(default)]
     pub response_format: Option<Value>,
+    /// OpenAI-style reasoning effort (e.g. "low"/"medium"/"high"), forwarded to the provider
+    /// verbatim when set. Only meaningful for models where `ModelCandidate.supports_reasoning_effort`
+    /// is true — the caller checks that flag before setting this.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// Tool-use: forwarded to the provider verbatim. Returned `tool_calls` are NOT executed —
     /// the caller drives the loop (mirrors `call_litellm_tool_loop` semantics).
     #[serde(default)]
@@ -105,9 +112,11 @@ impl CompleteRequest {
             estimated_tokens: self.estimated_tokens,
             requires_fn_call: self.requires_fn_call || self.tools.is_some(),
             requires_json_mode: self.requires_json_mode,
+            requires_streaming: None,
             quality_min: self.quality_min,
             exclude_ids,
             categories: self.categories.clone(),
+            languages: self.languages.clone(),
             group_id: self.group_id,
             group_name: self.group_name.clone(),
             use_member_priority: true,
@@ -145,6 +154,9 @@ impl CompleteRequest {
         }
         if let Some(ref rf) = self.response_format {
             obj.insert("response_format".into(), rf.clone());
+        }
+        if let Some(ref re) = self.reasoning_effort {
+            obj.insert("reasoning_effort".into(), json!(re));
         }
         if let Some(ref tools) = self.tools {
             obj.insert("tools".into(), json!(tools));

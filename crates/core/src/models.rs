@@ -46,6 +46,9 @@ pub struct Model {
     pub max_output_tokens: Option<u32>,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
+    /// Whether this model accepts an OpenAI-style `reasoning_effort` param (e.g. "low"/"medium"/"high").
+    /// Informational — callers check this before setting `CompleteRequest.reasoning_effort`.
+    pub supports_reasoning_effort: bool,
     pub price_input_per_1m: Option<f64>,
     pub price_output_per_1m: Option<f64>,
     pub tpm_limit: Option<u32>,
@@ -75,6 +78,12 @@ pub struct Model {
     pub word_timestamps: Option<bool>,
     /// STT capability: returns new base url if different.
     pub base_url: Option<String>,
+    /// Languages this model can be called for (ISO 639-1 codes, e.g. `["en","fr"]`).
+    /// `None`/empty means unrestricted (model accepts any language — the common case for
+    /// general-purpose LLMs). Set explicitly for models with real language limits (many
+    /// STT/TTS models) so callers can filter with `SelectRequest.languages` and avoid
+    /// calling a model in a language it doesn't support.
+    pub supported_languages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +198,12 @@ pub struct SelectRequest {
     pub requires_fn_call: bool,
     #[serde(default)]
     pub requires_json_mode: bool,
+    /// STT-only: pick the streaming-mode row (true) or the HTTP-batch-mode row (false) when a
+    /// model has both (see `Model.streaming`/`Model.http_batch`). `None` (default) doesn't
+    /// filter on call mode — irrelevant for non-STT models, which never have more than one row
+    /// per slug.
+    #[serde(default)]
+    pub requires_streaming: Option<bool>,
     #[serde(default)]
     pub quality_min: f32,
     #[serde(default)]
@@ -197,6 +212,12 @@ pub struct SelectRequest {
     /// Use to explicitly request specialized models (e.g. ["audio"], ["embedding"]).
     #[serde(default)]
     pub categories: Vec<String>,
+    /// If non-empty, only models whose `supported_languages` overlaps this list are eligible
+    /// (ISO 639-1 codes, e.g. `["en","fr"]`). Models with `supported_languages = None` (no
+    /// restriction declared) always pass this filter — the language column is opt-in and
+    /// mainly relevant for STT/TTS models with real language limits.
+    #[serde(default)]
+    pub languages: Vec<String>,
     /// Restrict candidates to models belonging to this group (by UUID). Takes priority over rules.
     #[serde(default)]
     pub group_id: Option<Uuid>,
@@ -238,6 +259,9 @@ pub struct ModelCandidate {
     pub max_context_tokens: u32,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
+    /// Whether this model accepts a `reasoning_effort` param on `/complete`. See `Model.supports_reasoning_effort`.
+    #[serde(default)]
+    pub supports_reasoning_effort: bool,
     pub estimated_input_cost_usd: Option<f64>,
     /// Echoed from SelectRequest so callers can include it in /report for accurate window tracking.
     pub estimated_tokens: u64,

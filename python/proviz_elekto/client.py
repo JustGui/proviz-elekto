@@ -57,6 +57,8 @@ class ModelCandidate:
     supports_function_calling: bool
     supports_json_mode: bool
     estimated_input_cost_usd: Optional[float]
+    # Whether the model accepts an OpenAI-style `reasoning_effort` param on /complete.
+    supports_reasoning_effort: bool = False
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
     # Brand's OpenAI-compatible base URL (None for brands using a well-known default endpoint).
@@ -497,9 +499,11 @@ class ProvizElekto:
         estimated_tokens: int,
         requires_fn_call: bool = False,
         requires_json_mode: bool = False,
+        requires_streaming: Optional[bool] = None,
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         use_member_priority: bool = True,
@@ -513,8 +517,11 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
+            "languages": languages or [],
             "use_member_priority": use_member_priority,
         }
+        if requires_streaming is not None:
+            payload["requires_streaming"] = requires_streaming
         if group_id is not None:
             payload["group_id"] = group_id
         if group_name is not None:
@@ -539,6 +546,7 @@ class ProvizElekto:
             price_output_per_1m=r.get("price_output_per_1m"),
             base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
+            supports_reasoning_effort=r.get("supports_reasoning_effort", False),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -557,6 +565,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         max_wait_ms: Optional[int] = None,
@@ -565,6 +574,7 @@ class ProvizElekto:
         response_format: Optional[dict] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[Any] = None,
+        reasoning_effort: Optional[str] = None,
         timeout_secs: Optional[int] = None,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
@@ -575,6 +585,10 @@ class ProvizElekto:
 
         `tools`/`tool_choice` are forwarded to the provider; returned `tool_calls` are NOT executed —
         the caller drives the tool loop and re-submits.
+
+        `reasoning_effort` (e.g. "low"/"medium"/"high") is forwarded to the provider verbatim when
+        set. Only meaningful for models where `select(...).supports_reasoning_effort` is true —
+        check that flag before passing this, since /complete doesn't validate it server-side.
         """
         if estimated_tokens is None:
             estimated_tokens = _estimate_tokens(messages)
@@ -586,6 +600,7 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
+            "languages": languages or [],
             "messages": messages,
         }
         if group_id is not None:
@@ -604,6 +619,8 @@ class ProvizElekto:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if timeout_secs is not None:
             payload["timeout_secs"] = timeout_secs
 
@@ -718,6 +735,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
     ) -> CallResult:
@@ -754,6 +772,7 @@ class ProvizElekto:
                     quality_min=quality_min,
                     exclude_ids=permanent_skip,
                     categories=categories,
+                    languages=languages,
                     max_wait_ms=server_wait_ms,
                 )
             except AllModelsExhausted as e:
@@ -839,6 +858,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
         **litellm_kwargs: Any,
@@ -877,6 +897,7 @@ class ProvizElekto:
             quality_min=quality_min,
             exclude_ids=exclude_ids,
             categories=categories,
+            languages=languages,
             error_classifier=error_classifier,
             max_wait_secs=max_wait_secs,
         )
@@ -895,6 +916,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
@@ -930,7 +952,7 @@ class ProvizElekto:
 
         _SELECTION_KEYS = frozenset({
             "step", "estimated_tokens", "requires_fn_call", "requires_json_mode",
-            "quality_min", "exclude_ids", "categories", "group_id", "group_name",
+            "quality_min", "exclude_ids", "categories", "languages", "group_id", "group_name",
             "use_member_priority", "max_wait_secs", "max_wait_ms",
         })
         litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k not in _SELECTION_KEYS}
@@ -952,6 +974,7 @@ class ProvizElekto:
                     quality_min=quality_min,
                     exclude_ids=permanent_skip,
                     categories=categories,
+                    languages=languages,
                     group_id=group_id,
                     group_name=group_name,
                     max_wait_ms=server_wait_ms,
@@ -1079,6 +1102,7 @@ class ProvizElekto:
         *,
         group_name: Optional[str] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout_secs: float = 300.0,
@@ -1101,6 +1125,8 @@ class ProvizElekto:
             select_kwargs["group_name"] = group_name
         if categories:
             select_kwargs["categories"] = categories
+        if languages:
+            select_kwargs["languages"] = languages
 
         queue = batch_module.BatchQueue(proviz=self, step=step, **select_kwargs)
 

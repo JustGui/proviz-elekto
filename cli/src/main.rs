@@ -210,6 +210,9 @@ enum ModelCmd {
         json_mode: bool,
         #[arg(long)]
         function_calling: bool,
+        /// Whether the model accepts an OpenAI-style `reasoning_effort` param on /complete.
+        #[arg(long)]
+        reasoning_effort: bool,
         #[arg(long)]
         quality: Option<f64>,
         #[arg(long)]
@@ -219,6 +222,10 @@ enum ModelCmd {
         /// Category tag: text, code, embedding, vision, audio, moderation
         #[arg(long)]
         category: Option<String>,
+        /// Supported language codes (ISO 639-1, comma-separated, e.g. "en,fr"). Omit for
+        /// unrestricted (model accepts any language).
+        #[arg(long, value_delimiter = ',')]
+        languages: Option<Vec<String>>,
     },
     List,
     Disable {
@@ -515,10 +522,12 @@ fn main() {
                 rpm,
                 json_mode,
                 function_calling,
+                reasoning_effort,
                 quality,
                 latency_ms,
                 notes,
                 category,
+                languages,
             } => {
                 let brand_rec = find_brand(&storage, &brand);
                 let display = display_name.unwrap_or_else(|| slug.clone());
@@ -531,6 +540,7 @@ fn main() {
                     max_output_tokens: max_output,
                     supports_function_calling: function_calling,
                     supports_json_mode: json_mode,
+                    supports_reasoning_effort: reasoning_effort,
                     price_input_per_1m: price_in,
                     price_output_per_1m: price_out,
                     tpm_limit: tpm,
@@ -551,6 +561,7 @@ fn main() {
                     http_batch: None,
                     word_timestamps: None,
                     base_url: None,
+                    supported_languages: languages,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -624,6 +635,9 @@ fn main() {
                             .as_bool()
                             .unwrap_or(false),
                         supports_json_mode: v["supports_json_mode"].as_bool().unwrap_or(false),
+                        supports_reasoning_effort: v["supports_reasoning_effort"]
+                            .as_bool()
+                            .unwrap_or(false),
                         price_input_per_1m: v["price_input_per_1m"].as_f64(),
                         price_output_per_1m: v["price_output_per_1m"].as_f64(),
                         tpm_limit: v["tpm_limit"].as_u64().map(|v| v as u32),
@@ -644,6 +658,11 @@ fn main() {
                         http_batch: v["http_batch"].as_bool(),
                         word_timestamps: v["word_timestamps"].as_bool(),
                         base_url: v["base_url"].as_str().map(|s| s.to_string()),
+                        supported_languages: v["supported_languages"].as_array().map(|arr| {
+                            arr.iter()
+                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                .collect()
+                        }),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;
@@ -827,9 +846,11 @@ fn main() {
                 estimated_tokens: tokens,
                 requires_fn_call: fn_call,
                 requires_json_mode: json_mode,
+                requires_streaming: None,
                 quality_min,
                 exclude_ids: vec![],
                 categories: vec![],
+                languages: vec![],
                 group_id,
                 group_name,
                 use_member_priority: true,
@@ -848,6 +869,7 @@ fn main() {
                     println!("  max_ctx:    {}", c.max_context_tokens);
                     println!("  fn_call:    {}", c.supports_function_calling);
                     println!("  json_mode:  {}", c.supports_json_mode);
+                    println!("  reasoning:  {}", c.supports_reasoning_effort);
                     if let Some(cost) = c.estimated_input_cost_usd {
                         println!("  est_cost:   ${:.6}", cost);
                     }

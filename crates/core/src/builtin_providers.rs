@@ -27,6 +27,8 @@ struct ModelDef {
     supports_function_calling: bool,
     #[serde(default)]
     supports_json_mode: bool,
+    #[serde(default)]
+    supports_reasoning_effort: bool,
     price_input_per_1m: Option<f64>,
     price_output_per_1m: Option<f64>,
     tpm_limit: Option<u32>,
@@ -46,6 +48,7 @@ struct ModelDef {
     http_batch: Option<bool>,
     word_timestamps: Option<bool>,
     base_url: Option<String>,
+    supported_languages: Option<Vec<String>>,
 }
 
 pub struct LoadSummary {
@@ -94,10 +97,20 @@ pub fn load_from_dir(
         .map(|b| (b.slug.clone(), b))
         .collect();
 
-    let existing_models: std::collections::HashMap<(Uuid, String), Model> = storage
+    let existing_models: std::collections::HashMap<(Uuid, String, bool, bool), Model> = storage
         .load_models()?
         .into_iter()
-        .map(|m| ((m.brand_id, m.slug.clone()), m))
+        .map(|m| {
+            (
+                (
+                    m.brand_id,
+                    m.slug.clone(),
+                    m.streaming.unwrap_or(false),
+                    m.http_batch.unwrap_or(false),
+                ),
+                m,
+            )
+        })
         .collect();
 
     for entry in entries.flatten() {
@@ -176,7 +189,13 @@ pub fn load_from_dir(
         };
 
         for def in &model_defs {
-            if let Some(existing) = existing_models.get(&(brand_id, def.slug.clone())) {
+            let variant_key = (
+                brand_id,
+                def.slug.clone(),
+                def.streaming.unwrap_or(false),
+                def.http_batch.unwrap_or(false),
+            );
+            if let Some(existing) = existing_models.get(&variant_key) {
                 // Always update capability fields from JSON; only update limits when requested.
                 let model = Model {
                     diarization: def.diarization,
@@ -184,6 +203,8 @@ pub fn load_from_dir(
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
                     base_url: def.base_url.clone(),
+                    supported_languages: def.supported_languages.clone(),
+                    supports_reasoning_effort: def.supports_reasoning_effort,
                     tpm_limit: if update_limits {
                         def.tpm_limit.or(existing.tpm_limit)
                     } else {
@@ -229,6 +250,7 @@ pub fn load_from_dir(
                     max_output_tokens: def.max_output_tokens,
                     supports_function_calling: def.supports_function_calling,
                     supports_json_mode: def.supports_json_mode,
+                    supports_reasoning_effort: def.supports_reasoning_effort,
                     price_input_per_1m: def.price_input_per_1m,
                     price_output_per_1m: def.price_output_per_1m,
                     tpm_limit: def.tpm_limit,
@@ -249,6 +271,7 @@ pub fn load_from_dir(
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
                     base_url: def.base_url.clone(),
+                    supported_languages: def.supported_languages.clone(),
                 };
                 storage.insert_model(&model)?;
                 summary.models_added += 1;

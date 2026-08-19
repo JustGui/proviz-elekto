@@ -107,6 +107,7 @@ async fn handle_select(
         requires_fn_call = req.requires_fn_call,
         requires_json_mode = req.requires_json_mode,
         quality_min = req.quality_min,
+        languages = ?req.languages,
         "select request"
     );
 
@@ -361,6 +362,9 @@ async fn handle_catalog_refresh(State(state): State<Arc<AppState>>) -> impl Into
 #[derive(Deserialize)]
 struct CatalogModelsQuery {
     category: Option<String>,
+    /// ISO 639-1 code, e.g. "fr". Only models whose `supported_languages` includes it (or that
+    /// declare no restriction at all) are returned.
+    language: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -373,6 +377,7 @@ struct CatalogModelEntry {
     price_input_per_1m: Option<f64>,
     price_output_per_1m: Option<f64>,
     is_enabled: bool,
+    supported_languages: Option<Vec<String>>,
 }
 
 async fn handle_catalog_models(
@@ -395,6 +400,16 @@ async fn handle_catalog_models(
                     true
                 }
             })
+            .filter(|m| {
+                if let Some(ref lang) = params.language {
+                    m.supported_languages
+                        .as_ref()
+                        .map(|langs| langs.iter().any(|l| l.eq_ignore_ascii_case(lang)))
+                        .unwrap_or(true) // no declared restriction => accepts any language
+                } else {
+                    true
+                }
+            })
             .filter_map(|m| {
                 let brand = brand_map.get(&m.brand_id)?;
                 Some(CatalogModelEntry {
@@ -406,6 +421,7 @@ async fn handle_catalog_models(
                     price_input_per_1m: m.price_input_per_1m,
                     price_output_per_1m: m.price_output_per_1m,
                     is_enabled: m.is_enabled,
+                    supported_languages: m.supported_languages.clone(),
                 })
             })
             .collect();

@@ -35,6 +35,9 @@ impl PostgresStorage {
         s.migrate_brand_api_keys()?;
         s.migrate_stt_fields()?;
         s.migrate_endpoints()?;
+        s.migrate_supported_languages()?;
+        s.migrate_streaming_variant_index()?;
+        s.migrate_reasoning_effort()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -87,6 +90,48 @@ impl PostgresStorage {
                  ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS http_batch BOOLEAN;\
                  ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS word_timestamps BOOLEAN;\
                  ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS base_url VARCHAR(255);",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_supported_languages(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS supported_languages TEXT;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Widens the (brand_id, slug) uniqueness to (brand_id, slug, streaming, http_batch) so
+    /// STT models can have a distinct row per call mode (e.g. streaming vs HTTP batch) with
+    /// their own base_url/rpm_limit/price. Backfills NULL streaming/http_batch to FALSE first
+    /// and adds the NOT NULL/DEFAULT constraints so future rows can't collide via NULL != NULL.
+    fn migrate_streaming_variant_index(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "UPDATE pz_models SET streaming=FALSE WHERE streaming IS NULL;
+                 UPDATE pz_models SET http_batch=FALSE WHERE http_batch IS NULL;
+                 ALTER TABLE pz_models ALTER COLUMN streaming SET DEFAULT FALSE;
+                 ALTER TABLE pz_models ALTER COLUMN streaming SET NOT NULL;
+                 ALTER TABLE pz_models ALTER COLUMN http_batch SET DEFAULT FALSE;
+                 ALTER TABLE pz_models ALTER COLUMN http_batch SET NOT NULL;
+                 DROP INDEX IF EXISTS idx_pz_models_brand_slug;
+                 CREATE UNIQUE INDEX idx_pz_models_brand_slug
+                     ON pz_models(brand_id, slug, streaming, http_batch);",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_reasoning_effort(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS supports_reasoning_effort BOOLEAN NOT NULL DEFAULT FALSE;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -213,8 +258,9 @@ impl CatalogStorage for PostgresStorage {
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
-              diarization,streaming,http_batch,word_timestamps, base_url)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)
+              diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
+              supports_reasoning_effort)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -227,7 +273,9 @@ impl CatalogStorage for PostgresStorage {
                category=EXCLUDED.category,
                batch_price_multiplier=EXCLUDED.batch_price_multiplier,
                diarization=EXCLUDED.diarization, streaming=EXCLUDED.streaming,
-               http_batch=EXCLUDED.http_batch, word_timestamps=EXCLUDED.word_timestamps, base_url=EXCLUDED.base_url",
+               http_batch=EXCLUDED.http_batch, word_timestamps=EXCLUDED.word_timestamps, base_url=EXCLUDED.base_url,
+               supported_languages=EXCLUDED.supported_languages,
+               supports_reasoning_effort=EXCLUDED.supports_reasoning_effort",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -244,7 +292,12 @@ impl CatalogStorage for PostgresStorage {
                 &model.avg_latency_ms.map(|v| v as i32),
                 &model.is_enabled, &model.notes, &model.category, &model.created_at,
                 &model.batch_price_multiplier,
-                &model.diarization, &model.streaming, &model.http_batch, &model.word_timestamps, &model.base_url,
+                &model.diarization, &model.streaming.unwrap_or(false), &model.http_batch.unwrap_or(false), &model.word_timestamps, &model.base_url,
+                &model
+                    .supported_languages
+                    .as_ref()
+                    .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                &model.supports_reasoning_effort,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -530,10 +583,12 @@ CREATE TABLE IF NOT EXISTS pz_models (
     created_at                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     batch_price_multiplier    DOUBLE PRECISION,
     diarization               BOOLEAN,
-    streaming                 BOOLEAN,
-    http_batch                BOOLEAN,
+    streaming                 BOOLEAN      NOT NULL DEFAULT FALSE,
+    http_batch                BOOLEAN      NOT NULL DEFAULT FALSE,
     word_timestamps           BOOLEAN,
-    base_url                  VARCHAR(255)
+    base_url                  VARCHAR(255),
+    supported_languages       TEXT,
+    supports_reasoning_effort BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -579,7 +634,7 @@ CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at DESC);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
-    ON pz_models(brand_id, slug);
+    ON pz_models(brand_id, slug, streaming, http_batch);
 
 CREATE TABLE IF NOT EXISTS pz_brand_api_keys (
     id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),

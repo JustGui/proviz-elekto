@@ -369,6 +369,22 @@ impl Selector {
                 continue;
             }
 
+            if !req.languages.is_empty() {
+                let matches = model
+                    .supported_languages
+                    .as_ref()
+                    .map(|langs| {
+                        req.languages
+                            .iter()
+                            .any(|r| langs.iter().any(|l| l.eq_ignore_ascii_case(r)))
+                    })
+                    .unwrap_or(true); // no declared restriction => model accepts any language
+                if !matches {
+                    debug!(model = %model.slug, "skipped: language not supported");
+                    continue;
+                }
+            }
+
             if req.requires_fn_call && !model.supports_function_calling {
                 debug!(model = %model.slug, "skipped: function calling required");
                 continue;
@@ -377,6 +393,13 @@ impl Selector {
             if req.requires_json_mode && !model.supports_json_mode {
                 debug!(model = %model.slug, "skipped: json mode required");
                 continue;
+            }
+
+            if let Some(wants_streaming) = req.requires_streaming {
+                if model.streaming.unwrap_or(false) != wants_streaming {
+                    debug!(model = %model.slug, wants_streaming, "skipped: call-mode variant mismatch");
+                    continue;
+                }
             }
 
             if req.quality_min > 0.0 {
@@ -733,6 +756,7 @@ impl Selector {
             max_context_tokens: winner.model.max_context_tokens,
             supports_function_calling: winner.model.supports_function_calling,
             supports_json_mode: winner.model.supports_json_mode,
+            supports_reasoning_effort: winner.model.supports_reasoning_effort,
             estimated_input_cost_usd,
             estimated_tokens,
             price_input_per_1m: winner.model.price_input_per_1m,
