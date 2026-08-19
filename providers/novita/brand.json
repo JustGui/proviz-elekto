@@ -1,5 +1,5 @@
 {
-  "slug": "novita-ai",
+  "slug": "novita",
   "name": "Novita AI",
   "api_key_env": "NOVITA_API_KEY",
   "base_url": "https://api.novita.ai",
