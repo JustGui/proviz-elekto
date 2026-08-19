@@ -55,25 +55,6 @@
     "word_timestamps": true
   },
   {
-    "slug": "nova-3-multilingual",
-    "display_name": "Nova-3 Multilingual (streaming)",
-    "category": "audio",
-    "max_context_tokens": null,
-    "supports_function_calling": false,
-    "supports_json_mode": false,
-    "rpm_limit": 150,
-    "rpd_limit": null,
-    "tpm_limit": null,
-    "tpd_limit": null,
-    "price_input_per_1m": 0.0092,
-    "price_output_per_1m": 0.0,
-    "diarization": true,
-    "streaming": true,
-    "http_batch": false,
-    "word_timestamps": true,
-    "base_url": "wss://api.deepgram.com"
-  },
-  {
     "slug": "nova-2",
     "display_name": "Nova-2 Monolingual (batch)",
     "category": "audio",
