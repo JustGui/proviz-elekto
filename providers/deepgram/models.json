@@ -37,7 +37,7 @@
     "base_url": "wss://api.deepgram.com"
   },
   {
-    "slug": "nova-3-multilingual",
+    "slug": "nova-3-general",
     "display_name": "Nova-3 Multilingual (batch)",
     "category": "audio",
     "max_context_tokens": null,
