@@ -12,7 +12,8 @@ pub const Q_MODELS: &str =
      supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,\
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
-     diarization,streaming,http_batch,word_timestamps,base_url,supported_languages \
+     diarization,streaming,http_batch,word_timestamps,base_url,supported_languages,\
+     supports_reasoning_effort \
      FROM pz_models";
 
 pub const Q_RULES: &str =
@@ -94,6 +95,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         supported_languages: row
             .opt_string(28)
             .and_then(|s| serde_json::from_str(&s).ok()),
+        supports_reasoning_effort: row.bool_val(29),
     }
 }
 

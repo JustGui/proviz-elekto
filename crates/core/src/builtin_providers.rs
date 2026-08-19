@@ -27,6 +27,8 @@ struct ModelDef {
     supports_function_calling: bool,
     #[serde(default)]
     supports_json_mode: bool,
+    #[serde(default)]
+    supports_reasoning_effort: bool,
     price_input_per_1m: Option<f64>,
     price_output_per_1m: Option<f64>,
     tpm_limit: Option<u32>,
@@ -202,6 +204,7 @@ pub fn load_from_dir(
                     word_timestamps: def.word_timestamps,
                     base_url: def.base_url.clone(),
                     supported_languages: def.supported_languages.clone(),
+                    supports_reasoning_effort: def.supports_reasoning_effort,
                     tpm_limit: if update_limits {
                         def.tpm_limit.or(existing.tpm_limit)
                     } else {
@@ -247,6 +250,7 @@ pub fn load_from_dir(
                     max_output_tokens: def.max_output_tokens,
                     supports_function_calling: def.supports_function_calling,
                     supports_json_mode: def.supports_json_mode,
+                    supports_reasoning_effort: def.supports_reasoning_effort,
                     price_input_per_1m: def.price_input_per_1m,
                     price_output_per_1m: def.price_output_per_1m,
                     tpm_limit: def.tpm_limit,

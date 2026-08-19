@@ -37,6 +37,7 @@ impl PostgresStorage {
         s.migrate_endpoints()?;
         s.migrate_supported_languages()?;
         s.migrate_streaming_variant_index()?;
+        s.migrate_reasoning_effort()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -121,6 +122,16 @@ impl PostgresStorage {
                  DROP INDEX IF EXISTS idx_pz_models_brand_slug;
                  CREATE UNIQUE INDEX idx_pz_models_brand_slug
                      ON pz_models(brand_id, slug, streaming, http_batch);",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_reasoning_effort(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS supports_reasoning_effort BOOLEAN NOT NULL DEFAULT FALSE;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -247,8 +258,9 @@ impl CatalogStorage for PostgresStorage {
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
-              diarization,streaming,http_batch,word_timestamps, base_url, supported_languages)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+              diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
+              supports_reasoning_effort)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -262,7 +274,8 @@ impl CatalogStorage for PostgresStorage {
                batch_price_multiplier=EXCLUDED.batch_price_multiplier,
                diarization=EXCLUDED.diarization, streaming=EXCLUDED.streaming,
                http_batch=EXCLUDED.http_batch, word_timestamps=EXCLUDED.word_timestamps, base_url=EXCLUDED.base_url,
-               supported_languages=EXCLUDED.supported_languages",
+               supported_languages=EXCLUDED.supported_languages,
+               supports_reasoning_effort=EXCLUDED.supports_reasoning_effort",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -284,6 +297,7 @@ impl CatalogStorage for PostgresStorage {
                     .supported_languages
                     .as_ref()
                     .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                &model.supports_reasoning_effort,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -573,7 +587,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     http_batch                BOOLEAN      NOT NULL DEFAULT FALSE,
     word_timestamps           BOOLEAN,
     base_url                  VARCHAR(255),
-    supported_languages       TEXT
+    supported_languages       TEXT,
+    supports_reasoning_effort BOOLEAN      NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (

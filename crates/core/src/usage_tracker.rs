@@ -496,6 +496,7 @@ mod tests {
             max_output_tokens: None,
             supports_function_calling: true,
             supports_json_mode: true,
+            supports_reasoning_effort: false,
             price_input_per_1m: None,
             price_output_per_1m: None,
             tpm_limit: tpm,

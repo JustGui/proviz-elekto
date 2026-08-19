@@ -46,6 +46,7 @@ impl SqliteStorage {
         s.migrate_endpoints()?;
         s.migrate_supported_languages()?;
         s.migrate_streaming_variant_index()?;
+        s.migrate_reasoning_effort()?;
         Ok(s)
     }
 
@@ -174,6 +175,25 @@ impl SqliteStorage {
                  ON pz_models(brand_id, slug, streaming, http_batch);",
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_reasoning_effort(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name='supports_reasoning_effort'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !exists {
+            conn.execute_batch(
+                "ALTER TABLE pz_models ADD COLUMN supports_reasoning_effort INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 }
@@ -338,8 +358,9 @@ impl CatalogStorage for SqliteStorage {
               supports_function_calling,supports_json_mode,price_input_per_1m,price_output_per_1m,
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
-              diarization,streaming,http_batch,word_timestamps, base_url, supported_languages)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29)",
+              diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
+              supports_reasoning_effort)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -373,6 +394,7 @@ impl CatalogStorage for SqliteStorage {
                     .supported_languages
                     .as_ref()
                     .map(|v| serde_json::to_string(v).unwrap_or_default()),
+                model.supports_reasoning_effort,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -676,7 +698,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     http_batch                INTEGER NOT NULL DEFAULT 0,
     word_timestamps           INTEGER,
     base_url                  TEXT,
-    supported_languages       TEXT
+    supported_languages       TEXT,
+    supports_reasoning_effort INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -773,6 +796,7 @@ mod tests {
             max_output_tokens: None,
             supports_function_calling: true,
             supports_json_mode: true,
+            supports_reasoning_effort: false,
             price_input_per_1m: Some(1.0),
             price_output_per_1m: Some(2.0),
             tpm_limit: None,

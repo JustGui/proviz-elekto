@@ -46,6 +46,9 @@ pub struct Model {
     pub max_output_tokens: Option<u32>,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
+    /// Whether this model accepts an OpenAI-style `reasoning_effort` param (e.g. "low"/"medium"/"high").
+    /// Informational — callers check this before setting `CompleteRequest.reasoning_effort`.
+    pub supports_reasoning_effort: bool,
     pub price_input_per_1m: Option<f64>,
     pub price_output_per_1m: Option<f64>,
     pub tpm_limit: Option<u32>,
@@ -256,6 +259,9 @@ pub struct ModelCandidate {
     pub max_context_tokens: u32,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
+    /// Whether this model accepts a `reasoning_effort` param on `/complete`. See `Model.supports_reasoning_effort`.
+    #[serde(default)]
+    pub supports_reasoning_effort: bool,
     pub estimated_input_cost_usd: Option<f64>,
     /// Echoed from SelectRequest so callers can include it in /report for accurate window tracking.
     pub estimated_tokens: u64,

@@ -57,6 +57,8 @@ class ModelCandidate:
     supports_function_calling: bool
     supports_json_mode: bool
     estimated_input_cost_usd: Optional[float]
+    # Whether the model accepts an OpenAI-style `reasoning_effort` param on /complete.
+    supports_reasoning_effort: bool = False
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
     # Brand's OpenAI-compatible base URL (None for brands using a well-known default endpoint).
@@ -544,6 +546,7 @@ class ProvizElekto:
             price_output_per_1m=r.get("price_output_per_1m"),
             base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
+            supports_reasoning_effort=r.get("supports_reasoning_effort", False),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -571,6 +574,7 @@ class ProvizElekto:
         response_format: Optional[dict] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[Any] = None,
+        reasoning_effort: Optional[str] = None,
         timeout_secs: Optional[int] = None,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
@@ -581,6 +585,10 @@ class ProvizElekto:
 
         `tools`/`tool_choice` are forwarded to the provider; returned `tool_calls` are NOT executed —
         the caller drives the tool loop and re-submits.
+
+        `reasoning_effort` (e.g. "low"/"medium"/"high") is forwarded to the provider verbatim when
+        set. Only meaningful for models where `select(...).supports_reasoning_effort` is true —
+        check that flag before passing this, since /complete doesn't validate it server-side.
         """
         if estimated_tokens is None:
             estimated_tokens = _estimate_tokens(messages)
@@ -611,6 +619,8 @@ class ProvizElekto:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
+        if reasoning_effort is not None:
+            payload["reasoning_effort"] = reasoning_effort
         if timeout_secs is not None:
             payload["timeout_secs"] = timeout_secs
 

@@ -80,6 +80,7 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         max_output_tokens: None,
         supports_function_calling: true,
         supports_json_mode: true,
+        supports_reasoning_effort: false,
         price_input_per_1m: Some(1.0),
         price_output_per_1m: Some(2.0),
         tpm_limit: None,
