@@ -45,7 +45,7 @@
     "slug": "gemma-4-26b-a4b-it",
     "display_name": "Gemma 4 26B A4B It",
     "category": "text",
-    "max_context_tokens": 32768,
+    "max_context_tokens": 262144,
     "supports_function_calling": false,
     "supports_json_mode": false,
     "rpm_limit": null,
@@ -238,5 +238,37 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.003,
     "price_output_per_1m": 0.0
+  },
+  {
+    "slug": "deepseek-v4-flash-0731",
+    "display_name": "DeepSeek V4 Flash 0731",
+    "category": "text",
+    "max_context_tokens": 262144,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "http_batch": true,
+    "word_timestamps": true,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": 0.40,
+    "price_output_per_1m": 0.80
+  },
+  {
+    "slug": "glm-5.2",
+    "display_name": "GLM-5.2",
+    "category": "text",
+    "max_context_tokens": 262144,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "http_batch": true,
+    "word_timestamps": true,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": 1.80,
+    "price_output_per_1m": 5.50
   }
 ]
