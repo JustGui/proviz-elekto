@@ -219,6 +219,10 @@ enum ModelCmd {
         /// Category tag: text, code, embedding, vision, audio, moderation
         #[arg(long)]
         category: Option<String>,
+        /// Supported language codes (ISO 639-1, comma-separated, e.g. "en,fr"). Omit for
+        /// unrestricted (model accepts any language).
+        #[arg(long, value_delimiter = ',')]
+        languages: Option<Vec<String>>,
     },
     List,
     Disable {
@@ -519,6 +523,7 @@ fn main() {
                 latency_ms,
                 notes,
                 category,
+                languages,
             } => {
                 let brand_rec = find_brand(&storage, &brand);
                 let display = display_name.unwrap_or_else(|| slug.clone());
@@ -551,6 +556,7 @@ fn main() {
                     http_batch: None,
                     word_timestamps: None,
                     base_url: None,
+                    supported_languages: languages,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -644,6 +650,11 @@ fn main() {
                         http_batch: v["http_batch"].as_bool(),
                         word_timestamps: v["word_timestamps"].as_bool(),
                         base_url: v["base_url"].as_str().map(|s| s.to_string()),
+                        supported_languages: v["supported_languages"].as_array().map(|arr| {
+                            arr.iter()
+                                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                                .collect()
+                        }),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;
@@ -830,6 +841,7 @@ fn main() {
                 quality_min,
                 exclude_ids: vec![],
                 categories: vec![],
+                languages: vec![],
                 group_id,
                 group_name,
                 use_member_priority: true,

@@ -56,6 +56,8 @@ pub struct CompleteRequest {
     #[serde(default)]
     pub categories: Vec<String>,
     #[serde(default)]
+    pub languages: Vec<String>,
+    #[serde(default)]
     pub group_id: Option<Uuid>,
     #[serde(default)]
     pub group_name: Option<String>,
@@ -108,6 +110,7 @@ impl CompleteRequest {
             quality_min: self.quality_min,
             exclude_ids,
             categories: self.categories.clone(),
+            languages: self.languages.clone(),
             group_id: self.group_id,
             group_name: self.group_name.clone(),
             use_member_priority: true,

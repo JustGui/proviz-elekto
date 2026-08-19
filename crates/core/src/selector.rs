@@ -369,6 +369,22 @@ impl Selector {
                 continue;
             }
 
+            if !req.languages.is_empty() {
+                let matches = model
+                    .supported_languages
+                    .as_ref()
+                    .map(|langs| {
+                        req.languages
+                            .iter()
+                            .any(|r| langs.iter().any(|l| l.eq_ignore_ascii_case(r)))
+                    })
+                    .unwrap_or(true); // no declared restriction => model accepts any language
+                if !matches {
+                    debug!(model = %model.slug, "skipped: language not supported");
+                    continue;
+                }
+            }
+
             if req.requires_fn_call && !model.supports_function_calling {
                 debug!(model = %model.slug, "skipped: function calling required");
                 continue;

@@ -100,6 +100,7 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         http_batch: None,
         word_timestamps: None,
         base_url: None,
+        supported_languages: None,
     };
     let rule = SelectionRule {
         id: Uuid::new_v4(),

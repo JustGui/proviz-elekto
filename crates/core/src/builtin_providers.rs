@@ -46,6 +46,7 @@ struct ModelDef {
     http_batch: Option<bool>,
     word_timestamps: Option<bool>,
     base_url: Option<String>,
+    supported_languages: Option<Vec<String>>,
 }
 
 pub struct LoadSummary {
@@ -184,6 +185,7 @@ pub fn load_from_dir(
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
                     base_url: def.base_url.clone(),
+                    supported_languages: def.supported_languages.clone(),
                     tpm_limit: if update_limits {
                         def.tpm_limit.or(existing.tpm_limit)
                     } else {
@@ -249,6 +251,7 @@ pub fn load_from_dir(
                     http_batch: def.http_batch,
                     word_timestamps: def.word_timestamps,
                     base_url: def.base_url.clone(),
+                    supported_languages: def.supported_languages.clone(),
                 };
                 storage.insert_model(&model)?;
                 summary.models_added += 1;

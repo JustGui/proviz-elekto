@@ -54,6 +54,7 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         http_batch: None,
         word_timestamps: None,
         base_url: None,
+        supported_languages: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn base_req() -> SelectRequest {
         quality_min: 0.0,
         exclude_ids: vec![],
         categories: vec![],
+        languages: vec![],
         group_id: None,
         group_name: None,
         use_member_priority: true,

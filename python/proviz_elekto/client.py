@@ -500,6 +500,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         use_member_priority: bool = True,
@@ -513,6 +514,7 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
+            "languages": languages or [],
             "use_member_priority": use_member_priority,
         }
         if group_id is not None:
@@ -557,6 +559,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         max_wait_ms: Optional[int] = None,
@@ -586,6 +589,7 @@ class ProvizElekto:
             "quality_min": quality_min,
             "exclude_ids": exclude_ids or [],
             "categories": categories or [],
+            "languages": languages or [],
             "messages": messages,
         }
         if group_id is not None:
@@ -718,6 +722,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
     ) -> CallResult:
@@ -754,6 +759,7 @@ class ProvizElekto:
                     quality_min=quality_min,
                     exclude_ids=permanent_skip,
                     categories=categories,
+                    languages=languages,
                     max_wait_ms=server_wait_ms,
                 )
             except AllModelsExhausted as e:
@@ -839,6 +845,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
         **litellm_kwargs: Any,
@@ -877,6 +884,7 @@ class ProvizElekto:
             quality_min=quality_min,
             exclude_ids=exclude_ids,
             categories=categories,
+            languages=languages,
             error_classifier=error_classifier,
             max_wait_secs=max_wait_secs,
         )
@@ -895,6 +903,7 @@ class ProvizElekto:
         quality_min: float = 0.0,
         exclude_ids: Optional[list[str]] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         group_id: Optional[str] = None,
         group_name: Optional[str] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
@@ -930,7 +939,7 @@ class ProvizElekto:
 
         _SELECTION_KEYS = frozenset({
             "step", "estimated_tokens", "requires_fn_call", "requires_json_mode",
-            "quality_min", "exclude_ids", "categories", "group_id", "group_name",
+            "quality_min", "exclude_ids", "categories", "languages", "group_id", "group_name",
             "use_member_priority", "max_wait_secs", "max_wait_ms",
         })
         litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k not in _SELECTION_KEYS}
@@ -952,6 +961,7 @@ class ProvizElekto:
                     quality_min=quality_min,
                     exclude_ids=permanent_skip,
                     categories=categories,
+                    languages=languages,
                     group_id=group_id,
                     group_name=group_name,
                     max_wait_ms=server_wait_ms,
@@ -1079,6 +1089,7 @@ class ProvizElekto:
         *,
         group_name: Optional[str] = None,
         categories: Optional[list[str]] = None,
+        languages: Optional[list[str]] = None,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout_secs: float = 300.0,
@@ -1101,6 +1112,8 @@ class ProvizElekto:
             select_kwargs["group_name"] = group_name
         if categories:
             select_kwargs["categories"] = categories
+        if languages:
+            select_kwargs["languages"] = languages
 
         queue = batch_module.BatchQueue(proviz=self, step=step, **select_kwargs)
 

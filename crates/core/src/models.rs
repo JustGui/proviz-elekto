@@ -75,6 +75,12 @@ pub struct Model {
     pub word_timestamps: Option<bool>,
     /// STT capability: returns new base url if different.
     pub base_url: Option<String>,
+    /// Languages this model can be called for (ISO 639-1 codes, e.g. `["en","fr"]`).
+    /// `None`/empty means unrestricted (model accepts any language — the common case for
+    /// general-purpose LLMs). Set explicitly for models with real language limits (many
+    /// STT/TTS models) so callers can filter with `SelectRequest.languages` and avoid
+    /// calling a model in a language it doesn't support.
+    pub supported_languages: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,6 +203,12 @@ pub struct SelectRequest {
     /// Use to explicitly request specialized models (e.g. ["audio"], ["embedding"]).
     #[serde(default)]
     pub categories: Vec<String>,
+    /// If non-empty, only models whose `supported_languages` overlaps this list are eligible
+    /// (ISO 639-1 codes, e.g. `["en","fr"]`). Models with `supported_languages = None` (no
+    /// restriction declared) always pass this filter — the language column is opt-in and
+    /// mainly relevant for STT/TTS models with real language limits.
+    #[serde(default)]
+    pub languages: Vec<String>,
     /// Restrict candidates to models belonging to this group (by UUID). Takes priority over rules.
     #[serde(default)]
     pub group_id: Option<Uuid>,

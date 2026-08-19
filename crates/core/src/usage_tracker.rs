@@ -516,6 +516,7 @@ mod tests {
             http_batch: None,
             word_timestamps: None,
             base_url: None,
+            supported_languages: None,
         }
     }
 
