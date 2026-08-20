@@ -26,6 +26,7 @@ All tables use a `pz_` prefix to coexist with existing databases. Schema is auto
 | `max_output_tokens` | int? | Max output tokens |
 | `supports_function_calling` | bool | Required for agentic steps |
 | `supports_json_mode` | bool | Required for verdict/synthesis |
+| `supports_reasoning_effort` | bool | Model accepts an OpenAI-style `reasoning_effort` param on `/complete` (e.g. "low"/"medium"/"high") |
 | `price_input_per_1m` | float? | USD per 1M input tokens |
 | `price_output_per_1m` | float? | USD per 1M output tokens |
 | `tpm_limit` | int? | Provider tokens/minute rate limit |

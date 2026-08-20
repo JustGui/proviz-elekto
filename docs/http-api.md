@@ -58,10 +58,13 @@ Response `200`:
   "max_context_tokens": 128000,
   "supports_function_calling": true,
   "supports_json_mode": true,
+  "supports_reasoning_effort": false,
   "estimated_input_cost_usd": 0.00148,
   "estimated_tokens": 2500
 }
 ```
+
+`supports_reasoning_effort` tells the caller whether this model accepts an OpenAI-style `reasoning_effort` param — check it before passing `reasoning_effort` to `/complete`.
 
 `estimated_tokens` echoes the value from the request. Echo it back in `/report` so the
 server can release the in-flight reservation and keep quota windows accurate.
@@ -123,6 +126,7 @@ Does **select + provider call + report in one round-trip**. The server picks a m
 | `temperature` | no | Sampling temperature (pass-through) |
 | `max_tokens` | no | Max output tokens (pass-through) |
 | `response_format` | no | Pass-through, e.g. `{"type":"json_object"}` |
+| `reasoning_effort` | no | Pass-through, e.g. `"low"` \| `"medium"` \| `"high"`. Only meaningful when the selected model's `supports_reasoning_effort` is true — not validated server-side |
 | `tools` / `tool_choice` | no | Forwarded to the provider; returned `tool_calls` are **not** executed — the caller drives the loop |
 | `timeout_secs` | no | Per-call provider HTTP timeout (default `120`) |
 
