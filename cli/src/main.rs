@@ -210,9 +210,11 @@ enum ModelCmd {
         json_mode: bool,
         #[arg(long)]
         function_calling: bool,
-        /// Whether the model accepts an OpenAI-style `reasoning_effort` param on /complete.
+        /// Exact `reasoning_effort` literal to send to the provider for this model (e.g. "none",
+        /// "low"). Confirmed per-model — acceptance of the param doesn't mean it's effective, so
+        /// this must be the one value known to actually work. Omit if the model doesn't take one.
         #[arg(long)]
-        reasoning_effort: bool,
+        reasoning_effort_value: Option<String>,
         #[arg(long)]
         quality: Option<f64>,
         #[arg(long)]
@@ -522,7 +524,7 @@ fn main() {
                 rpm,
                 json_mode,
                 function_calling,
-                reasoning_effort,
+                reasoning_effort_value,
                 quality,
                 latency_ms,
                 notes,
@@ -540,7 +542,7 @@ fn main() {
                     max_output_tokens: max_output,
                     supports_function_calling: function_calling,
                     supports_json_mode: json_mode,
-                    supports_reasoning_effort: reasoning_effort,
+                    reasoning_effort_value,
                     price_input_per_1m: price_in,
                     price_output_per_1m: price_out,
                     tpm_limit: tpm,
@@ -635,9 +637,9 @@ fn main() {
                             .as_bool()
                             .unwrap_or(false),
                         supports_json_mode: v["supports_json_mode"].as_bool().unwrap_or(false),
-                        supports_reasoning_effort: v["supports_reasoning_effort"]
-                            .as_bool()
-                            .unwrap_or(false),
+                        reasoning_effort_value: v["reasoning_effort_value"]
+                            .as_str()
+                            .map(|s| s.to_string()),
                         price_input_per_1m: v["price_input_per_1m"].as_f64(),
                         price_output_per_1m: v["price_output_per_1m"].as_f64(),
                         tpm_limit: v["tpm_limit"].as_u64().map(|v| v as u32),
@@ -869,7 +871,10 @@ fn main() {
                     println!("  max_ctx:    {}", c.max_context_tokens);
                     println!("  fn_call:    {}", c.supports_function_calling);
                     println!("  json_mode:  {}", c.supports_json_mode);
-                    println!("  reasoning:  {}", c.supports_reasoning_effort);
+                    println!(
+                        "  reasoning:  {}",
+                        c.reasoning_effort_value.as_deref().unwrap_or("(none)")
+                    );
                     if let Some(cost) = c.estimated_input_cost_usd {
                         println!("  est_cost:   ${:.6}", cost);
                     }

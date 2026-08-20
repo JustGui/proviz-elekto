@@ -13,7 +13,7 @@ pub const Q_MODELS: &str =
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
      diarization,streaming,http_batch,word_timestamps,base_url,supported_languages,\
-     supports_reasoning_effort \
+     reasoning_effort_value \
      FROM pz_models";
 
 pub const Q_RULES: &str =
@@ -95,7 +95,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         supported_languages: row
             .opt_string(28)
             .and_then(|s| serde_json::from_str(&s).ok()),
-        supports_reasoning_effort: row.bool_val(29),
+        reasoning_effort_value: row.opt_string(29),
     }
 }
 
