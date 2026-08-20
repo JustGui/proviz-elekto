@@ -46,9 +46,14 @@ pub struct Model {
     pub max_output_tokens: Option<u32>,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
-    /// Whether this model accepts an OpenAI-style `reasoning_effort` param (e.g. "low"/"medium"/"high").
-    /// Informational — callers check this before setting `CompleteRequest.reasoning_effort`.
-    pub supports_reasoning_effort: bool,
+    /// Exact `reasoning_effort` literal to send to the provider for this model, or `None` to never
+    /// send the param. A bool ("does it accept the param") isn't enough: acceptance ≠ effectiveness
+    /// — some accept every literal without erroring while only one actually reduces reasoning (e.g.
+    /// Scaleway's qwen3.5-397b-a17b only responds to `"none"`; `"low"` is accepted but does nothing).
+    /// Others reject the off-switch entirely (OVHCloud/Scaleway Harmony-family gpt-oss/Qwen3.6 models
+    /// 400 on `"none"`/`"minimal"`, only accept `"low"|"medium"|"high"`). So this stores the one
+    /// literal confirmed to behave correctly for this specific model, not a capability flag.
+    pub reasoning_effort_value: Option<String>,
     pub price_input_per_1m: Option<f64>,
     pub price_output_per_1m: Option<f64>,
     pub tpm_limit: Option<u32>,
@@ -259,9 +264,11 @@ pub struct ModelCandidate {
     pub max_context_tokens: u32,
     pub supports_function_calling: bool,
     pub supports_json_mode: bool,
-    /// Whether this model accepts a `reasoning_effort` param on `/complete`. See `Model.supports_reasoning_effort`.
+    /// Exact `reasoning_effort` literal `/complete` should send for this model, or `None` to omit
+    /// the param entirely. See `Model.reasoning_effort_value`. `/complete` uses this — not any
+    /// caller-supplied value — since only the server knows which model was picked.
     #[serde(default)]
-    pub supports_reasoning_effort: bool,
+    pub reasoning_effort_value: Option<String>,
     pub estimated_input_cost_usd: Option<f64>,
     /// Echoed from SelectRequest so callers can include it in /report for accurate window tracking.
     pub estimated_tokens: u64,

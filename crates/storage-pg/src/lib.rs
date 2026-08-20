@@ -127,11 +127,16 @@ impl PostgresStorage {
         Ok(())
     }
 
+    /// Replaces the old bool `supports_reasoning_effort` column with `reasoning_effort_value TEXT`:
+    /// acceptance of the param isn't the same as it being effective (some models accept every
+    /// literal without erroring while only one actually reduces reasoning), so a bool can't carry
+    /// which value to send — only the exact literal can. NULL means never send the param.
     fn migrate_reasoning_effort(&self) -> Result<(), StorageError> {
         let mut client = self.client.lock().unwrap();
         client
             .batch_execute(
-                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS supports_reasoning_effort BOOLEAN NOT NULL DEFAULT FALSE;",
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS reasoning_effort_value TEXT;
+                 ALTER TABLE pz_models DROP COLUMN IF EXISTS supports_reasoning_effort;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -259,7 +264,7 @@ impl CatalogStorage for PostgresStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              supports_reasoning_effort)
+              reasoning_effort_value)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
@@ -275,7 +280,7 @@ impl CatalogStorage for PostgresStorage {
                diarization=EXCLUDED.diarization, streaming=EXCLUDED.streaming,
                http_batch=EXCLUDED.http_batch, word_timestamps=EXCLUDED.word_timestamps, base_url=EXCLUDED.base_url,
                supported_languages=EXCLUDED.supported_languages,
-               supports_reasoning_effort=EXCLUDED.supports_reasoning_effort",
+               reasoning_effort_value=EXCLUDED.reasoning_effort_value",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -297,7 +302,7 @@ impl CatalogStorage for PostgresStorage {
                     .supported_languages
                     .as_ref()
                     .map(|v| serde_json::to_string(v).unwrap_or_default()),
-                &model.supports_reasoning_effort,
+                &model.reasoning_effort_value,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -588,7 +593,7 @@ CREATE TABLE IF NOT EXISTS pz_models (
     word_timestamps           BOOLEAN,
     base_url                  VARCHAR(255),
     supported_languages       TEXT,
-    supports_reasoning_effort BOOLEAN      NOT NULL DEFAULT FALSE
+    reasoning_effort_value    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (

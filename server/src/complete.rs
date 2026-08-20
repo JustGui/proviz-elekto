@@ -73,9 +73,12 @@ pub struct CompleteRequest {
     /// Pass-through to the provider, e.g. `{"type":"json_object"}`.
     #[serde(default)]
     pub response_format: Option<Value>,
-    /// OpenAI-style reasoning effort (e.g. "low"/"medium"/"high"), forwarded to the provider
-    /// verbatim when set. Only meaningful for models where `ModelCandidate.supports_reasoning_effort`
-    /// is true — the caller checks that flag before setting this.
+    /// Ignored. The exact `reasoning_effort` literal to send (if any) is determined server-side
+    /// from `ModelCandidate.reasoning_effort_value` of whichever model gets selected — the caller
+    /// can't know that ahead of time since selection happens atomically inside this same
+    /// round-trip, and acceptance of a value isn't the same as it being effective (see
+    /// `Model.reasoning_effort_value`). Kept only so older clients that still send this field
+    /// don't fail to deserialize.
     #[serde(default)]
     pub reasoning_effort: Option<String>,
     /// Tool-use: forwarded to the provider verbatim. Returned `tool_calls` are NOT executed —
@@ -124,7 +127,7 @@ impl CompleteRequest {
         }
     }
 
-    fn payload(&self, model_slug: &str) -> Value {
+    fn payload(&self, model_slug: &str, reasoning_effort_value: Option<&str>) -> Value {
         let messages: Vec<Value> = self
             .messages
             .iter()
@@ -155,7 +158,7 @@ impl CompleteRequest {
         if let Some(ref rf) = self.response_format {
             obj.insert("response_format".into(), rf.clone());
         }
-        if let Some(ref re) = self.reasoning_effort {
+        if let Some(re) = reasoning_effort_value {
             obj.insert("reasoning_effort".into(), json!(re));
         }
         if let Some(ref tools) = self.tools {
@@ -230,7 +233,10 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             }
         };
 
-        let payload = req.payload(&candidate.model_slug);
+        let payload = req.payload(
+            &candidate.model_slug,
+            candidate.reasoning_effort_value.as_deref(),
+        );
         debug!(
             attempt,
             model = %candidate.model_slug,

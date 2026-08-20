@@ -756,7 +756,7 @@ impl Selector {
             max_context_tokens: winner.model.max_context_tokens,
             supports_function_calling: winner.model.supports_function_calling,
             supports_json_mode: winner.model.supports_json_mode,
-            supports_reasoning_effort: winner.model.supports_reasoning_effort,
+            reasoning_effort_value: winner.model.reasoning_effort_value.clone(),
             estimated_input_cost_usd,
             estimated_tokens,
             price_input_per_1m: winner.model.price_input_per_1m,
