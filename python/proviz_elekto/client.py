@@ -57,8 +57,10 @@ class ModelCandidate:
     supports_function_calling: bool
     supports_json_mode: bool
     estimated_input_cost_usd: Optional[float]
-    # Whether the model accepts an OpenAI-style `reasoning_effort` param on /complete.
-    supports_reasoning_effort: bool = False
+    # Exact `reasoning_effort` literal /complete will send for this model, or None if it never
+    # sends the param. Not a capability flag: acceptance of a value isn't the same as it being
+    # effective, so this is the one literal confirmed to actually work for this model.
+    reasoning_effort_value: Optional[str] = None
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
     # Brand's OpenAI-compatible base URL (None for brands using a well-known default endpoint).
@@ -546,7 +548,7 @@ class ProvizElekto:
             price_output_per_1m=r.get("price_output_per_1m"),
             base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
-            supports_reasoning_effort=r.get("supports_reasoning_effort", False),
+            reasoning_effort_value=r.get("reasoning_effort_value"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -574,7 +576,6 @@ class ProvizElekto:
         response_format: Optional[dict] = None,
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[Any] = None,
-        reasoning_effort: Optional[str] = None,
         timeout_secs: Optional[int] = None,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
@@ -586,9 +587,12 @@ class ProvizElekto:
         `tools`/`tool_choice` are forwarded to the provider; returned `tool_calls` are NOT executed —
         the caller drives the tool loop and re-submits.
 
-        `reasoning_effort` (e.g. "low"/"medium"/"high") is forwarded to the provider verbatim when
-        set. Only meaningful for models where `select(...).supports_reasoning_effort` is true —
-        check that flag before passing this, since /complete doesn't validate it server-side.
+        There's no `reasoning_effort` param here: the server injects the right literal itself from
+        `ModelCandidate.reasoning_effort_value` of whichever model it picks (or omits the param
+        entirely when that's `None`). The caller can't supply this — selection happens atomically
+        inside this same round-trip, so only the server knows which model was chosen, and acceptance
+        of a value isn't the same as it being effective (a model can 200 on any literal while only
+        one actually changes its behavior).
         """
         if estimated_tokens is None:
             estimated_tokens = _estimate_tokens(messages)
