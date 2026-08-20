@@ -623,8 +623,6 @@ class ProvizElekto:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        if reasoning_effort is not None:
-            payload["reasoning_effort"] = reasoning_effort
         if timeout_secs is not None:
             payload["timeout_secs"] = timeout_secs
 
