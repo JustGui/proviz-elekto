@@ -40,6 +40,8 @@ All tables use a `pz_` prefix to coexist with existing databases. Schema is auto
 | `is_enabled` | bool | Disable a model without deleting |
 | `canonical_key` | string? | Key into `pz_model_catalog` (below) identifying this model's underlying family across brands. When set and this row omits `quality_score`/`category`/`max_context_tokens`/capability flags, they're filled in from the matching catalog entry at load time — this row's own values, when present, always win. |
 | `price_synced_at` | datetime? | When this row's pricing was last synced from a live provider catalog (e.g. OpenRouter). `NULL` for hand-curated providers — there's no "sync" to timestamp for those. |
+| `trains_on_data` | bool? | Whether this model/provider combination may train on submitted prompts, as reported by the source (e.g. Requesty's `data_used_for_training`). `NULL` when the source doesn't report it (most providers, including OpenRouter). Filterable via `SelectRequest.require_no_training` — see [Selection Algorithm](selection-algorithm.md). |
+| `retains_data` | bool? | Whether this model/provider retains submitted prompts (e.g. Requesty's `data_retention`). Informational only — not enforced by any selector filter. |
 
 ## Model Catalog (`pz_model_catalog`)
 
