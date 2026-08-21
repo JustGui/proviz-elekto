@@ -28,6 +28,9 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 | `PROVIZ_DATABASE_URL` | — | PostgreSQL connection URL |
 | `PROVIZ_PORT` | `0` (OS-assigned) | HTTP port; set to e.g. `63130` to force |
 | `RUST_LOG` | — | Log level filter |
+| `PROVIZ_PROVIDERS_DIR` | `./providers` | Directory of provider subdirectories (`brand.json` + `models.json`), used for auto-seeding and `POST /catalog/seed`/`refresh` |
+| `PROVIZ_OPENROUTER_SYNC_SECS` | `3600` | Seconds between automatic OpenRouter catalog syncs (runs once at startup, then on this interval). No-op if `providers/openrouter/brand.json` isn't present — see [Providers](catalog-setup.md#openrouter-auto-synced-catalog) |
+| `OPENROUTER_API_KEY` | — | Read by your application at call time to authenticate OpenRouter requests, same as any other provider's `api_key_env` |
 
 ## Docker
 

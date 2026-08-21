@@ -38,6 +38,24 @@ All tables use a `pz_` prefix to coexist with existing databases. Schema is auto
 | `quality_score` | float? | 0.0–1.0 general text-reasoning capability. `NULL` models are excluded when `quality_min > 0`. See [Quality Scores](selection-algorithm.md#quality-scores). |
 | `avg_latency_ms` | int? | Known/estimated median latency |
 | `is_enabled` | bool | Disable a model without deleting |
+| `canonical_key` | string? | Key into `pz_model_catalog` (below) identifying this model's underlying family across brands. When set and this row omits `quality_score`/`category`/`max_context_tokens`/capability flags, they're filled in from the matching catalog entry at load time — this row's own values, when present, always win. |
+| `price_synced_at` | datetime? | When this row's pricing was last synced from a live provider catalog (e.g. OpenRouter). `NULL` for hand-curated providers — there's no "sync" to timestamp for those. |
+
+## Model Catalog (`pz_model_catalog`)
+
+Shared intrinsic properties for a model family, keyed by a manually-curated `canonical_key` (typically a HuggingFace `org/model` id). Lets brands that host the same underlying model share one `quality_score`/`category`/context/capability definition instead of re-curating it per brand — see [Providers](catalog-setup.md#shared-model-catalog-providersmodel_catalogjson). Purely additive: a `pz_models` row with no `canonical_key` is unaffected.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | UUID | Primary key |
+| `canonical_key` | string | Unique family key, e.g. a HuggingFace `org/model` id |
+| `display_name` | string? | Fallback display name |
+| `category` | string? | Fallback category tag |
+| `max_context_tokens` | int? | Fallback context window |
+| `supports_function_calling` | bool? | Fallback capability flag |
+| `supports_json_mode` | bool? | Fallback capability flag |
+| `quality_score` | float? | Fallback 0.0–1.0 quality score |
+| `knowledge_cutoff` | string? | Informational only, not used in selection |
 
 ## Selection Rules (`pz_selection_rules`)
 

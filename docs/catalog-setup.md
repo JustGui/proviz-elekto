@@ -147,3 +147,27 @@ Response `404` when group slug/UUID is unknown or the group is inactive:
 ### Providers
 
 Add any provider supported by LiteLLM via `proviz brand add`.
+
+#### Onboarding a provider via `providers/<name>/`
+
+Built-in providers (groq, mistral, ovh, scaleway, novita, deepgram, elevenlabs, openrouter) are defined as JSON files rather than CLI calls, loaded by `providers/<name>/{brand.json,models.json}` — one directory per provider, picked up by `proviz providers load --dir providers` (or automatically at server startup / `POST /catalog/seed` / `POST /catalog/refresh`). `brand.json` holds `slug`/`name`/`api_key_env`/`base_url`/`endpoints`; `models.json` is an array of model definitions (context length, pricing, capability flags, rate limits). Onboarding a new OpenAI-compatible provider needs zero code changes — just drop the two JSON files in a new `providers/<name>/` directory.
+
+Re-running the load (e.g. after hand-editing a `models.json`) always refreshes pricing/context/capability fields on existing rows from the file; pass `--update-limits` to also refresh rate limits (tpm/rpm/rpd/tpd — kept separate since those are sometimes hand-tuned live from provider response headers). Pass `--disable-missing` to disable (not delete) any model that's no longer present in that provider's `models.json` — useful when a provider deprecates a model, for any provider, not just OpenRouter.
+
+#### OpenRouter (auto-synced catalog)
+
+OpenRouter aggregates hundreds of models with pricing that changes often, so unlike the other providers its `providers/openrouter/models.json` is **generated**, not hand-written:
+
+```bash
+# One-time: review the mapping before anything is written
+proviz providers sync-openrouter --dry-run
+
+# Generate providers/openrouter/models.json for real (commit it as the initial seed)
+proviz providers sync-openrouter
+```
+
+After that, a running `proviz-server` keeps it current automatically — it syncs once at startup and then every `PROVIZ_OPENROUTER_SYNC_SECS` (default 3600s). Set `OPENROUTER_API_KEY` for the models it selects to actually be callable. See [Data Model](data-model.md) for the underlying `pz_model_catalog` table this feeds into.
+
+#### Shared model catalog (`providers/model_catalog.json`)
+
+The same model is often hosted by more than one brand (e.g. a model available directly via groq/ovh *and* re-listed by OpenRouter). Rather than re-entering `quality_score`/`category`/context/capability flags per brand, define them once in `providers/model_catalog.json` under a `canonical_key` (convention: the model's HuggingFace `org/model` id), then reference it from any brand's model entry with `"canonical_model": "<canonical_key>"`. Fields the entry itself omits are filled in from the catalog; anything the entry does set always wins.
