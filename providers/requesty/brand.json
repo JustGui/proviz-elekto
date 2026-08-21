@@ -1,0 +1,7 @@
+{
+  "slug": "requesty",
+  "name": "Requesty",
+  "api_key_env": "REQUESTY_API_KEY",
+  "base_url": "https://router.requesty.ai/v1",
+  "endpoints": {}
+}

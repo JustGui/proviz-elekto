@@ -63,6 +63,14 @@ pub struct CompleteRequest {
     pub group_name: Option<String>,
     #[serde(default)]
     pub max_wait_ms: Option<u64>,
+    /// Restricts selection to models the source explicitly confirms don't train on submitted
+    /// data, and — since most providers (including OpenRouter) don't report per-model training
+    /// status at all — additionally injects OpenRouter's request-level `provider:
+    /// {data_collection: "deny", zdr: true}` opt-out into the outgoing payload regardless of
+    /// which brand gets selected (harmless no-op for providers that don't recognize the field).
+    /// See `SelectRequest.require_no_training`.
+    #[serde(default)]
+    pub require_no_training: bool,
 
     // ── completion fields ───────────────────────────────────────────────────
     pub messages: Vec<ChatMessage>,
@@ -124,6 +132,7 @@ impl CompleteRequest {
             group_name: self.group_name.clone(),
             use_member_priority: true,
             max_wait_ms: self.max_wait_ms,
+            require_no_training: self.require_no_training,
         }
     }
 
@@ -167,6 +176,17 @@ impl CompleteRequest {
         if let Some(ref tc) = self.tool_choice {
             obj.insert("tool_choice".into(), tc.clone());
         }
+        if self.require_no_training {
+            // OpenRouter-specific request-level opt-out — the exact, documented mechanism to
+            // restrict routing to providers that don't collect/retain data (OpenRouter has no
+            // per-model training metadata to filter on, unlike Requesty). Sent unconditionally
+            // when the flag is set: an OpenAI-compatible provider that doesn't recognize
+            // `provider` simply ignores the extra field.
+            obj.insert(
+                "provider".into(),
+                json!({ "data_collection": "deny", "zdr": true }),
+            );
+        }
         body
     }
 }
@@ -203,6 +223,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
@@ -221,6 +242,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     &candidate,
                     ReportOutcome::Error,
                     RateLimitErrorType::Auth,
+                    None,
                     None,
                     None,
                     None,
@@ -255,6 +277,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     Some(parsed.completion_tokens),
                     parsed.remaining_requests,
                     parsed.remaining_tokens,
+                    parsed.provider_cost_usd,
                 )
                 .await;
                 let cost_usd = cost.or_else(|| {
@@ -295,7 +318,10 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 } else {
                     (ReportOutcome::Error, RateLimitErrorType::Other)
                 };
-                report(&state, &candidate, outcome, et, None, None, None, None).await;
+                report(
+                    &state, &candidate, outcome, et, None, None, None, None, None,
+                )
+                .await;
                 exclude_ids.push(candidate.model_id);
                 last_error = message;
             }
@@ -383,6 +409,10 @@ struct ParsedCompletion {
     completion_tokens: u64,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
+    /// Real, request-specific cost from the provider's own response (e.g. OpenRouter's
+    /// `usage.cost`), when it returns one. `None` for providers that don't (most of them —
+    /// they have one fixed price, so the catalog price is already exact).
+    provider_cost_usd: Option<f64>,
 }
 
 struct ProviderError {
@@ -436,6 +466,10 @@ async fn call_provider(
     let usage = &body["usage"];
     let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
     let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+    // OpenRouter (and any other aggregator that routes to a variable-priced upstream) returns the
+    // real, request-specific cost in `usage.cost` — the catalog's static price can't capture which
+    // sub-provider actually served this call, so prefer this when present.
+    let provider_cost_usd = usage["cost"].as_f64();
 
     Ok(ParsedCompletion {
         text,
@@ -444,6 +478,7 @@ async fn call_provider(
         completion_tokens,
         remaining_requests,
         remaining_tokens,
+        provider_cost_usd,
     })
 }
 
@@ -494,6 +529,7 @@ async fn report(
     completion_tokens: Option<u64>,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
+    provider_cost_usd: Option<f64>,
 ) -> Option<f64> {
     let report_req = ReportRequest {
         model_id: candidate.model_id,
@@ -509,6 +545,7 @@ async fn report(
         limit_tokens: None,
         sync_limits: false,
         brand_key_id: candidate.brand_key_id,
+        actual_cost_usd: provider_cost_usd,
     };
     let sel = state.selector.clone();
     tokio::task::spawn_blocking(move || apply_report(&sel, report_req))

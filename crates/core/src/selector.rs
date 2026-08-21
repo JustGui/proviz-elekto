@@ -417,6 +417,16 @@ impl Selector {
                 }
             }
 
+            // Unlike languages/categories (no declared restriction = unrestricted), an unknown
+            // training status is treated as unverified, not safe — most providers (including
+            // OpenRouter) don't report this at all, so only a model the source explicitly
+            // confirms as Some(false) passes.
+            if req.require_no_training && model.trains_on_data != Some(false) {
+                debug!(model = %model.slug, trains_on_data = ?model.trains_on_data,
+                    "skipped: no_training required, status unknown or true");
+                continue;
+            }
+
             if exclude_set.contains(&model.id) {
                 tried += 1;
                 continue;
@@ -769,6 +779,10 @@ impl Selector {
                 .and_then(|e| e.get("chat"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            canonical_key: winner.model.canonical_key.clone(),
+            price_synced_at: winner.model.price_synced_at,
+            trains_on_data: winner.model.trains_on_data,
+            retains_data: winner.model.retains_data,
         })
     }
 
@@ -808,6 +822,7 @@ impl Selector {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn report_success(
         &self,
         model_id: Uuid,
@@ -818,6 +833,7 @@ impl Selector {
         completion_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
+        provider_cost_usd: Option<f64>,
     ) -> Option<f64> {
         self.rate_state.clear(&model_id);
         if let Some(key_id) = brand_key_id {
@@ -836,6 +852,14 @@ impl Selector {
             remaining_requests,
             remaining_tokens,
         );
+
+        // A provider-reported real cost (e.g. OpenRouter's `usage.cost`, which reflects whichever
+        // upstream sub-provider actually served the request) always wins over the catalog-price
+        // estimate below — the catalog price is a single static number that can't capture
+        // per-request routing variance.
+        if provider_cost_usd.is_some() {
+            return provider_cost_usd;
+        }
 
         // Compute actual cost from model prices + token breakdown when available.
         let guard = self.cache.read().unwrap();

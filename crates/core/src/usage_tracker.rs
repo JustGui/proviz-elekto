@@ -518,6 +518,10 @@ mod tests {
             word_timestamps: None,
             base_url: None,
             supported_languages: None,
+            canonical_key: None,
+            price_synced_at: None,
+            trains_on_data: None,
+            retains_data: None,
         }
     }
 

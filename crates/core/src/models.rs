@@ -89,6 +89,46 @@ pub struct Model {
     /// STT/TTS models) so callers can filter with `SelectRequest.languages` and avoid
     /// calling a model in a language it doesn't support.
     pub supported_languages: Option<Vec<String>>,
+    /// Key into `pz_model_catalog` identifying the underlying model family shared across brands
+    /// (e.g. a HuggingFace `org/model` id). When set and this row omits `quality_score`/`category`/
+    /// `max_context_tokens`/capability flags, `builtin_providers::load_from_dir` fills them in from
+    /// the matching catalog entry at load time — this row's own values, when present, always win.
+    /// `None` for models with no known cross-provider identity.
+    pub canonical_key: Option<String>,
+    /// When this row's pricing was last synced from a live provider catalog (e.g. OpenRouter's
+    /// `/models` endpoint). `None` for hand-curated providers whose prices are only ever edited
+    /// by hand — there's no "sync" to timestamp for those.
+    pub price_synced_at: Option<DateTime<Utc>>,
+    /// Whether this specific model/provider combination may train on submitted prompts, as
+    /// reported by the source (e.g. Requesty's `data_used_for_training`). This is a fact about
+    /// the provider, not the model family, so it's read directly from this row's own JSON —
+    /// never inherited from `pz_model_catalog`. `None` when the source doesn't report it (most
+    /// providers, including OpenRouter, don't — see `SelectRequest.require_no_training`).
+    pub trains_on_data: Option<bool>,
+    /// Whether this specific model/provider combination retains (stores) submitted prompts
+    /// beyond serving the request, as reported by the source (e.g. Requesty's `data_retention`).
+    /// Informational only today — not enforced by any selector filter (see
+    /// `SelectRequest.require_no_training`, which filters on `trains_on_data`).
+    pub retains_data: Option<bool>,
+}
+
+/// Shared intrinsic properties for a model family, keyed by a manually-curated `canonical_key`
+/// (typically a HuggingFace `org/model` id). Lets brands that host the same underlying model
+/// (e.g. "deepseek-v4-flash" under groq, ovh, and openrouter) share one `quality_score`/`category`/
+/// context/capability definition instead of re-curating it per brand. Purely additive: a model row
+/// with no `canonical_key`, or one that sets its own values, is unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCatalogEntry {
+    pub id: Uuid,
+    pub canonical_key: String,
+    pub display_name: Option<String>,
+    pub category: Option<String>,
+    pub max_context_tokens: Option<u32>,
+    pub supports_function_calling: Option<bool>,
+    pub supports_json_mode: Option<bool>,
+    pub quality_score: Option<f64>,
+    pub knowledge_cutoff: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -238,6 +278,17 @@ pub struct SelectRequest {
     /// selection once before returning 409. Saves a client round-trip on short waits.
     #[serde(default)]
     pub max_wait_ms: Option<u64>,
+    /// When true, only models the source explicitly reports as NOT training on submitted data
+    /// (`Model.trains_on_data == Some(false)`) are eligible — a model with unknown status
+    /// (`None`, the common case: most providers, including OpenRouter, don't report this at all)
+    /// is excluded too, not treated as safe by default. This is the opposite convention from
+    /// `languages`/`categories` (there, no declared restriction means "unrestricted"; here, no
+    /// declared info means "unverified," which is the conservative choice for a privacy filter).
+    /// `/complete` additionally sends OpenRouter's `provider: {data_collection: "deny", zdr:
+    /// true}` request-level opt-out when this is set, since OpenRouter doesn't publish per-model
+    /// training info at all — the only way to protect those calls is the request flag itself.
+    #[serde(default)]
+    pub require_no_training: bool,
 }
 
 fn default_true() -> bool {
@@ -285,6 +336,20 @@ pub struct ModelCandidate {
     /// suffix. Lets `/complete` build the request URL without a catalog lookup.
     #[serde(default)]
     pub chat_path: Option<String>,
+    /// Echo of `Model.canonical_key` — the shared model-family key this row was resolved against,
+    /// if any. See `ModelCatalogEntry`.
+    #[serde(default)]
+    pub canonical_key: Option<String>,
+    /// Echo of `Model.price_synced_at` — when this row's pricing was last synced from a live
+    /// provider catalog. `None` for hand-curated (non-auto-synced) providers.
+    #[serde(default)]
+    pub price_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Echo of `Model.trains_on_data`. `None` when the source doesn't report it.
+    #[serde(default)]
+    pub trains_on_data: Option<bool>,
+    /// Echo of `Model.retains_data`. `None` when the source doesn't report it.
+    #[serde(default)]
+    pub retains_data: Option<bool>,
 }
 
 /// Input to /report
@@ -335,6 +400,14 @@ pub struct ReportRequest {
     /// rate-limited rather than the model, allowing other keys for the same brand to still serve.
     #[serde(default)]
     pub brand_key_id: Option<Uuid>,
+    /// Actual cost in USD as reported by the provider itself (e.g. OpenRouter's `usage.cost`,
+    /// computed server-side from whichever upstream sub-provider actually served the request —
+    /// which can price differently than the catalog's static `price_input_per_1m`/`price_output_per_1m`).
+    /// When set, `Selector::report_success` returns this verbatim instead of computing an estimate
+    /// from the catalog price. Most providers have a single fixed price and don't need this —
+    /// only set it when the provider actually returns a real, request-specific cost figure.
+    #[serde(default)]
+    pub actual_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

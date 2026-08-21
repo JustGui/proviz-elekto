@@ -2,7 +2,10 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
-    models::{Brand, BrandApiKey, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
+    models::{
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, RateLimitErrorType,
+        SelectionRule,
+    },
 };
 
 pub type StorageResult<T> = std::result::Result<T, StorageError>;
@@ -29,6 +32,10 @@ pub trait CatalogStorage: Send + Sync {
         rpm: Option<u32>,
         tpm: Option<u32>,
     ) -> StorageResult<()>;
+
+    // Shared model catalog (cross-provider intrinsic properties, keyed by canonical_key)
+    fn load_model_catalog(&self) -> StorageResult<Vec<ModelCatalogEntry>>;
+    fn insert_model_catalog_entry(&self, entry: &ModelCatalogEntry) -> StorageResult<()>;
 
     // Groups
     fn load_groups(&self) -> StorageResult<Vec<Group>>;

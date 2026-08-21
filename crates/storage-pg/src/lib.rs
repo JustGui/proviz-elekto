@@ -2,13 +2,16 @@ use chrono::{DateTime, Utc};
 use postgres::{Client, NoTls};
 use proviz_elekto_core::{
     error::StorageError,
-    models::{Brand, BrandApiKey, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
+    models::{
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, RateLimitErrorType,
+        SelectionRule,
+    },
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
-    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row, model_from_row,
-    rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS,
-    Q_RULES,
+    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row,
+    model_catalog_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS,
+    Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_MODEL_CATALOG, Q_RULES,
 };
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -38,6 +41,8 @@ impl PostgresStorage {
         s.migrate_supported_languages()?;
         s.migrate_streaming_variant_index()?;
         s.migrate_reasoning_effort()?;
+        s.migrate_model_catalog_fields()?;
+        s.migrate_privacy_fields()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -141,6 +146,34 @@ impl PostgresStorage {
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Adds `canonical_key` (shared model-catalog lookup key) and `price_synced_at` (freshness
+    /// timestamp for API-synced providers like OpenRouter) to `pz_models`. Both nullable — no
+    /// backfill needed, existing rows simply have neither set.
+    fn migrate_model_catalog_fields(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS canonical_key TEXT;\
+                 ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS price_synced_at TIMESTAMPTZ;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Adds `trains_on_data`/`retains_data` (provider-reported privacy facts, e.g. Requesty's
+    /// `data_used_for_training`/`data_retention`) to `pz_models`. Both nullable — `NULL` means
+    /// the source doesn't report it, the common case for most providers.
+    fn migrate_privacy_fields(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS trains_on_data BOOLEAN;\
+                 ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS retains_data BOOLEAN;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 struct PgRow<'a>(&'a postgres::Row);
@@ -177,6 +210,9 @@ impl RowReader for PgRow<'_> {
         self.0.get(idx)
     }
     fn datetime(&self, idx: usize) -> DateTime<Utc> {
+        self.0.get(idx)
+    }
+    fn opt_datetime(&self, idx: usize) -> Option<DateTime<Utc>> {
         self.0.get(idx)
     }
 }
@@ -264,8 +300,8 @@ impl CatalogStorage for PostgresStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)
+              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -280,7 +316,11 @@ impl CatalogStorage for PostgresStorage {
                diarization=EXCLUDED.diarization, streaming=EXCLUDED.streaming,
                http_batch=EXCLUDED.http_batch, word_timestamps=EXCLUDED.word_timestamps, base_url=EXCLUDED.base_url,
                supported_languages=EXCLUDED.supported_languages,
-               reasoning_effort_value=EXCLUDED.reasoning_effort_value",
+               reasoning_effort_value=EXCLUDED.reasoning_effort_value,
+               canonical_key=EXCLUDED.canonical_key,
+               price_synced_at=EXCLUDED.price_synced_at,
+               trains_on_data=EXCLUDED.trains_on_data,
+               retains_data=EXCLUDED.retains_data",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -303,6 +343,51 @@ impl CatalogStorage for PostgresStorage {
                     .as_ref()
                     .map(|v| serde_json::to_string(v).unwrap_or_default()),
                 &model.reasoning_effort_value,
+                &model.canonical_key,
+                &model.price_synced_at,
+                &model.trains_on_data,
+                &model.retains_data,
+            ],
+        ).map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_model_catalog(&self) -> StorageResult<Vec<ModelCatalogEntry>> {
+        let mut client = self.client.lock().unwrap();
+        let rows = client
+            .query(Q_MODEL_CATALOG, &[])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| model_catalog_from_row(&PgRow(row)))
+            .collect())
+    }
+
+    fn insert_model_catalog_entry(&self, entry: &ModelCatalogEntry) -> StorageResult<()> {
+        let mut client = self.client.lock().unwrap();
+        client.execute(
+            "INSERT INTO pz_model_catalog
+             (id,canonical_key,display_name,category,max_context_tokens,
+              supports_function_calling,supports_json_mode,quality_score,knowledge_cutoff,created_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+             ON CONFLICT (canonical_key) DO UPDATE SET
+               display_name=EXCLUDED.display_name, category=EXCLUDED.category,
+               max_context_tokens=EXCLUDED.max_context_tokens,
+               supports_function_calling=EXCLUDED.supports_function_calling,
+               supports_json_mode=EXCLUDED.supports_json_mode,
+               quality_score=EXCLUDED.quality_score,
+               knowledge_cutoff=EXCLUDED.knowledge_cutoff",
+            &[
+                &entry.id,
+                &entry.canonical_key,
+                &entry.display_name,
+                &entry.category,
+                &entry.max_context_tokens.map(|v| v as i32),
+                &entry.supports_function_calling,
+                &entry.supports_json_mode,
+                &entry.quality_score,
+                &entry.knowledge_cutoff,
+                &entry.created_at,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -593,7 +678,24 @@ CREATE TABLE IF NOT EXISTS pz_models (
     word_timestamps           BOOLEAN,
     base_url                  VARCHAR(255),
     supported_languages       TEXT,
-    reasoning_effort_value    TEXT
+    reasoning_effort_value    TEXT,
+    canonical_key             TEXT,
+    price_synced_at           TIMESTAMPTZ,
+    trains_on_data            BOOLEAN,
+    retains_data              BOOLEAN
+);
+
+CREATE TABLE IF NOT EXISTS pz_model_catalog (
+    id                        UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
+    canonical_key             VARCHAR(255)     UNIQUE NOT NULL,
+    display_name              VARCHAR(150),
+    category                  VARCHAR(50),
+    max_context_tokens        INT,
+    supports_function_calling BOOLEAN,
+    supports_json_mode        BOOLEAN,
+    quality_score             DOUBLE PRECISION,
+    knowledge_cutoff          VARCHAR(50),
+    created_at                TIMESTAMPTZ      NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
