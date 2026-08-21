@@ -59,13 +59,13 @@ Response `200`:
   "max_context_tokens": 128000,
   "supports_function_calling": true,
   "supports_json_mode": true,
-  "supports_reasoning_effort": false,
+  "reasoning_effort_value": null,
   "estimated_input_cost_usd": 0.00148,
   "estimated_tokens": 2500
 }
 ```
 
-`supports_reasoning_effort` tells the caller whether this model accepts an OpenAI-style `reasoning_effort` param — check it before passing `reasoning_effort` to `/complete`.
+`reasoning_effort_value` is the exact `reasoning_effort` literal `/complete` will send to the provider for this model (e.g. `"low"`, `"none"`), or `null` if it never sends the param — either because the model doesn't accept one, or because no confirmed-working value has been recorded for it yet. It's not a capability flag: acceptance of a value by the provider isn't the same as it being effective, so this stores the one literal known to actually work, not just "any value is accepted."
 
 `estimated_tokens` echoes the value from the request. Echo it back in `/report` so the
 server can release the in-flight reservation and keep quota windows accurate.
@@ -127,7 +127,7 @@ Does **select + provider call + report in one round-trip**. The server picks a m
 | `temperature` | no | Sampling temperature (pass-through) |
 | `max_tokens` | no | Max output tokens (pass-through) |
 | `response_format` | no | Pass-through, e.g. `{"type":"json_object"}` |
-| `reasoning_effort` | no | Pass-through, e.g. `"low"` \| `"medium"` \| `"high"`. Only meaningful when the selected model's `supports_reasoning_effort` is true — not validated server-side |
+| `reasoning_effort` | ignored | Accepted for backward compatibility but not used — the server determines the `reasoning_effort` value to send (if any) from the selected model's `reasoning_effort_value`, since only the server knows which model was picked (selection happens atomically inside this same round-trip) |
 | `tools` / `tool_choice` | no | Forwarded to the provider; returned `tool_calls` are **not** executed — the caller drives the loop |
 | `timeout_secs` | no | Per-call provider HTTP timeout (default `120`) |
 
