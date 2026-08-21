@@ -15,3 +15,6 @@ dashmap.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
+
+[build-dependencies]
+serde_json.workspace = true
