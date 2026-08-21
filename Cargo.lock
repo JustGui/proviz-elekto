@@ -1196,6 +1196,7 @@ version = "0.14.2"
 dependencies = [
  "chrono",
  "dashmap",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
