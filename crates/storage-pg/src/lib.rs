@@ -18,6 +18,15 @@ use uuid::Uuid;
 
 pub struct PostgresStorage {
     client: Mutex<Client>,
+    /// Kept so a dead connection can be transparently re-established (see `connected_client()`)
+    /// instead of permanently failing every query with "connection closed" until the whole
+    /// process is restarted by hand — the same class of bug already fixed in RTFC's listener
+    /// (`SessionStore::get_pg()`, see rtfc CLAUDE.md "Postgres crash-restart") and still open in
+    /// rtfc's worker-rs `Pg::connect()`. `PostgresStorage::connect()` previously dialed ONCE at
+    /// startup with no retry — any transient postgres restart/network blip after that point (not
+    /// just at boot) permanently 500'd every `/select` and `/complete` call for every caller
+    /// (detector, worker, elector) until proviz-elekto itself was restarted.
+    database_url: String,
 }
 
 impl PostgresStorage {
@@ -33,6 +42,7 @@ impl PostgresStorage {
             .map_err(|e| StorageError::Database(e.to_string()))?;
         let s = Self {
             client: Mutex::new(client),
+            database_url: database_url.to_string(),
         };
         s.init_schema()?;
         s.migrate_brand_api_keys()?;
@@ -48,8 +58,24 @@ impl PostgresStorage {
         Ok(s)
     }
 
+    /// Every query goes through this instead of locking `self.client` directly. `is_closed()` is
+    /// a cheap local check (no round-trip) reflecting whether a PREVIOUS operation already
+    /// observed the connection drop — cheaper than pinging on every call, and matches the
+    /// pattern already validated in rtfc's listener. Reconnect is attempted inline and the lock
+    /// is held across it, so concurrent callers block briefly rather than each independently
+    /// racing to redial.
+    fn connected_client(&self) -> Result<std::sync::MutexGuard<'_, Client>, StorageError> {
+        let mut guard = self.client.lock().expect("client mutex poisoned");
+        if guard.is_closed() {
+            let fresh = Client::connect(&self.database_url, NoTls)
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+            *guard = fresh;
+        }
+        Ok(guard)
+    }
+
     fn migrate_brand_api_keys(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let has_column = client
             .query_one(
                 "SELECT COUNT(*) FROM information_schema.columns \
@@ -79,7 +105,7 @@ impl PostgresStorage {
     }
 
     fn migrate_endpoints(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute("ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS endpoints TEXT;")
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -87,7 +113,7 @@ impl PostgresStorage {
     }
 
     fn migrate_stt_fields(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS diarization BOOLEAN;\
@@ -101,7 +127,7 @@ impl PostgresStorage {
     }
 
     fn migrate_supported_languages(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS supported_languages TEXT;",
@@ -115,7 +141,7 @@ impl PostgresStorage {
     /// their own base_url/rpm_limit/price. Backfills NULL streaming/http_batch to FALSE first
     /// and adds the NOT NULL/DEFAULT constraints so future rows can't collide via NULL != NULL.
     fn migrate_streaming_variant_index(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "UPDATE pz_models SET streaming=FALSE WHERE streaming IS NULL;
@@ -137,7 +163,7 @@ impl PostgresStorage {
     /// literal without erroring while only one actually reduces reasoning), so a bool can't carry
     /// which value to send — only the exact literal can. NULL means never send the param.
     fn migrate_reasoning_effort(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS reasoning_effort_value TEXT;
@@ -151,7 +177,7 @@ impl PostgresStorage {
     /// timestamp for API-synced providers like OpenRouter) to `pz_models`. Both nullable — no
     /// backfill needed, existing rows simply have neither set.
     fn migrate_model_catalog_fields(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS canonical_key TEXT;\
@@ -165,7 +191,7 @@ impl PostgresStorage {
     /// `data_used_for_training`/`data_retention`) to `pz_models`. Both nullable — `NULL` means
     /// the source doesn't report it, the common case for most providers.
     fn migrate_privacy_fields(&self) -> Result<(), StorageError> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS trains_on_data BOOLEAN;\
@@ -219,7 +245,7 @@ impl RowReader for PgRow<'_> {
 
 impl CatalogStorage for PostgresStorage {
     fn init_schema(&self) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .batch_execute(SCHEMA)
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -227,7 +253,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_brands(&self) -> StorageResult<Vec<Brand>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_BRANDS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -235,7 +261,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_models(&self) -> StorageResult<Vec<Model>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_MODELS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -243,7 +269,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_selection_rules(&self, step: &str) -> StorageResult<Vec<SelectionRule>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = if step == "*" {
             client.query(&format!("{Q_RULES} ORDER BY priority ASC"), &[])
         } else {
@@ -257,7 +283,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_model(&self, model_id: Uuid) -> StorageResult<Option<Model>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let row = client
             .query_opt(&format!("{Q_MODELS} WHERE id=$1"), &[&model_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -265,7 +291,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_brand(&self, brand_id: Uuid) -> StorageResult<Option<Brand>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let row = client
             .query_opt(&format!("{Q_BRANDS} WHERE id=$1"), &[&brand_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -273,7 +299,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let endpoints_json: Option<String> = brand
             .endpoints
             .as_ref()
@@ -292,7 +318,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_model(&self, model: &Model) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client.execute(
             "INSERT INTO pz_models
              (id,brand_id,slug,display_name,max_context_tokens,max_output_tokens,
@@ -353,7 +379,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_model_catalog(&self) -> StorageResult<Vec<ModelCatalogEntry>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_MODEL_CATALOG, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -364,7 +390,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_model_catalog_entry(&self, entry: &ModelCatalogEntry) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client.execute(
             "INSERT INTO pz_model_catalog
              (id,canonical_key,display_name,category,max_context_tokens,
@@ -394,7 +420,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_rule(&self, rule: &SelectionRule) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client.execute(
             "INSERT INTO pz_selection_rules (id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled)
              VALUES ($1,$2,$3,$4,$5,$6,$7)
@@ -412,7 +438,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn delete_rule(&self, rule_id: Uuid) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute("DELETE FROM pz_selection_rules WHERE id=$1", &[&rule_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -420,7 +446,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn set_model_enabled(&self, model_id: Uuid, enabled: bool) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "UPDATE pz_models SET is_enabled=$1 WHERE id=$2",
@@ -436,7 +462,7 @@ impl CatalogStorage for PostgresStorage {
         rpm: Option<u32>,
         tpm: Option<u32>,
     ) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rpm_i = rpm.map(|v| v as i32);
         let tpm_i = tpm.map(|v| v as i32);
         client
@@ -452,7 +478,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn set_brand_active(&self, brand_id: Uuid, active: bool) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "UPDATE pz_brands SET is_active=$1 WHERE id=$2",
@@ -463,7 +489,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_groups(&self) -> StorageResult<Vec<Group>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_GROUPS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -471,7 +497,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_all_group_members(&self) -> StorageResult<Vec<GroupMember>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_GROUP_MEMBERS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -482,7 +508,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_group(&self, group: &Group) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at)
@@ -504,7 +530,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn delete_group(&self, group_id: Uuid) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute("DELETE FROM pz_groups WHERE id=$1", &[&group_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -512,7 +538,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn set_group_active(&self, group_id: Uuid, active: bool) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "UPDATE pz_groups SET is_active=$1 WHERE id=$2",
@@ -523,7 +549,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_group_member(&self, member: &GroupMember) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "INSERT INTO pz_group_members (id,group_id,model_id,priority,is_enabled)
@@ -543,7 +569,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn remove_group_member(&self, group_id: Uuid, model_id: Uuid) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute(
                 "DELETE FROM pz_group_members WHERE group_id=$1 AND model_id=$2",
@@ -554,7 +580,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn insert_brand_api_key(&self, key: &BrandApiKey) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let env = key.api_key_env.clone();
         client
             .execute(
@@ -576,7 +602,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn load_all_brand_api_keys(&self) -> StorageResult<Vec<BrandApiKey>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let rows = client
             .query(Q_BRAND_API_KEYS, &[])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -587,7 +613,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn delete_brand_api_key(&self, key_id: Uuid) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         client
             .execute("DELETE FROM pz_brand_api_keys WHERE id=$1", &[&key_id])
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -595,7 +621,7 @@ impl CatalogStorage for PostgresStorage {
     }
 
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let id = Uuid::new_v4();
         let now = Utc::now();
         let et = error_type.to_string();
@@ -611,7 +637,7 @@ impl CatalogStorage for PostgresStorage {
         model_id: Uuid,
         window_secs: u64,
     ) -> StorageResult<Vec<(DateTime<Utc>, RateLimitErrorType)>> {
-        let mut client = self.client.lock().unwrap();
+        let mut client = self.connected_client()?;
         let since = Utc::now() - chrono::Duration::seconds(window_secs as i64);
         let rows = client
             .query(
