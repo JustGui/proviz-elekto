@@ -7,7 +7,7 @@
 //! mistral, ovh, scaleway) are OpenAI-compatible, so a single payload shape works for every brand.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{http::StatusCode, response::IntoResponse, Json};
 use proviz_elekto_core::models::{
@@ -224,6 +224,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
@@ -242,6 +243,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     &candidate,
                     ReportOutcome::Error,
                     RateLimitErrorType::Auth,
+                    None,
                     None,
                     None,
                     None,
@@ -266,8 +268,10 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             "complete: calling provider"
         );
 
+        let call_started = Instant::now();
         match call_provider(&state.http, &url, &api_key, &payload, timeout).await {
             Ok(parsed) => {
+                let response_time_ms = Some(call_started.elapsed().as_millis() as u32);
                 let cost = report(
                     &state,
                     &candidate,
@@ -278,6 +282,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     parsed.remaining_requests,
                     parsed.remaining_tokens,
                     parsed.provider_cost_usd,
+                    response_time_ms,
                 )
                 .await;
                 let cost_usd = cost.or_else(|| {
@@ -318,8 +323,26 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 } else {
                     (ReportOutcome::Error, RateLimitErrorType::Other)
                 };
+                // A 429 rejection is typically near-instant and doesn't reflect actual generation
+                // speed, so it's excluded from the latency signal — but a genuine error (including
+                // a timeout, where elapsed is close to the timeout ceiling) is a real data point
+                // about how slow this provider was to respond.
+                let response_time_ms = if is_rate_limit {
+                    None
+                } else {
+                    Some(call_started.elapsed().as_millis() as u32)
+                };
                 report(
-                    &state, &candidate, outcome, et, None, None, None, None, None,
+                    &state,
+                    &candidate,
+                    outcome,
+                    et,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    response_time_ms,
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
@@ -530,6 +553,7 @@ async fn report(
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
     provider_cost_usd: Option<f64>,
+    response_time_ms: Option<u32>,
 ) -> Option<f64> {
     let report_req = ReportRequest {
         model_id: candidate.model_id,
@@ -546,6 +570,7 @@ async fn report(
         sync_limits: false,
         brand_key_id: candidate.brand_key_id,
         actual_cost_usd: provider_cost_usd,
+        response_time_ms,
     };
     let sel = state.selector.clone();
     tokio::task::spawn_blocking(move || apply_report(&sel, report_req))

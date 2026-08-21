@@ -376,6 +376,10 @@ async fn flush_model_group(
                 None,
                 None,
                 None,
+                // Batch jobs are polled asynchronously over minutes/hours — elapsed time here
+                // reflects queue/poll latency, not per-request generation speed, so it's not a
+                // meaningful sample for the live response-time signal.
+                None,
             );
         });
     }
@@ -575,6 +579,7 @@ pub async fn handle_batch_submit(
                 brand_key_id,
                 RateLimitErrorType::Parse,
                 estimated,
+                None,
                 None,
                 None,
                 None,

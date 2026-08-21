@@ -357,7 +357,16 @@ fn exclude_ids_increments_tried() {
 fn rate_limit_skips_model() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, None, RateLimitErrorType::Tpm, 0, None, None, None);
+    sel.report_rate_limit(
+        mid,
+        None,
+        RateLimitErrorType::Tpm,
+        0,
+        None,
+        None,
+        None,
+        None,
+    );
     let err = sel.select(&base_req()).unwrap_err();
     assert!(matches!(
         err,
@@ -369,8 +378,17 @@ fn rate_limit_skips_model() {
 fn report_success_clears_limit() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
-    sel.report_rate_limit(mid, None, RateLimitErrorType::Tpm, 0, None, None, None);
-    sel.report_success(mid, None, 0, None, None, None, None, None, None);
+    sel.report_rate_limit(
+        mid,
+        None,
+        RateLimitErrorType::Tpm,
+        0,
+        None,
+        None,
+        None,
+        None,
+    );
+    sel.report_success(mid, None, 0, None, None, None, None, None, None, None);
     assert!(sel.select(&base_req()).is_ok());
 }
 
@@ -503,6 +521,61 @@ fn scoring_prefers_higher_quality() {
 }
 
 #[test]
+fn scoring_prefers_live_reported_low_latency() {
+    // Neither model has a static catalog avg_latency_ms — scoring should treat them as tied
+    // (latency_score=0.5 for both) until real completions are reported via report_success's
+    // response_time_ms, at which point the live EWMA should flip the winner toward the
+    // consistently faster one — this is the mechanism that lets a slow-routing aggregator
+    // (e.g. OpenRouter/Requesty) get scored down based on observed behaviour, not a guess.
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let slow = make_model(brand.id, "slow-live", 32_000);
+    let fast = make_model(brand.id, "fast-live", 32_000);
+    // Priority favors "slow" on a tie, so a post-report win by "fast" proves live latency moved it.
+    let r_slow = make_rule("chat", slow.id, 0);
+    let r_fast = make_rule("chat", fast.id, 1);
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&slow).unwrap();
+    db.insert_model(&fast).unwrap();
+    db.insert_rule(&r_slow).unwrap();
+    db.insert_rule(&r_fast).unwrap();
+
+    let sel = selector(db);
+    // No live samples yet — both untouched, rule_priority tiebreak picks "slow".
+    let c = sel.select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "slow-live");
+
+    sel.report_success(
+        slow.id,
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(20_000),
+    );
+    sel.report_success(
+        fast.id,
+        None,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(100),
+    );
+
+    let c = sel.select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "fast-live");
+}
+
+#[test]
 fn rpm_limit_single_model_exhausted() {
     use proviz_elekto_core::storage::CatalogStorage;
     let db = SqliteStorage::open_in_memory().unwrap();
@@ -532,6 +605,7 @@ fn rpm_limit_single_model_exhausted() {
         None,
         proviz_elekto_core::models::RateLimitErrorType::Rpm,
         0,
+        None,
         None,
         None,
         None,
@@ -637,6 +711,7 @@ fn model_scoped_timeout_does_not_block_sibling_on_shared_key() {
         None,
         None,
         None,
+        None,
     );
 
     // "steady" must still be selectable — the shared key must not be blocked
@@ -668,6 +743,7 @@ fn account_scoped_error_still_blocks_whole_shared_key() {
         Some(key.id),
         RateLimitErrorType::Auth,
         0,
+        None,
         None,
         None,
         None,

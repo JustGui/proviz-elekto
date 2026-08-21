@@ -408,6 +408,15 @@ pub struct ReportRequest {
     /// only set it when the provider actually returns a real, request-specific cost figure.
     #[serde(default)]
     pub actual_cost_usd: Option<f64>,
+    /// Observed end-to-end response time (ms) of the actual provider call — measured by the
+    /// caller around the request that was sent (e.g. wall-clock elapsed for the `/chat/completions`
+    /// HTTP round-trip). Feeds a live per-`(model, key)` EWMA in `UsageTracker` that scoring's
+    /// `latency_score` prefers over the static catalog `Model.avg_latency_ms` once populated —
+    /// lets slow-routing aggregators (e.g. OpenRouter, Requesty) get penalised based on their
+    /// actual observed latency instead of a hand-curated guess. Omit when no provider call was
+    /// actually made (e.g. a pre-flight validation failure) — that's not a latency sample.
+    #[serde(default)]
+    pub response_time_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -35,6 +35,11 @@ struct ModelWindows {
     /// Last TPM *ceiling* reported by the provider (`x-ratelimit-limit-tokens-minute`) for THIS key.
     /// Preferred over `model.tpm_limit` in headroom.
     provider_limit_tokens: Option<u32>,
+    /// Exponentially-weighted moving average of observed end-to-end response time (ms) for this
+    /// `(model, key)` bucket, fed by real completions reported through `record_latency`. `None`
+    /// until at least one sample has arrived. Preferred over the static catalog `Model.avg_latency_ms`
+    /// in scoring once present, since it reflects live provider behaviour instead of a curated guess.
+    latency_ewma_ms: Option<f64>,
 }
 
 impl Default for ModelWindows {
@@ -49,9 +54,15 @@ impl Default for ModelWindows {
             provider_remaining_tokens: None,
             provider_limit_requests: None,
             provider_limit_tokens: None,
+            latency_ewma_ms: None,
         }
     }
 }
+
+/// Smoothing factor for the response-time EWMA: weight given to each new sample.
+/// 0.2 tracks a sustained slowdown (e.g. a provider degrading) within a handful of requests
+/// while still damping a single outlier spike.
+const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
 struct ModelUsage {
     in_flight_requests: AtomicU32,
@@ -160,6 +171,31 @@ impl UsageTracker {
             at: now,
             value: token_count,
         });
+    }
+
+    /// Record an observed end-to-end response time (ms) for this `(model, key)` bucket, updating
+    /// the live EWMA that scoring's `latency_score` prefers over the static catalog value.
+    ///
+    /// Called from every report_* path when the caller measured elapsed wall time around the
+    /// actual provider call. A `None`/absent sample (e.g. a pre-flight validation failure that
+    /// never reached the provider) should simply not call this — it's not a data point.
+    pub fn record_latency(&self, model_id: Uuid, brand_key_id: Option<Uuid>, observed_ms: u64) {
+        let usage = self.get_or_default((model_id, brand_key_id));
+        let mut w = usage.windows.lock().unwrap();
+        w.latency_ewma_ms = Some(match w.latency_ewma_ms {
+            None => observed_ms as f64,
+            Some(prev) => {
+                LATENCY_EWMA_ALPHA * observed_ms as f64 + (1.0 - LATENCY_EWMA_ALPHA) * prev
+            }
+        });
+    }
+
+    /// Live EWMA response time (ms) for this `(model, key)` bucket, or `None` if no sample has
+    /// been recorded yet — callers should fall back to the static catalog `avg_latency_ms`.
+    pub fn avg_latency_ms(&self, model_id: Uuid, brand_key_id: Option<Uuid>) -> Option<f64> {
+        let usage = self.get_or_default((model_id, brand_key_id));
+        let w = usage.windows.lock().unwrap();
+        w.latency_ewma_ms
     }
 
     /// Record provider-reported remaining capacity from response headers.
@@ -662,6 +698,30 @@ mod tests {
             (hr_b - 0.99).abs() < 1e-5,
             "key B unaffected by key A anchor (~0.99), got {hr_b}"
         );
+    }
+
+    #[test]
+    fn latency_ewma_tracks_recent_samples_per_key() {
+        let tracker = UsageTracker::new();
+        let model_id = Uuid::new_v4();
+        let key_a = Some(Uuid::new_v4());
+        let key_b = Some(Uuid::new_v4());
+
+        assert_eq!(tracker.avg_latency_ms(model_id, key_a), None);
+
+        tracker.record_latency(model_id, key_a, 10_000);
+        assert_eq!(tracker.avg_latency_ms(model_id, key_a), Some(10_000.0));
+
+        // A second, much slower sample pulls the EWMA up but doesn't jump straight to it.
+        tracker.record_latency(model_id, key_a, 20_000);
+        let avg = tracker.avg_latency_ms(model_id, key_a).unwrap();
+        assert!(
+            avg > 10_000.0 && avg < 20_000.0,
+            "expected EWMA between samples, got {avg}"
+        );
+
+        // key B is untouched — per-key isolation, same pattern as anchor_remaining/anchor_limits.
+        assert_eq!(tracker.avg_latency_ms(model_id, key_b), None);
     }
 
     #[test]
