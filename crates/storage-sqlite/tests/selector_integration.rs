@@ -367,7 +367,7 @@ fn report_success_clears_limit() {
     let (db, _, mid, _) = make_world();
     let sel = selector(db);
     sel.report_rate_limit(mid, None, RateLimitErrorType::Tpm, 0, None, None, None);
-    sel.report_success(mid, None, 0, None, None, None, None, None);
+    sel.report_success(mid, None, 0, None, None, None, None, None, None);
     assert!(sel.select(&base_req()).is_ok());
 }
 

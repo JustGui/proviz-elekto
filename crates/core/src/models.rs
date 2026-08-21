@@ -372,6 +372,14 @@ pub struct ReportRequest {
     /// rate-limited rather than the model, allowing other keys for the same brand to still serve.
     #[serde(default)]
     pub brand_key_id: Option<Uuid>,
+    /// Actual cost in USD as reported by the provider itself (e.g. OpenRouter's `usage.cost`,
+    /// computed server-side from whichever upstream sub-provider actually served the request —
+    /// which can price differently than the catalog's static `price_input_per_1m`/`price_output_per_1m`).
+    /// When set, `Selector::report_success` returns this verbatim instead of computing an estimate
+    /// from the catalog price. Most providers have a single fixed price and don't need this —
+    /// only set it when the provider actually returns a real, request-specific cost figure.
+    #[serde(default)]
+    pub actual_cost_usd: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

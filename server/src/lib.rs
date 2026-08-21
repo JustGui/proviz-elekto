@@ -195,6 +195,7 @@ pub(crate) fn apply_report(sel: &Selector, req: ReportRequest) -> Option<f64> {
     let rem_req = req.remaining_requests;
     let rem_tok = req.remaining_tokens;
     let brand_key_id = req.brand_key_id;
+    let provider_cost_usd = req.actual_cost_usd;
     let cost = match req.outcome {
         ReportOutcome::Success => sel.report_success(
             req.model_id,
@@ -205,6 +206,7 @@ pub(crate) fn apply_report(sel: &Selector, req: ReportRequest) -> Option<f64> {
             completion,
             rem_req,
             rem_tok,
+            provider_cost_usd,
         ),
         ReportOutcome::RateLimit => {
             let et = req.error_type.unwrap_or(RateLimitErrorType::Other);

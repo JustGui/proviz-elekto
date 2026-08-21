@@ -375,6 +375,7 @@ async fn flush_model_group(
                 Some(total_completion),
                 None,
                 None,
+                None,
             );
         });
     }

@@ -203,6 +203,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
@@ -221,6 +222,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     &candidate,
                     ReportOutcome::Error,
                     RateLimitErrorType::Auth,
+                    None,
                     None,
                     None,
                     None,
@@ -255,6 +257,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     Some(parsed.completion_tokens),
                     parsed.remaining_requests,
                     parsed.remaining_tokens,
+                    parsed.provider_cost_usd,
                 )
                 .await;
                 let cost_usd = cost.or_else(|| {
@@ -295,7 +298,10 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 } else {
                     (ReportOutcome::Error, RateLimitErrorType::Other)
                 };
-                report(&state, &candidate, outcome, et, None, None, None, None).await;
+                report(
+                    &state, &candidate, outcome, et, None, None, None, None, None,
+                )
+                .await;
                 exclude_ids.push(candidate.model_id);
                 last_error = message;
             }
@@ -383,6 +389,10 @@ struct ParsedCompletion {
     completion_tokens: u64,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
+    /// Real, request-specific cost from the provider's own response (e.g. OpenRouter's
+    /// `usage.cost`), when it returns one. `None` for providers that don't (most of them —
+    /// they have one fixed price, so the catalog price is already exact).
+    provider_cost_usd: Option<f64>,
 }
 
 struct ProviderError {
@@ -436,6 +446,10 @@ async fn call_provider(
     let usage = &body["usage"];
     let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
     let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+    // OpenRouter (and any other aggregator that routes to a variable-priced upstream) returns the
+    // real, request-specific cost in `usage.cost` — the catalog's static price can't capture which
+    // sub-provider actually served this call, so prefer this when present.
+    let provider_cost_usd = usage["cost"].as_f64();
 
     Ok(ParsedCompletion {
         text,
@@ -444,6 +458,7 @@ async fn call_provider(
         completion_tokens,
         remaining_requests,
         remaining_tokens,
+        provider_cost_usd,
     })
 }
 
@@ -494,6 +509,7 @@ async fn report(
     completion_tokens: Option<u64>,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
+    provider_cost_usd: Option<f64>,
 ) -> Option<f64> {
     let report_req = ReportRequest {
         model_id: candidate.model_id,
@@ -509,6 +525,7 @@ async fn report(
         limit_tokens: None,
         sync_limits: false,
         brand_key_id: candidate.brand_key_id,
+        actual_cost_usd: provider_cost_usd,
     };
     let sel = state.selector.clone();
     tokio::task::spawn_blocking(move || apply_report(&sel, report_req))

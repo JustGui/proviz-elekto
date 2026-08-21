@@ -283,6 +283,47 @@ def _extract_remaining_limits(response: Any) -> tuple[Optional[int], Optional[in
     return rem_req, rem_tok
 
 
+def _extract_provider_cost(response: Any) -> Optional[float]:
+    """Extract the real, request-specific cost the provider itself reported (e.g. OpenRouter's
+    `usage.cost`, computed server-side from whichever upstream sub-provider actually served the
+    request). Distinct from LiteLLM's own `_hidden_params["response_cost"]`, which is LiteLLM's
+    internally *computed* estimate from its own pricing table — never used here, since it isn't
+    the provider's real figure and would misrepresent what was actually charged.
+
+    Returns None when the provider doesn't return one (most providers have a single fixed price,
+    so `_compute_cost` from the catalog price is already exact for them).
+    """
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None
+
+    def _as_float(v: Any) -> Optional[float]:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    cost = _as_float(getattr(usage, "cost", None))
+    if cost is not None:
+        return cost
+
+    # Pydantic v2 stores fields a model doesn't declare in `model_extra` when the model allows
+    # extras; some LiteLLM versions surface OpenRouter's `usage.cost` there instead of as a plain
+    # attribute.
+    extra = getattr(usage, "model_extra", None)
+    if isinstance(extra, dict):
+        cost = _as_float(extra.get("cost"))
+        if cost is not None:
+            return cost
+        details = extra.get("cost_details")
+        if isinstance(details, dict):
+            cost = _as_float(details.get("upstream_inference_cost"))
+            if cost is not None:
+                return cost
+
+    return None
+
+
 def _compute_cost(
     candidate: "ModelCandidate",
     prompt_tokens: int,
@@ -671,12 +712,13 @@ class ProvizElekto:
         limit_requests: Optional[int] = None,
         limit_tokens: Optional[int] = None,
         brand_key_id: Optional[str] = None,
+        actual_cost_usd: Optional[float] = None,
     ) -> None:
         _logger.debug(
             "report: model_id=%s outcome=success prompt=%s completion=%s remaining_req=%s "
-            "remaining_tok=%s limit_req=%s limit_tok=%s sync=%s",
+            "remaining_tok=%s limit_req=%s limit_tok=%s sync=%s actual_cost_usd=%s",
             model_id, prompt_tokens, completion_tokens, remaining_requests, remaining_tokens,
-            limit_requests, limit_tokens, self._sync_provider_limits,
+            limit_requests, limit_tokens, self._sync_provider_limits, actual_cost_usd,
         )
         payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
         if prompt_tokens is not None:
@@ -697,6 +739,11 @@ class ProvizElekto:
             payload["sync_limits"] = True
         if brand_key_id is not None:
             payload["brand_key_id"] = brand_key_id
+        if actual_cost_usd is not None:
+            # Real, provider-reported cost (e.g. OpenRouter's `usage.cost`) — the server returns
+            # this verbatim instead of estimating from the catalog price. Never pass a locally
+            # computed estimate here, only a genuine provider-reported figure.
+            payload["actual_cost_usd"] = actual_cost_usd
         # Fire-and-forget: the LLM result is already in hand, no need to block
         # the caller while we send usage + remaining-limit data back to proviz.
         # Rate-limit/error reports remain synchronous (must arrive before retry select()).
@@ -815,7 +862,8 @@ class ProvizElekto:
                         candidate.brand_slug, candidate.model_slug,
                         list(_collect_response_headers(response).keys()) or "none",
                     )
-                actual_cost_usd = _compute_cost(candidate, prompt, completion)
+                provider_cost_usd = _extract_provider_cost(response)
+                actual_cost_usd = provider_cost_usd if provider_cost_usd is not None else _compute_cost(candidate, prompt, completion)
                 self.report_success(
                     candidate.model_id,
                     estimated_tokens=estimated_tokens,
@@ -826,6 +874,7 @@ class ProvizElekto:
                     limit_requests=lim_req,
                     limit_tokens=lim_tok,
                     brand_key_id=candidate.brand_key_id,
+                    actual_cost_usd=provider_cost_usd,
                 )
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d "
@@ -1011,6 +1060,7 @@ class ProvizElekto:
             )
 
             total_prompt = total_completion = total_tokens = 0
+            total_provider_cost: Optional[float] = None
             last_rem_req: Optional[int] = None
             last_rem_tok: Optional[int] = None
             last_lim_req: Optional[int] = None
@@ -1039,12 +1089,19 @@ class ProvizElekto:
                     total_prompt += pt
                     total_completion += ct
                     total_tokens += tot
+                    iter_cost = _extract_provider_cost(response)
+                    if iter_cost is not None:
+                        total_provider_cost = (total_provider_cost or 0.0) + iter_cost
 
                     msg = response.choices[0].message
                     tool_calls = getattr(msg, "tool_calls", None) or []
 
                     if not tool_calls:
-                        actual_cost_usd = _compute_cost(candidate, total_prompt, total_completion)
+                        actual_cost_usd = (
+                            total_provider_cost
+                            if total_provider_cost is not None
+                            else _compute_cost(candidate, total_prompt, total_completion)
+                        )
                         self.report_success(
                             candidate.model_id,
                             estimated_tokens=estimated_tokens,
@@ -1056,6 +1113,7 @@ class ProvizElekto:
                             limit_requests=last_lim_req,
                             limit_tokens=last_lim_tok,
                             brand_key_id=candidate.brand_key_id,
+                            actual_cost_usd=total_provider_cost,
                         )
                         _logger.debug(
                             "call_litellm_tool_loop success: model=%s/%s iterations=%d "
