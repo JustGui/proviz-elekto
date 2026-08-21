@@ -497,38 +497,64 @@ class ProvizElekto:
 
     # ── HTTP helpers ──────────────────────────────────────────────────────────
 
+    # 5xx / connection-level failures get a short bounded retry — distinct from
+    # AllModelsExhausted's own backoff-and-retry (that one is expected/routine heatroom
+    # backpressure, this one is an unexpected server-side fault). Motivating case: proviz-server's
+    # storage layer used to hold a single postgres connection with no reconnect, so ANY transient
+    # DB blip (crash-restart, network hiccup) permanently 500'd every /select and /complete call
+    # for every caller until the whole proviz process was restarted by hand. The storage layer now
+    # self-heals on its NEXT query (see proviz-elekto server/storage-pg `connected_client()`), but
+    # the one request that lands in the split-second before that self-heal still needs to be
+    # retried once to actually benefit from it — otherwise a caller like the detector just drops
+    # that claim-detection cycle on the first failure and moves on, no crash but silent data loss.
+    # 4xx is a caller mistake (bad payload, bad step name) — retrying it can't help, fail fast.
+    _TRANSIENT_RETRY_DELAY_S = 0.3
+
+    def _request_with_retry(
+        self, path: str, *, data: Optional[bytes] = None, method: str = "GET",
+        max_retries: int = 2,
+    ) -> dict:
+        headers = {"Content-Type": "application/json"} if data is not None else {}
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            req = urllib.request.Request(
+                f"{self._base}{path}", data=data, headers=headers, method=method,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+                    return json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                payload = json.loads(e.read())
+                if payload.get("error") == "all_models_exhausted":
+                    raise AllModelsExhausted(
+                        step=payload.get("step", "?"),
+                        tried=payload.get("tried", 0),
+                        retry_after_ms=payload.get("retry_after_ms", 0),
+                    )
+                last_exc = ProvizError(f"HTTP {e.code}: {payload}")
+                if e.code < 500 or attempt == max_retries:
+                    raise last_exc from e
+                _logger.warning(
+                    "ProvizElekto %s HTTP %d (attempt %d/%d), retrying: %s",
+                    path, e.code, attempt + 1, max_retries + 1, payload,
+                )
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as e:
+                last_exc = ProvizError(str(e))
+                if attempt == max_retries:
+                    raise last_exc from e
+                _logger.warning(
+                    "ProvizElekto %s connection error (attempt %d/%d), retrying: %s",
+                    path, attempt + 1, max_retries + 1, e,
+                )
+            time.sleep(self._TRANSIENT_RETRY_DELAY_S * (attempt + 1))
+        raise last_exc  # pragma: no cover — loop above always returns or raises
+
     def _post(self, path: str, body: dict) -> dict:
         data = json.dumps(body).encode()
-        req = urllib.request.Request(
-            f"{self._base}{path}",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            payload = json.loads(e.read())
-            if payload.get("error") == "all_models_exhausted":
-                raise AllModelsExhausted(
-                    step=payload.get("step", "?"),
-                    tried=payload.get("tried", 0),
-                    retry_after_ms=payload.get("retry_after_ms", 0),
-                )
-            raise ProvizError(f"HTTP {e.code}: {payload}") from e
+        return self._request_with_retry(path, data=data, method="POST")
 
     def _get(self, path: str) -> dict:
-        req = urllib.request.Request(
-            f"{self._base}{path}",
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            payload = json.loads(e.read())
-            raise ProvizError(f"HTTP {e.code}: {payload}") from e
+        return self._request_with_retry(path, method="GET")
 
     def _post_fire_and_forget(self, path: str, body: dict) -> None:
         """Send a report in a background thread — caller is not blocked.
