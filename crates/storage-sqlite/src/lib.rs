@@ -51,6 +51,7 @@ impl SqliteStorage {
         s.migrate_streaming_variant_index()?;
         s.migrate_reasoning_effort()?;
         s.migrate_model_catalog_fields()?;
+        s.migrate_privacy_fields()?;
         Ok(s)
     }
 
@@ -236,6 +237,28 @@ impl SqliteStorage {
         }
         Ok(())
     }
+
+    /// Adds `trains_on_data`/`retains_data` (provider-reported privacy facts, e.g. Requesty's
+    /// `data_used_for_training`/`data_retention`) to `pz_models`. Both nullable — `NULL` means
+    /// the source doesn't report it, which is the common case for most providers.
+    fn migrate_privacy_fields(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        for col in &["trains_on_data", "retains_data"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name=?1",
+                    [col],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|n| n > 0)
+                .unwrap_or(false);
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE pz_models ADD COLUMN {col} INTEGER;"))
+                    .map_err(|e| StorageError::Database(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
@@ -405,8 +428,8 @@ impl CatalogStorage for SqliteStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value,canonical_key,price_synced_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
+              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -443,6 +466,8 @@ impl CatalogStorage for SqliteStorage {
                 model.reasoning_effort_value,
                 model.canonical_key,
                 model.price_synced_at.map(|v| v.to_rfc3339()),
+                model.trains_on_data.map(|v| v as i64),
+                model.retains_data.map(|v| v as i64),
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -792,7 +817,9 @@ CREATE TABLE IF NOT EXISTS pz_models (
     supported_languages       TEXT,
     reasoning_effort_value    TEXT,
     canonical_key             TEXT,
-    price_synced_at           TEXT
+    price_synced_at           TEXT,
+    trains_on_data            INTEGER,
+    retains_data              INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (
@@ -926,6 +953,8 @@ mod tests {
             supported_languages: None,
             canonical_key: None,
             price_synced_at: None,
+            trains_on_data: None,
+            retains_data: None,
         }
     }
 

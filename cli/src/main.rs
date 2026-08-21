@@ -71,6 +71,9 @@ enum Command {
         /// Restrict selection to a group (by slug)
         #[arg(long)]
         group_name: Option<String>,
+        /// Only models the source confirms don't train on submitted data
+        #[arg(long)]
+        require_no_training: bool,
     },
     /// Hot-reload catalog in running server
     Reload,
@@ -123,6 +126,18 @@ enum ProvidersCmd {
         #[arg(long)]
         dry_run: bool,
         #[arg(long, default_value = "https://openrouter.ai/api/v1")]
+        base_url: String,
+    },
+    /// Fetch Requesty's live catalog and write providers/requesty/models.json (then upsert
+    /// into the DB unless --dry-run). Same workflow as sync-openrouter.
+    SyncRequesty {
+        /// Root directory containing provider subdirectories
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        /// Fetch and print the mapped models.json to stdout without writing to disk or the DB
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "https://router.requesty.ai/v1")]
         base_url: String,
     },
 }
@@ -585,6 +600,8 @@ fn main() {
                     supported_languages: languages,
                     canonical_key: None,
                     price_synced_at: None,
+                    trains_on_data: None,
+                    retains_data: None,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -688,6 +705,8 @@ fn main() {
                         }),
                         canonical_key: v["canonical_key"].as_str().map(|s| s.to_string()),
                         price_synced_at: v["price_synced_at"].as_str().and_then(|s| s.parse().ok()),
+                        trains_on_data: v["trains_on_data"].as_bool(),
+                        retains_data: v["retains_data"].as_bool(),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;
@@ -863,6 +882,7 @@ fn main() {
             quality_min,
             group_id,
             group_name,
+            require_no_training,
         } => {
             let selector = Selector::new(storage);
             selector.reload().unwrap();
@@ -880,6 +900,7 @@ fn main() {
                 group_name,
                 use_member_priority: true,
                 max_wait_ms: None,
+                require_no_training,
             };
             match selector.select(&req) {
                 Ok(c) => {
@@ -978,6 +999,45 @@ fn main() {
                         ),
                         Err(e) => {
                             eprintln!("openrouter sync failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            ProvidersCmd::SyncRequesty {
+                dir,
+                dry_run,
+                base_url,
+            } => {
+                if dry_run {
+                    match proviz_elekto_core::requesty_sync::fetch_preview(&base_url) {
+                        Ok(entries) => {
+                            println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                            eprintln!(
+                                "\n{} models fetched (dry run — nothing written)",
+                                entries.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("requesty dry-run fetch failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    match proviz_elekto_core::requesty_sync::sync(storage.as_ref(), &dir, &base_url) {
+                        Ok(s) if s.skipped_suspicious => {
+                            eprintln!(
+                                "requesty sync: only {} models returned, skipping (nothing written)",
+                                s.fetched
+                            );
+                            std::process::exit(1);
+                        }
+                        Ok(s) => println!(
+                            "requesty sync: {} fetched, {} brands added, {} models added, {} updated, {} disabled",
+                            s.fetched, s.brands_added, s.models_added, s.models_updated, s.models_disabled
+                        ),
+                        Err(e) => {
+                            eprintln!("requesty sync failed: {e}");
                             std::process::exit(1);
                         }
                     }

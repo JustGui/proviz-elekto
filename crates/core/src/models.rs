@@ -99,6 +99,17 @@ pub struct Model {
     /// `/models` endpoint). `None` for hand-curated providers whose prices are only ever edited
     /// by hand — there's no "sync" to timestamp for those.
     pub price_synced_at: Option<DateTime<Utc>>,
+    /// Whether this specific model/provider combination may train on submitted prompts, as
+    /// reported by the source (e.g. Requesty's `data_used_for_training`). This is a fact about
+    /// the provider, not the model family, so it's read directly from this row's own JSON —
+    /// never inherited from `pz_model_catalog`. `None` when the source doesn't report it (most
+    /// providers, including OpenRouter, don't — see `SelectRequest.require_no_training`).
+    pub trains_on_data: Option<bool>,
+    /// Whether this specific model/provider combination retains (stores) submitted prompts
+    /// beyond serving the request, as reported by the source (e.g. Requesty's `data_retention`).
+    /// Informational only today — not enforced by any selector filter (see
+    /// `SelectRequest.require_no_training`, which filters on `trains_on_data`).
+    pub retains_data: Option<bool>,
 }
 
 /// Shared intrinsic properties for a model family, keyed by a manually-curated `canonical_key`
@@ -267,6 +278,17 @@ pub struct SelectRequest {
     /// selection once before returning 409. Saves a client round-trip on short waits.
     #[serde(default)]
     pub max_wait_ms: Option<u64>,
+    /// When true, only models the source explicitly reports as NOT training on submitted data
+    /// (`Model.trains_on_data == Some(false)`) are eligible — a model with unknown status
+    /// (`None`, the common case: most providers, including OpenRouter, don't report this at all)
+    /// is excluded too, not treated as safe by default. This is the opposite convention from
+    /// `languages`/`categories` (there, no declared restriction means "unrestricted"; here, no
+    /// declared info means "unverified," which is the conservative choice for a privacy filter).
+    /// `/complete` additionally sends OpenRouter's `provider: {data_collection: "deny", zdr:
+    /// true}` request-level opt-out when this is set, since OpenRouter doesn't publish per-model
+    /// training info at all — the only way to protect those calls is the request flag itself.
+    #[serde(default)]
+    pub require_no_training: bool,
 }
 
 fn default_true() -> bool {
@@ -322,6 +344,12 @@ pub struct ModelCandidate {
     /// provider catalog. `None` for hand-curated (non-auto-synced) providers.
     #[serde(default)]
     pub price_synced_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Echo of `Model.trains_on_data`. `None` when the source doesn't report it.
+    #[serde(default)]
+    pub trains_on_data: Option<bool>,
+    /// Echo of `Model.retains_data`. `None` when the source doesn't report it.
+    #[serde(default)]
+    pub retains_data: Option<bool>,
 }
 
 /// Input to /report

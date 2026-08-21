@@ -59,6 +59,15 @@ struct ModelDef {
     /// providers.
     #[serde(default)]
     price_synced_at: Option<chrono::DateTime<Utc>>,
+    /// Whether this model/provider combination may train on submitted data (e.g. Requesty's
+    /// `data_used_for_training`). A fact about the provider, not the model family — always taken
+    /// directly from this entry, never inherited from the shared catalog.
+    #[serde(default)]
+    trains_on_data: Option<bool>,
+    /// Whether this model/provider combination retains submitted data (e.g. Requesty's
+    /// `data_retention`).
+    #[serde(default)]
+    retains_data: Option<bool>,
 }
 
 pub struct LoadSummary {
@@ -338,6 +347,8 @@ pub fn load_from_dir(
                     batch_price_multiplier: def.batch_price_multiplier,
                     canonical_key: def.canonical_model.clone(),
                     price_synced_at: def.price_synced_at,
+                    trains_on_data: def.trains_on_data,
+                    retains_data: def.retains_data,
                     diarization: def.diarization,
                     streaming: def.streaming,
                     http_batch: def.http_batch,
@@ -407,6 +418,8 @@ pub fn load_from_dir(
                     batch_price_multiplier: def.batch_price_multiplier,
                     canonical_key: def.canonical_model.clone(),
                     price_synced_at: def.price_synced_at,
+                    trains_on_data: def.trains_on_data,
+                    retains_data: def.retains_data,
                     diarization: def.diarization,
                     streaming: def.streaming,
                     http_batch: def.http_batch,

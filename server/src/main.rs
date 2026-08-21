@@ -53,6 +53,11 @@ struct Args {
     /// isn't present.
     #[arg(long, env = "PROVIZ_OPENROUTER_SYNC_SECS", default_value = "3600")]
     openrouter_sync_secs: u64,
+
+    /// Seconds between automatic Requesty catalog syncs. Same behavior as
+    /// PROVIZ_OPENROUTER_SYNC_SECS, for the requesty provider.
+    #[arg(long, env = "PROVIZ_REQUESTY_SYNC_SECS", default_value = "3600")]
+    requesty_sync_secs: u64,
 }
 
 /// Periodically fetches OpenRouter's live catalog and upserts it (see
@@ -110,6 +115,66 @@ fn spawn_openrouter_sync_task(selector: Arc<Selector>, providers_dir: String, in
                     );
                 }
                 Err(e) => error!("openrouter sync failed: {e}"),
+            }
+
+            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        }
+    });
+}
+
+/// Periodically fetches Requesty's live catalog and upserts it (see
+/// `proviz_elekto_core::requesty_sync`) — same rationale as `spawn_openrouter_sync_task`.
+/// No-op if the provider hasn't been onboarded (`providers/requesty/brand.json` missing).
+fn spawn_requesty_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
+    let brand_file = std::path::Path::new(&providers_dir)
+        .join("requesty")
+        .join("brand.json");
+    if !brand_file.exists() {
+        info!("requesty not onboarded (no providers/requesty/brand.json) — skipping auto-sync");
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            let dir = providers_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let storage = sel.storage();
+                let outcome = proviz_elekto_core::requesty_sync::sync(
+                    storage.as_ref(),
+                    &dir,
+                    proviz_elekto_core::requesty_sync::DEFAULT_BASE_URL,
+                );
+                if let Ok(ref summary) = outcome {
+                    if !summary.skipped_suspicious {
+                        if let Err(e) = sel.reload() {
+                            error!("requesty sync: catalog reload failed: {e}");
+                        }
+                    }
+                }
+                outcome
+            })
+            .await
+            .expect("requesty sync task panicked");
+
+            match result {
+                Ok(summary) if summary.skipped_suspicious => {
+                    warn!(
+                        fetched = summary.fetched,
+                        "requesty sync skipped: suspiciously few models returned"
+                    );
+                }
+                Ok(summary) => {
+                    info!(
+                        fetched = summary.fetched,
+                        brands_added = summary.brands_added,
+                        models_added = summary.models_added,
+                        models_updated = summary.models_updated,
+                        models_disabled = summary.models_disabled,
+                        "requesty catalog synced"
+                    );
+                }
+                Err(e) => error!("requesty sync failed: {e}"),
             }
 
             tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -196,6 +261,12 @@ async fn main() {
         selector.clone(),
         providers_dir.clone(),
         args.openrouter_sync_secs,
+    );
+
+    spawn_requesty_sync_task(
+        selector.clone(),
+        providers_dir.clone(),
+        args.requesty_sync_secs,
     );
 
     let state = Arc::new(AppState {

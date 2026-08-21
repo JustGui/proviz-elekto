@@ -417,6 +417,16 @@ impl Selector {
                 }
             }
 
+            // Unlike languages/categories (no declared restriction = unrestricted), an unknown
+            // training status is treated as unverified, not safe — most providers (including
+            // OpenRouter) don't report this at all, so only a model the source explicitly
+            // confirms as Some(false) passes.
+            if req.require_no_training && model.trains_on_data != Some(false) {
+                debug!(model = %model.slug, trains_on_data = ?model.trains_on_data,
+                    "skipped: no_training required, status unknown or true");
+                continue;
+            }
+
             if exclude_set.contains(&model.id) {
                 tried += 1;
                 continue;
@@ -771,6 +781,8 @@ impl Selector {
                 .map(|s| s.to_string()),
             canonical_key: winner.model.canonical_key.clone(),
             price_synced_at: winner.model.price_synced_at,
+            trains_on_data: winner.model.trains_on_data,
+            retains_data: winner.model.retains_data,
         })
     }
 

@@ -42,6 +42,7 @@ impl PostgresStorage {
         s.migrate_streaming_variant_index()?;
         s.migrate_reasoning_effort()?;
         s.migrate_model_catalog_fields()?;
+        s.migrate_privacy_fields()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -155,6 +156,20 @@ impl PostgresStorage {
             .batch_execute(
                 "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS canonical_key TEXT;\
                  ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS price_synced_at TIMESTAMPTZ;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Adds `trains_on_data`/`retains_data` (provider-reported privacy facts, e.g. Requesty's
+    /// `data_used_for_training`/`data_retention`) to `pz_models`. Both nullable — `NULL` means
+    /// the source doesn't report it, the common case for most providers.
+    fn migrate_privacy_fields(&self) -> Result<(), StorageError> {
+        let mut client = self.client.lock().unwrap();
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS trains_on_data BOOLEAN;\
+                 ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS retains_data BOOLEAN;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -285,8 +300,8 @@ impl CatalogStorage for PostgresStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value,canonical_key,price_synced_at)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -303,7 +318,9 @@ impl CatalogStorage for PostgresStorage {
                supported_languages=EXCLUDED.supported_languages,
                reasoning_effort_value=EXCLUDED.reasoning_effort_value,
                canonical_key=EXCLUDED.canonical_key,
-               price_synced_at=EXCLUDED.price_synced_at",
+               price_synced_at=EXCLUDED.price_synced_at,
+               trains_on_data=EXCLUDED.trains_on_data,
+               retains_data=EXCLUDED.retains_data",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -328,6 +345,8 @@ impl CatalogStorage for PostgresStorage {
                 &model.reasoning_effort_value,
                 &model.canonical_key,
                 &model.price_synced_at,
+                &model.trains_on_data,
+                &model.retains_data,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -661,7 +680,9 @@ CREATE TABLE IF NOT EXISTS pz_models (
     supported_languages       TEXT,
     reasoning_effort_value    TEXT,
     canonical_key             TEXT,
-    price_synced_at           TIMESTAMPTZ
+    price_synced_at           TIMESTAMPTZ,
+    trains_on_data            BOOLEAN,
+    retains_data              BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (

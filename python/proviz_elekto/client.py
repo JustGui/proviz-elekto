@@ -76,6 +76,11 @@ class ModelCandidate:
     # RFC3339 timestamp of when this row's pricing was last synced from a live provider catalog
     # (e.g. OpenRouter). None for hand-curated (non-auto-synced) providers.
     price_synced_at: Optional[str] = None
+    # Whether this model/provider may train on submitted data, as reported by the source (e.g.
+    # Requesty's data_used_for_training). None when the source doesn't report it.
+    trains_on_data: Optional[bool] = None
+    # Whether this model/provider retains submitted data. None when not reported.
+    retains_data: Optional[bool] = None
 
 
 @dataclass
@@ -557,7 +562,13 @@ class ProvizElekto:
         group_name: Optional[str] = None,
         use_member_priority: bool = True,
         max_wait_ms: Optional[int] = None,
+        require_no_training: bool = False,
     ) -> ModelCandidate:
+        """
+        require_no_training: only select models the source explicitly confirms don't train on
+        submitted data (unknown status is excluded too, not treated as safe — most providers,
+        including OpenRouter, don't report this at all). See ModelCandidate.trains_on_data.
+        """
         payload: dict = {
             "step": step,
             "estimated_tokens": estimated_tokens,
@@ -568,6 +579,7 @@ class ProvizElekto:
             "categories": categories or [],
             "languages": languages or [],
             "use_member_priority": use_member_priority,
+            "require_no_training": require_no_training,
         }
         if requires_streaming is not None:
             payload["requires_streaming"] = requires_streaming
@@ -598,6 +610,8 @@ class ProvizElekto:
             reasoning_effort_value=r.get("reasoning_effort_value"),
             canonical_key=r.get("canonical_key"),
             price_synced_at=r.get("price_synced_at"),
+            trains_on_data=r.get("trains_on_data"),
+            retains_data=r.get("retains_data"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -626,6 +640,7 @@ class ProvizElekto:
         tools: Optional[list[dict]] = None,
         tool_choice: Optional[Any] = None,
         timeout_secs: Optional[int] = None,
+        require_no_training: bool = False,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
 
@@ -642,6 +657,12 @@ class ProvizElekto:
         inside this same round-trip, so only the server knows which model was chosen, and acceptance
         of a value isn't the same as it being effective (a model can 200 on any literal while only
         one actually changes its behavior).
+
+        require_no_training: only select models the source explicitly confirms don't train on
+        submitted data (see ModelCandidate.trains_on_data). The server also sends OpenRouter's
+        request-level opt-out (`provider: {data_collection: "deny", zdr: true}`) whenever this
+        is set, regardless of which brand gets selected — a harmless no-op for providers that
+        don't recognize the field.
         """
         if estimated_tokens is None:
             estimated_tokens = _estimate_tokens(messages)
@@ -655,6 +676,7 @@ class ProvizElekto:
             "categories": categories or [],
             "languages": languages or [],
             "messages": messages,
+            "require_no_training": require_no_training,
         }
         if group_id is not None:
             payload["group_id"] = group_id
@@ -795,6 +817,7 @@ class ProvizElekto:
         languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
+        require_no_training: bool = False,
     ) -> CallResult:
         """Select a model, call fn(candidate), report the outcome, and retry on failure.
 
@@ -804,6 +827,12 @@ class ProvizElekto:
         max_wait_secs: when all models are transiently exhausted (quota full), sleep for
         the server-supplied retry_after_ms hint and try again until this budget is spent.
         Set to 0 (default) to raise AllModelsExhausted immediately on exhaustion.
+
+        require_no_training: only select models the source explicitly confirms don't train on
+        submitted data. Note this only affects model *selection* — if `fn` calls OpenRouter
+        directly, you must also pass OpenRouter's `provider={"data_collection": "deny", "zdr":
+        True}` yourself inside `fn`, since proviz-elekto doesn't construct the request here (it
+        does for `call_litellm`/`complete`, which handle this automatically).
         """
         classifier = error_classifier or _classify_error
         # Models that won't be blocked server-side (parse errors have TTL=0)
@@ -831,6 +860,7 @@ class ProvizElekto:
                     categories=categories,
                     languages=languages,
                     max_wait_ms=server_wait_ms,
+                    require_no_training=require_no_training,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -920,6 +950,7 @@ class ProvizElekto:
         languages: Optional[list[str]] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
+        require_no_training: bool = False,
         **litellm_kwargs: Any,
     ) -> CallResult:
         """call() with built-in LiteLLM integration.
@@ -931,6 +962,12 @@ class ProvizElekto:
         are forwarded to litellm.completion().
 
         max_wait_secs: budget for retrying when all models are transiently exhausted.
+
+        require_no_training: only select models the source explicitly confirms don't train on
+        submitted data (see ModelCandidate.trains_on_data). Since OpenRouter doesn't report this
+        per-model at all, when set this also sends OpenRouter's own request-level opt-out
+        (`provider={"data_collection": "deny", "zdr": True}`) on every call — a harmless no-op
+        for other providers, which ignore the unrecognized field.
         """
         try:
             import litellm
@@ -940,11 +977,14 @@ class ProvizElekto:
             ) from None
 
         def fn(candidate: ModelCandidate) -> Any:
+            kwargs = dict(litellm_kwargs)
+            if require_no_training:
+                kwargs["provider"] = {"data_collection": "deny", "zdr": True}
             return litellm.completion(
                 model=f"{candidate.brand_slug}/{candidate.model_slug}",
                 messages=messages,
                 api_key=os.environ.get(candidate.api_key_env or "", "") or None,
-                **litellm_kwargs,
+                **kwargs,
             )
 
         tokens = estimated_tokens if estimated_tokens is not None else _estimate_tokens(messages)
@@ -959,6 +999,7 @@ class ProvizElekto:
             languages=languages,
             error_classifier=error_classifier,
             max_wait_secs=max_wait_secs,
+            require_no_training=require_no_training,
         )
 
     def call_litellm_tool_loop(
@@ -980,6 +1021,7 @@ class ProvizElekto:
         group_name: Optional[str] = None,
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
+        require_no_training: bool = False,
         **litellm_kwargs: Any,
     ) -> Optional["CallResult"]:
         """select → [litellm.completion → execute tools → append → repeat] → report_success
@@ -995,6 +1037,9 @@ class ProvizElekto:
 
         Returns CallResult where .response is the final message content (str), or None if
         max_iterations is reached without a non-tool-call response.
+
+        require_no_training: same semantics as call_litellm's — filters selection to models
+        confirmed not to train, and sends OpenRouter's provider opt-out on every iteration's call.
 
         Requires: pip install proviz-elekto[litellm]
         """
@@ -1037,6 +1082,7 @@ class ProvizElekto:
                     group_id=group_id,
                     group_name=group_name,
                     max_wait_ms=server_wait_ms,
+                    require_no_training=require_no_training,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -1067,6 +1113,10 @@ class ProvizElekto:
             last_lim_tok: Optional[int] = None
             current_messages = list(messages)
 
+            iter_kwargs = dict(litellm_kwargs)
+            if require_no_training:
+                iter_kwargs["provider"] = {"data_collection": "deny", "zdr": True}
+
             try:
                 for iteration in range(max_iterations):
                     response = litellm.completion(
@@ -1075,7 +1125,7 @@ class ProvizElekto:
                         tools=tools,
                         tool_choice=tool_choice,
                         api_key=os.environ.get(candidate.api_key_env or "", "") or None,
-                        **litellm_kwargs,
+                        **iter_kwargs,
                     )
                     pt, ct, tot = _extract_usage(response)
                     last_rem_req, last_rem_tok, last_lim_req, last_lim_tok = _extract_provider_limits(response)

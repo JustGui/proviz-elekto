@@ -63,6 +63,14 @@ pub struct CompleteRequest {
     pub group_name: Option<String>,
     #[serde(default)]
     pub max_wait_ms: Option<u64>,
+    /// Restricts selection to models the source explicitly confirms don't train on submitted
+    /// data, and — since most providers (including OpenRouter) don't report per-model training
+    /// status at all — additionally injects OpenRouter's request-level `provider:
+    /// {data_collection: "deny", zdr: true}` opt-out into the outgoing payload regardless of
+    /// which brand gets selected (harmless no-op for providers that don't recognize the field).
+    /// See `SelectRequest.require_no_training`.
+    #[serde(default)]
+    pub require_no_training: bool,
 
     // ── completion fields ───────────────────────────────────────────────────
     pub messages: Vec<ChatMessage>,
@@ -124,6 +132,7 @@ impl CompleteRequest {
             group_name: self.group_name.clone(),
             use_member_priority: true,
             max_wait_ms: self.max_wait_ms,
+            require_no_training: self.require_no_training,
         }
     }
 
@@ -166,6 +175,17 @@ impl CompleteRequest {
         }
         if let Some(ref tc) = self.tool_choice {
             obj.insert("tool_choice".into(), tc.clone());
+        }
+        if self.require_no_training {
+            // OpenRouter-specific request-level opt-out — the exact, documented mechanism to
+            // restrict routing to providers that don't collect/retain data (OpenRouter has no
+            // per-model training metadata to filter on, unlike Requesty). Sent unconditionally
+            // when the flag is set: an OpenAI-compatible provider that doesn't recognize
+            // `provider` simply ignores the extra field.
+            obj.insert(
+                "provider".into(),
+                json!({ "data_collection": "deny", "zdr": true }),
+            );
         }
         body
     }

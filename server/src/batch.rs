@@ -542,6 +542,7 @@ pub async fn handle_batch_submit(
         group_name: req.group_name,
         use_member_priority: true,
         max_wait_ms: None,
+        require_no_training: false,
     };
 
     let sel = selector.clone();

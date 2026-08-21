@@ -58,6 +58,8 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         supported_languages: None,
         canonical_key: None,
         price_synced_at: None,
+        trains_on_data: None,
+        retains_data: None,
     }
 }
 
@@ -103,6 +105,7 @@ fn base_req() -> SelectRequest {
         group_name: None,
         use_member_priority: true,
         max_wait_ms: None,
+        require_no_training: false,
     }
 }
 
