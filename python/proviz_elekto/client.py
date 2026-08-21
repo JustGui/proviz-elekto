@@ -735,12 +735,15 @@ class ProvizElekto:
         limit_tokens: Optional[int] = None,
         brand_key_id: Optional[str] = None,
         actual_cost_usd: Optional[float] = None,
+        response_time_ms: Optional[int] = None,
     ) -> None:
         _logger.debug(
             "report: model_id=%s outcome=success prompt=%s completion=%s remaining_req=%s "
-            "remaining_tok=%s limit_req=%s limit_tok=%s sync=%s actual_cost_usd=%s",
+            "remaining_tok=%s limit_req=%s limit_tok=%s sync=%s actual_cost_usd=%s "
+            "response_time_ms=%s",
             model_id, prompt_tokens, completion_tokens, remaining_requests, remaining_tokens,
             limit_requests, limit_tokens, self._sync_provider_limits, actual_cost_usd,
+            response_time_ms,
         )
         payload: dict = {"model_id": model_id, "outcome": "success", "estimated_tokens": estimated_tokens}
         if prompt_tokens is not None:
@@ -766,6 +769,12 @@ class ProvizElekto:
             # this verbatim instead of estimating from the catalog price. Never pass a locally
             # computed estimate here, only a genuine provider-reported figure.
             payload["actual_cost_usd"] = actual_cost_usd
+        if response_time_ms is not None:
+            # Observed end-to-end wall-clock time of the actual provider call. Feeds a live
+            # per-(model, key) EWMA server-side that scoring's latency term prefers over the
+            # static catalog avg_latency_ms — lets slow-routing aggregators (e.g. OpenRouter,
+            # Requesty) get penalised based on real observed behaviour.
+            payload["response_time_ms"] = response_time_ms
         # Fire-and-forget: the LLM result is already in hand, no need to block
         # the caller while we send usage + remaining-limit data back to proviz.
         # Rate-limit/error reports remain synchronous (must arrive before retry select()).
@@ -785,6 +794,8 @@ class ProvizElekto:
         }
         if brand_key_id is not None:
             payload["brand_key_id"] = brand_key_id
+        # No response_time_ms here: a 429 rejection is typically near-instant and doesn't
+        # reflect actual generation speed, so it's not a meaningful latency sample.
         self._post("/report", payload)
 
     def report_error(
@@ -792,8 +803,12 @@ class ProvizElekto:
         model_id: str,
         error_type: str = "other",
         brand_key_id: Optional[str] = None,
+        response_time_ms: Optional[int] = None,
     ) -> None:
-        _logger.debug("report: model_id=%s outcome=error error_type=%s", model_id, error_type)
+        _logger.debug(
+            "report: model_id=%s outcome=error error_type=%s response_time_ms=%s",
+            model_id, error_type, response_time_ms,
+        )
         payload: dict = {
             "model_id": model_id,
             "outcome": "error",
@@ -801,6 +816,10 @@ class ProvizElekto:
         }
         if brand_key_id is not None:
             payload["brand_key_id"] = brand_key_id
+        if response_time_ms is not None:
+            # A genuine error (including a timeout, where elapsed is close to the timeout
+            # ceiling) is a real data point about how slow this provider was to respond.
+            payload["response_time_ms"] = response_time_ms
         self._post("/report", payload)
 
     def call(
@@ -882,8 +901,10 @@ class ProvizElekto:
                 "call attempt=%d step=%s model=%s/%s",
                 attempt, step, candidate.brand_slug, candidate.model_slug,
             )
+            call_started = time.monotonic()
             try:
                 response = fn(candidate)
+                response_time_ms = int((time.monotonic() - call_started) * 1000)
                 prompt, completion, total = _extract_usage(response)
                 rem_req, rem_tok, lim_req, lim_tok = _extract_provider_limits(response)
                 if rem_req is None and rem_tok is None:
@@ -905,6 +926,7 @@ class ProvizElekto:
                     limit_tokens=lim_tok,
                     brand_key_id=candidate.brand_key_id,
                     actual_cost_usd=provider_cost_usd,
+                    response_time_ms=response_time_ms,
                 )
                 _logger.debug(
                     "call success: model=%s/%s prompt=%d completion=%d total=%d "
@@ -932,7 +954,11 @@ class ProvizElekto:
                 if outcome == "rate_limit":
                     self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 else:
-                    self.report_error(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
+                    elapsed_ms = int((time.monotonic() - call_started) * 1000)
+                    self.report_error(
+                        candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        response_time_ms=elapsed_ms,
+                    )
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
 
@@ -1117,6 +1143,7 @@ class ProvizElekto:
             if require_no_training:
                 iter_kwargs["provider"] = {"data_collection": "deny", "zdr": True}
 
+            loop_started = time.monotonic()
             try:
                 for iteration in range(max_iterations):
                     response = litellm.completion(
@@ -1164,6 +1191,9 @@ class ProvizElekto:
                             limit_tokens=last_lim_tok,
                             brand_key_id=candidate.brand_key_id,
                             actual_cost_usd=total_provider_cost,
+                            # Aggregate wall-clock across every iteration of this tool loop —
+                            # matches how tokens/cost are already accumulated across iterations.
+                            response_time_ms=int((time.monotonic() - loop_started) * 1000),
                         )
                         _logger.debug(
                             "call_litellm_tool_loop success: model=%s/%s iterations=%d "
@@ -1195,7 +1225,10 @@ class ProvizElekto:
                     "for step=%s model=%s/%s",
                     max_iterations, step, candidate.brand_slug, candidate.model_slug,
                 )
-                self.report_error(candidate.model_id, "other", brand_key_id=candidate.brand_key_id)
+                self.report_error(
+                    candidate.model_id, "other", brand_key_id=candidate.brand_key_id,
+                    response_time_ms=int((time.monotonic() - loop_started) * 1000),
+                )
                 return None
 
             except AllModelsExhausted:
@@ -1209,7 +1242,10 @@ class ProvizElekto:
                 if outcome == "rate_limit":
                     self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
                 else:
-                    self.report_error(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
+                    self.report_error(
+                        candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        response_time_ms=int((time.monotonic() - loop_started) * 1000),
+                    )
                 if error_type == "parse":
                     permanent_skip.append(candidate.model_id)
 

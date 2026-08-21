@@ -559,12 +559,20 @@ impl Selector {
         let min_price = prices.iter().cloned().fold(f64::INFINITY, f64::min);
         let max_price = prices.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
-        let latencies: Vec<u32> = candidates
-            .iter()
-            .filter_map(|c| c.model.avg_latency_ms)
-            .collect();
-        let min_latency = latencies.iter().cloned().min().unwrap_or(0);
-        let max_latency = latencies.iter().cloned().max().unwrap_or(0);
+        // Live per-(model, key) observed latency (from real completions reported via
+        // ReportRequest.response_time_ms) takes precedence over the static catalog value —
+        // it reflects what this deployment is actually seeing right now (e.g. a slow-routing
+        // aggregator like OpenRouter/Requesty), not a hand-curated guess. Computed once here
+        // and reused below so the min/max pool and each candidate's score agree.
+        let effective_latency = |c: &Candidate<'_>| -> Option<f64> {
+            self.usage_tracker
+                .avg_latency_ms(c.model.id, c.brand_key_id)
+                .or_else(|| c.model.avg_latency_ms.map(|ms| ms as f64))
+        };
+
+        let latencies: Vec<f64> = candidates.iter().filter_map(effective_latency).collect();
+        let min_latency = latencies.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_latency = latencies.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
         let (min_prio, max_prio) = if use_priority_scoring {
             let priorities: Vec<i16> = candidates
@@ -662,12 +670,10 @@ impl Selector {
                 Some(p) => 1.0_f32 - ((p - min_price) / (max_price - min_price)) as f32,
             };
 
-            let latency_score = match c.model.avg_latency_ms {
+            let latency_score = match effective_latency(c) {
                 None => 0.5_f32,
-                Some(_) if max_latency == min_latency => 0.5_f32,
-                Some(ms) => {
-                    1.0_f32 - ((ms - min_latency) as f32 / (max_latency - min_latency) as f32)
-                }
+                Some(_) if (max_latency - min_latency).abs() < f64::EPSILON => 0.5_f32,
+                Some(ms) => (1.0 - (ms - min_latency) / (max_latency - min_latency)) as f32,
             };
 
             // Map headroom [-1, 1] → [0, 1]. Clamped so very negative values
@@ -786,6 +792,7 @@ impl Selector {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn report_rate_limit(
         &self,
         model_id: Uuid,
@@ -795,6 +802,7 @@ impl Selector {
         actual_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
+        response_time_ms: Option<u32>,
     ) {
         match brand_key_id {
             // Account-scoped signal (quota/auth) on a key-pooled brand: block the
@@ -817,6 +825,10 @@ impl Selector {
             remaining_requests,
             remaining_tokens,
         );
+        if let Some(ms) = response_time_ms {
+            self.usage_tracker
+                .record_latency(model_id, brand_key_id, ms as u64);
+        }
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist rate limit event");
         }
@@ -834,6 +846,7 @@ impl Selector {
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
         provider_cost_usd: Option<f64>,
+        response_time_ms: Option<u32>,
     ) -> Option<f64> {
         self.rate_state.clear(&model_id);
         if let Some(key_id) = brand_key_id {
@@ -852,6 +865,10 @@ impl Selector {
             remaining_requests,
             remaining_tokens,
         );
+        if let Some(ms) = response_time_ms {
+            self.usage_tracker
+                .record_latency(model_id, brand_key_id, ms as u64);
+        }
 
         // A provider-reported real cost (e.g. OpenRouter's `usage.cost`, which reflects whichever
         // upstream sub-provider actually served the request) always wins over the catalog-price
@@ -885,6 +902,7 @@ impl Selector {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn report_error(
         &self,
         model_id: Uuid,
@@ -894,6 +912,7 @@ impl Selector {
         actual_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
+        response_time_ms: Option<u32>,
     ) {
         match brand_key_id {
             Some(key_id) if error_type.is_account_scoped() => {
@@ -909,6 +928,10 @@ impl Selector {
             remaining_requests,
             remaining_tokens,
         );
+        if let Some(ms) = response_time_ms {
+            self.usage_tracker
+                .record_latency(model_id, brand_key_id, ms as u64);
+        }
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist error event");
         }
