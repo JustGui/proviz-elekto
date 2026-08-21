@@ -31,6 +31,8 @@ In all cases, the server prints `PROVIZ_PORT=<n>` to stdout immediately after bi
 | `PROVIZ_PROVIDERS_DIR` | `./providers` | Directory of provider subdirectories (`brand.json` + `models.json`), used for auto-seeding and `POST /catalog/seed`/`refresh` |
 | `PROVIZ_OPENROUTER_SYNC_SECS` | `3600` | Seconds between automatic OpenRouter catalog syncs (runs once at startup, then on this interval). No-op if `providers/openrouter/brand.json` isn't present — see [Providers](catalog-setup.md#openrouter-auto-synced-catalog) |
 | `OPENROUTER_API_KEY` | — | Read by your application at call time to authenticate OpenRouter requests, same as any other provider's `api_key_env` |
+| `PROVIZ_REQUESTY_SYNC_SECS` | `3600` | Same as `PROVIZ_OPENROUTER_SYNC_SECS`, for the Requesty provider |
+| `REQUESTY_API_KEY` | — | Authenticates Requesty requests |
 
 ## Docker
 
