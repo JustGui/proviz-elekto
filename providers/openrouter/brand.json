@@ -1,0 +1,7 @@
+{
+  "slug": "openrouter",
+  "name": "OpenRouter",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "base_url": "https://openrouter.ai/api/v1",
+  "endpoints": {}
+}
