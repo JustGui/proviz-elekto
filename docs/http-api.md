@@ -46,6 +46,7 @@ parse port → use http://localhost:<n>/...
 | `categories` | no | Restrict to specific model categories |
 | `group_id` | no | Restrict candidates to this group (UUID). Takes priority over rules. |
 | `group_name` | no | Restrict candidates to this group (slug). Takes priority over rules. |
+| `require_no_training` | no | Only models the source explicitly confirms don't train on submitted data (`trains_on_data == false`) — an unknown status is excluded too, not treated as safe. See [Catalog Setup](catalog-setup.md#not-training-on-your-data-require_no_training). |
 
 Response `200`:
 ```json

@@ -12,8 +12,12 @@ On every `select()` call (in-memory, ~microseconds):
 4. Filter: if `rule.max_ctx_tokens` set → `estimated_tokens <= rule.max_ctx_tokens` (avoid overkill)
 5. Filter: capability requirements (function calling, JSON mode)
 6. Filter: `quality_score >= quality_min` (skips models with unknown score when `quality_min > 0`)
-7. Filter: `model_id NOT IN exclude_ids` (already tried this call)
-8. Filter: not blocked by reactive rate-limit state (in-memory DashMap, O(1), TTL per error type)
+7. Filter: if `require_no_training` set → `model.trains_on_data == Some(false)` (a model with
+   unknown status is excluded too, not treated as safe — the opposite convention from 3/5 above,
+   since most providers, including OpenRouter, don't report this at all; see
+   [Data Model](data-model.md) for `trains_on_data`)
+8. Filter: `model_id NOT IN exclude_ids` (already tried this call)
+9. Filter: not blocked by reactive rate-limit state (in-memory DashMap, O(1), TTL per error type)
 
 **Headroom is not a hard filter.** A model that is over its per-minute quota (negative fast
 headroom) stays in the candidate pool with a lower score. This guarantees `AllModelsExhausted`
