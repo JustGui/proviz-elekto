@@ -290,14 +290,31 @@ async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     }
 }
 
-async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+#[derive(Deserialize)]
+struct CatalogLoadQuery {
+    /// Disable models that exist in the DB for a brand but are no longer in its models.json.
+    /// Opt-in — a model missing from a hand-curated provider's file is usually an accident, not
+    /// an intentional removal.
+    #[serde(default)]
+    disable_missing: bool,
+}
+
+async fn handle_catalog_seed(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CatalogLoadQuery>,
+) -> impl IntoResponse {
     let sel = state.selector.clone();
     let dir = state.providers_dir.clone();
+    let disable_missing = params.disable_missing;
     let result = tokio::task::spawn_blocking(move || {
         let storage = sel.storage();
-        let summary =
-            proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), &dir, false)
-                .map_err(|e| e.to_string())?;
+        let summary = proviz_elekto_core::builtin_providers::load_from_dir(
+            storage.as_ref(),
+            &dir,
+            false,
+            disable_missing,
+        )
+        .map_err(|e| e.to_string())?;
         sel.reload().map_err(|e| e.to_string())?;
         Ok::<_, String>(summary)
     })
@@ -312,6 +329,7 @@ async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoRes
                 "models_added": s.models_added,
                 "models_updated": s.models_updated,
                 "models_skipped": s.models_skipped,
+                "models_disabled": s.models_disabled,
             })),
         )
             .into_response(),
@@ -323,17 +341,25 @@ async fn handle_catalog_seed(State(state): State<Arc<AppState>>) -> impl IntoRes
     }
 }
 
-/// Upserts capability fields (incl. STT flags) for all providers from JSON files, then reloads
-/// the in-memory cache. Unlike /catalog/seed this always runs even if brands already exist,
-/// and unlike /catalog/reload it writes to the DB first so new JSON fields reach existing rows.
-async fn handle_catalog_refresh(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+/// Upserts pricing/context/capability fields for all providers from JSON files, then reloads the
+/// in-memory cache. Unlike /catalog/seed this always runs even if brands already exist, and
+/// unlike /catalog/reload it writes to the DB first so JSON changes reach existing rows.
+async fn handle_catalog_refresh(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<CatalogLoadQuery>,
+) -> impl IntoResponse {
     let sel = state.selector.clone();
     let dir = state.providers_dir.clone();
+    let disable_missing = params.disable_missing;
     let result = tokio::task::spawn_blocking(move || {
         let storage = sel.storage();
-        let summary =
-            proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), &dir, false)
-                .map_err(|e| e.to_string())?;
+        let summary = proviz_elekto_core::builtin_providers::load_from_dir(
+            storage.as_ref(),
+            &dir,
+            false,
+            disable_missing,
+        )
+        .map_err(|e| e.to_string())?;
         sel.reload().map_err(|e| e.to_string())?;
         Ok::<_, String>(summary)
     })
@@ -348,6 +374,7 @@ async fn handle_catalog_refresh(State(state): State<Arc<AppState>>) -> impl Into
                 "models_added": s.models_added,
                 "models_updated": s.models_updated,
                 "models_skipped": s.models_skipped,
+                "models_disabled": s.models_disabled,
             })),
         )
             .into_response(),

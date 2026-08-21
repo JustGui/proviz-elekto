@@ -1,13 +1,16 @@
 use chrono::{DateTime, Utc};
 use proviz_elekto_core::{
     error::StorageError,
-    models::{Brand, BrandApiKey, Group, GroupMember, Model, RateLimitErrorType, SelectionRule},
+    models::{
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, RateLimitErrorType,
+        SelectionRule,
+    },
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
-    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row, model_from_row,
-    rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS,
-    Q_RULES,
+    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row,
+    model_catalog_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS,
+    Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_MODEL_CATALOG, Q_RULES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Mutex;
@@ -47,6 +50,7 @@ impl SqliteStorage {
         s.migrate_supported_languages()?;
         s.migrate_streaming_variant_index()?;
         s.migrate_reasoning_effort()?;
+        s.migrate_model_catalog_fields()?;
         Ok(s)
     }
 
@@ -210,6 +214,28 @@ impl SqliteStorage {
         }
         Ok(())
     }
+
+    /// Adds `canonical_key` (shared model-catalog lookup key) and `price_synced_at` (freshness
+    /// timestamp for API-synced providers like OpenRouter) to `pz_models`. Both nullable — no
+    /// backfill needed, existing rows simply have neither set.
+    fn migrate_model_catalog_fields(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        for col in &["canonical_key", "price_synced_at"] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name=?1",
+                    [col],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|n| n > 0)
+                .unwrap_or(false);
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE pz_models ADD COLUMN {col} TEXT;"))
+                    .map_err(|e| StorageError::Database(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
@@ -251,6 +277,12 @@ impl RowReader for SqliteRow<'_> {
             .unwrap()
             .parse()
             .unwrap_or_else(|_| Utc::now())
+    }
+    fn opt_datetime(&self, idx: usize) -> Option<DateTime<Utc>> {
+        self.0
+            .get::<_, Option<String>>(idx)
+            .unwrap()
+            .and_then(|s| s.parse().ok())
     }
 }
 
@@ -373,8 +405,8 @@ impl CatalogStorage for SqliteStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30)",
+              reasoning_effort_value,canonical_key,price_synced_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -409,6 +441,51 @@ impl CatalogStorage for SqliteStorage {
                     .as_ref()
                     .map(|v| serde_json::to_string(v).unwrap_or_default()),
                 model.reasoning_effort_value,
+                model.canonical_key,
+                model.price_synced_at.map(|v| v.to_rfc3339()),
+            ],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_model_catalog(&self) -> StorageResult<Vec<ModelCatalogEntry>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(Q_MODEL_CATALOG)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok(model_catalog_from_row(&SqliteRow(row))))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
+    fn insert_model_catalog_entry(&self, entry: &ModelCatalogEntry) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pz_model_catalog
+             (id,canonical_key,display_name,category,max_context_tokens,
+              supports_function_calling,supports_json_mode,quality_score,knowledge_cutoff,created_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(canonical_key) DO UPDATE SET
+               display_name=excluded.display_name, category=excluded.category,
+               max_context_tokens=excluded.max_context_tokens,
+               supports_function_calling=excluded.supports_function_calling,
+               supports_json_mode=excluded.supports_json_mode,
+               quality_score=excluded.quality_score,
+               knowledge_cutoff=excluded.knowledge_cutoff",
+            params![
+                entry.id.to_string(),
+                entry.canonical_key,
+                entry.display_name,
+                entry.category,
+                entry.max_context_tokens.map(|v| v as i64),
+                entry.supports_function_calling.map(|v| v as i64),
+                entry.supports_json_mode.map(|v| v as i64),
+                entry.quality_score,
+                entry.knowledge_cutoff,
+                entry.created_at.to_rfc3339(),
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -713,7 +790,22 @@ CREATE TABLE IF NOT EXISTS pz_models (
     word_timestamps           INTEGER,
     base_url                  TEXT,
     supported_languages       TEXT,
-    reasoning_effort_value    TEXT
+    reasoning_effort_value    TEXT,
+    canonical_key             TEXT,
+    price_synced_at           TEXT
+);
+
+CREATE TABLE IF NOT EXISTS pz_model_catalog (
+    id                        TEXT PRIMARY KEY,
+    canonical_key             TEXT UNIQUE NOT NULL,
+    display_name              TEXT,
+    category                  TEXT,
+    max_context_tokens        INTEGER,
+    supports_function_calling INTEGER,
+    supports_json_mode        INTEGER,
+    quality_score             REAL,
+    knowledge_cutoff          TEXT,
+    created_at                TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS pz_selection_rules (
@@ -832,6 +924,8 @@ mod tests {
             word_timestamps: None,
             base_url: None,
             supported_languages: None,
+            canonical_key: None,
+            price_synced_at: None,
         }
     }
 

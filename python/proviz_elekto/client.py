@@ -70,6 +70,12 @@ class ModelCandidate:
     brand_key_id: Optional[str] = None
     # Multiplier applied to pricing for batch API calls (e.g. 0.5 for 50% discount).
     batch_price_multiplier: Optional[float] = None
+    # Shared model-catalog key this row was resolved against, if any (see ModelCatalogEntry
+    # server-side). None for models with no known cross-provider identity.
+    canonical_key: Optional[str] = None
+    # RFC3339 timestamp of when this row's pricing was last synced from a live provider catalog
+    # (e.g. OpenRouter). None for hand-curated (non-auto-synced) providers.
+    price_synced_at: Optional[str] = None
 
 
 @dataclass
@@ -549,6 +555,8 @@ class ProvizElekto:
             base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
             reasoning_effort_value=r.get("reasoning_effort_value"),
+            canonical_key=r.get("canonical_key"),
+            price_synced_at=r.get("price_synced_at"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",

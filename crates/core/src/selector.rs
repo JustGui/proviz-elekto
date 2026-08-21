@@ -769,6 +769,8 @@ impl Selector {
                 .and_then(|e| e.get("chat"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
+            canonical_key: winner.model.canonical_key.clone(),
+            price_synced_at: winner.model.price_synced_at,
         })
     }
 

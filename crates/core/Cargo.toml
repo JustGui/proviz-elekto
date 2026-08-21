@@ -14,3 +14,4 @@ chrono.workspace = true
 dashmap.workspace = true
 tokio = { workspace = true, features = ["sync", "time"] }
 tracing.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json"] }

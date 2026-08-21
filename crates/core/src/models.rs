@@ -89,6 +89,35 @@ pub struct Model {
     /// STT/TTS models) so callers can filter with `SelectRequest.languages` and avoid
     /// calling a model in a language it doesn't support.
     pub supported_languages: Option<Vec<String>>,
+    /// Key into `pz_model_catalog` identifying the underlying model family shared across brands
+    /// (e.g. a HuggingFace `org/model` id). When set and this row omits `quality_score`/`category`/
+    /// `max_context_tokens`/capability flags, `builtin_providers::load_from_dir` fills them in from
+    /// the matching catalog entry at load time — this row's own values, when present, always win.
+    /// `None` for models with no known cross-provider identity.
+    pub canonical_key: Option<String>,
+    /// When this row's pricing was last synced from a live provider catalog (e.g. OpenRouter's
+    /// `/models` endpoint). `None` for hand-curated providers whose prices are only ever edited
+    /// by hand — there's no "sync" to timestamp for those.
+    pub price_synced_at: Option<DateTime<Utc>>,
+}
+
+/// Shared intrinsic properties for a model family, keyed by a manually-curated `canonical_key`
+/// (typically a HuggingFace `org/model` id). Lets brands that host the same underlying model
+/// (e.g. "deepseek-v4-flash" under groq, ovh, and openrouter) share one `quality_score`/`category`/
+/// context/capability definition instead of re-curating it per brand. Purely additive: a model row
+/// with no `canonical_key`, or one that sets its own values, is unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelCatalogEntry {
+    pub id: Uuid,
+    pub canonical_key: String,
+    pub display_name: Option<String>,
+    pub category: Option<String>,
+    pub max_context_tokens: Option<u32>,
+    pub supports_function_calling: Option<bool>,
+    pub supports_json_mode: Option<bool>,
+    pub quality_score: Option<f64>,
+    pub knowledge_cutoff: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -285,6 +314,14 @@ pub struct ModelCandidate {
     /// suffix. Lets `/complete` build the request URL without a catalog lookup.
     #[serde(default)]
     pub chat_path: Option<String>,
+    /// Echo of `Model.canonical_key` — the shared model-family key this row was resolved against,
+    /// if any. See `ModelCatalogEntry`.
+    #[serde(default)]
+    pub canonical_key: Option<String>,
+    /// Echo of `Model.price_synced_at` — when this row's pricing was last synced from a live
+    /// provider catalog. `None` for hand-curated (non-auto-synced) providers.
+    #[serde(default)]
+    pub price_synced_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// Input to /report

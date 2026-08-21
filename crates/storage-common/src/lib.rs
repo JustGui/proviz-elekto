@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
-use proviz_elekto_core::models::{Brand, BrandApiKey, Group, GroupMember, Model, SelectionRule};
+use proviz_elekto_core::models::{
+    Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, SelectionRule,
+};
 use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
@@ -13,8 +15,13 @@ pub const Q_MODELS: &str =
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
      diarization,streaming,http_batch,word_timestamps,base_url,supported_languages,\
-     reasoning_effort_value \
+     reasoning_effort_value,canonical_key,price_synced_at \
      FROM pz_models";
+
+pub const Q_MODEL_CATALOG: &str =
+    "SELECT id,canonical_key,display_name,category,max_context_tokens,\
+     supports_function_calling,supports_json_mode,quality_score,knowledge_cutoff,created_at \
+     FROM pz_model_catalog";
 
 pub const Q_RULES: &str =
     "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled \
@@ -44,6 +51,7 @@ pub trait RowReader {
     fn opt_i64(&self, idx: usize) -> Option<i64>;
     fn opt_f64(&self, idx: usize) -> Option<f64>;
     fn datetime(&self, idx: usize) -> DateTime<Utc>;
+    fn opt_datetime(&self, idx: usize) -> Option<DateTime<Utc>>;
 }
 
 pub fn brand_from_row(row: &impl RowReader) -> Brand {
@@ -96,6 +104,23 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
             .opt_string(28)
             .and_then(|s| serde_json::from_str(&s).ok()),
         reasoning_effort_value: row.opt_string(29),
+        canonical_key: row.opt_string(30),
+        price_synced_at: row.opt_datetime(31),
+    }
+}
+
+pub fn model_catalog_from_row(row: &impl RowReader) -> ModelCatalogEntry {
+    ModelCatalogEntry {
+        id: row.uuid(0),
+        canonical_key: row.string(1),
+        display_name: row.opt_string(2),
+        category: row.opt_string(3),
+        max_context_tokens: row.opt_i32(4).map(|v| v as u32),
+        supports_function_calling: row.opt_bool(5),
+        supports_json_mode: row.opt_bool(6),
+        quality_score: row.opt_f64(7),
+        knowledge_cutoff: row.opt_string(8),
+        created_at: row.datetime(9),
     }
 }
 

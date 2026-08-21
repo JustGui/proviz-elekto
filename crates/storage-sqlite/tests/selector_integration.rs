@@ -56,6 +56,8 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         word_timestamps: None,
         base_url: None,
         supported_languages: None,
+        canonical_key: None,
+        price_synced_at: None,
     }
 }
 

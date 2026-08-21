@@ -82,6 +82,9 @@ enum Command {
         /// Update rate-limit fields of models that already exist in the DB
         #[arg(long)]
         update_limits: bool,
+        /// Disable models that exist in the DB for a brand but are no longer in its models.json
+        #[arg(long)]
+        disable_missing: bool,
     },
     /// Load provider definitions from a directory of JSON files
     Providers {
@@ -100,11 +103,27 @@ enum ProvidersCmd {
         /// Update rate-limit fields of models that already exist in the DB
         #[arg(long)]
         update_limits: bool,
+        /// Disable models that exist in the DB for a brand but are no longer in its models.json
+        #[arg(long)]
+        disable_missing: bool,
     },
     /// List provider directories found in a directory
     List {
         #[arg(long, default_value = "./providers")]
         dir: String,
+    },
+    /// Fetch OpenRouter's live catalog and write providers/openrouter/models.json (then upsert
+    /// into the DB unless --dry-run). Run once with --dry-run to review the mapping before the
+    /// first real run; after that, proviz-server keeps it current automatically.
+    SyncOpenrouter {
+        /// Root directory containing provider subdirectories
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        /// Fetch and print the mapped models.json to stdout without writing to disk or the DB
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = "https://openrouter.ai/api/v1")]
+        base_url: String,
     },
 }
 
@@ -564,6 +583,8 @@ fn main() {
                     word_timestamps: None,
                     base_url: None,
                     supported_languages: languages,
+                    canonical_key: None,
+                    price_synced_at: None,
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
@@ -665,6 +686,8 @@ fn main() {
                                 .filter_map(|x| x.as_str().map(|s| s.to_string()))
                                 .collect()
                         }),
+                        canonical_key: v["canonical_key"].as_str().map(|s| s.to_string()),
+                        price_synced_at: v["price_synced_at"].as_str().and_then(|s| s.parse().ok()),
                     };
                     storage.insert_model(&model).unwrap();
                     count += 1;
@@ -902,16 +925,63 @@ fn main() {
             println!("{}", resp.text().unwrap());
         }
 
-        Command::Seed { dir, update_limits } => {
-            load_providers(&storage, &dir, update_limits);
+        Command::Seed {
+            dir,
+            update_limits,
+            disable_missing,
+        } => {
+            load_providers(&storage, &dir, update_limits, disable_missing);
         }
 
         Command::Providers { action } => match action {
-            ProvidersCmd::Load { dir, update_limits } => {
-                load_providers(&storage, &dir, update_limits);
+            ProvidersCmd::Load {
+                dir,
+                update_limits,
+                disable_missing,
+            } => {
+                load_providers(&storage, &dir, update_limits, disable_missing);
             }
             ProvidersCmd::List { dir } => {
                 list_providers(&dir);
+            }
+            ProvidersCmd::SyncOpenrouter {
+                dir,
+                dry_run,
+                base_url,
+            } => {
+                if dry_run {
+                    match proviz_elekto_core::openrouter_sync::fetch_preview(&base_url) {
+                        Ok(entries) => {
+                            println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                            eprintln!(
+                                "\n{} models fetched (dry run — nothing written)",
+                                entries.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("openrouter dry-run fetch failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    match proviz_elekto_core::openrouter_sync::sync(storage.as_ref(), &dir, &base_url) {
+                        Ok(s) if s.skipped_suspicious => {
+                            eprintln!(
+                                "openrouter sync: only {} models returned, skipping (nothing written)",
+                                s.fetched
+                            );
+                            std::process::exit(1);
+                        }
+                        Ok(s) => println!(
+                            "openrouter sync: {} fetched, {} brands added, {} models added, {} updated, {} disabled",
+                            s.fetched, s.brands_added, s.models_added, s.models_updated, s.models_disabled
+                        ),
+                        Err(e) => {
+                            eprintln!("openrouter sync failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
             }
         },
     }
@@ -944,12 +1014,21 @@ fn list_providers(dir: &str) {
     }
 }
 
-fn load_providers(storage: &Arc<dyn CatalogStorage>, dir: &str, update_limits: bool) {
-    match proviz_elekto_core::builtin_providers::load_from_dir(storage.as_ref(), dir, update_limits)
-    {
+fn load_providers(
+    storage: &Arc<dyn CatalogStorage>,
+    dir: &str,
+    update_limits: bool,
+    disable_missing: bool,
+) {
+    match proviz_elekto_core::builtin_providers::load_from_dir(
+        storage.as_ref(),
+        dir,
+        update_limits,
+        disable_missing,
+    ) {
         Ok(s) => println!(
-            "providers loaded: {} brands added, {} models added, {} updated, {} skipped",
-            s.brands_added, s.models_added, s.models_updated, s.models_skipped
+            "providers loaded: {} brands added, {} models added, {} updated, {} skipped, {} disabled",
+            s.brands_added, s.models_added, s.models_updated, s.models_skipped, s.models_disabled
         ),
         Err(e) => eprintln!("error loading providers: {e}"),
     }

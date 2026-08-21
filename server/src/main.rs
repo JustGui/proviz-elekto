@@ -1,14 +1,14 @@
 use std::io::Write;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use clap::Parser;
 use proviz_elekto_core::{selector::Selector, storage::CatalogStorage};
 use proviz_elekto_storage_pg::PostgresStorage;
 use proviz_elekto_storage_sqlite::SqliteStorage;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use proviz_server::{batch, build_router, AppState};
 
@@ -47,6 +47,74 @@ struct Args {
     /// Used for auto-seeding on first start and for POST /catalog/seed.
     #[arg(long, env = "PROVIZ_PROVIDERS_DIR", default_value = "./providers")]
     providers_dir: String,
+
+    /// Seconds between automatic OpenRouter catalog syncs (fetch + upsert + reload). Runs once
+    /// immediately at startup, then on this interval. No-op if providers/openrouter/brand.json
+    /// isn't present.
+    #[arg(long, env = "PROVIZ_OPENROUTER_SYNC_SECS", default_value = "3600")]
+    openrouter_sync_secs: u64,
+}
+
+/// Periodically fetches OpenRouter's live catalog and upserts it (see
+/// `proviz_elekto_core::openrouter_sync`) — OpenRouter's ~400+ model catalog and pricing change
+/// far more often than the other, hand-curated providers, so this is the one provider whose
+/// catalog can't just be edited by hand. No-op if the provider hasn't been onboarded
+/// (`providers/openrouter/brand.json` missing) — e.g. deployments that don't use OpenRouter.
+fn spawn_openrouter_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
+    let brand_file = std::path::Path::new(&providers_dir)
+        .join("openrouter")
+        .join("brand.json");
+    if !brand_file.exists() {
+        info!("openrouter not onboarded (no providers/openrouter/brand.json) — skipping auto-sync");
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            let dir = providers_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let storage = sel.storage();
+                let outcome = proviz_elekto_core::openrouter_sync::sync(
+                    storage.as_ref(),
+                    &dir,
+                    proviz_elekto_core::openrouter_sync::DEFAULT_BASE_URL,
+                );
+                if let Ok(ref summary) = outcome {
+                    if !summary.skipped_suspicious {
+                        if let Err(e) = sel.reload() {
+                            error!("openrouter sync: catalog reload failed: {e}");
+                        }
+                    }
+                }
+                outcome
+            })
+            .await
+            .expect("openrouter sync task panicked");
+
+            match result {
+                Ok(summary) if summary.skipped_suspicious => {
+                    warn!(
+                        fetched = summary.fetched,
+                        "openrouter sync skipped: suspiciously few models returned"
+                    );
+                }
+                Ok(summary) => {
+                    info!(
+                        fetched = summary.fetched,
+                        brands_added = summary.brands_added,
+                        models_added = summary.models_added,
+                        models_updated = summary.models_updated,
+                        models_disabled = summary.models_disabled,
+                        "openrouter catalog synced"
+                    );
+                }
+                Err(e) => error!("openrouter sync failed: {e}"),
+            }
+
+            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        }
+    });
 }
 
 #[tokio::main]
@@ -122,6 +190,12 @@ async fn main() {
         window_secs = args.batch_window_secs,
         max_size = args.batch_max_size,
         "batch queue started"
+    );
+
+    spawn_openrouter_sync_task(
+        selector.clone(),
+        providers_dir.clone(),
+        args.openrouter_sync_secs,
     );
 
     let state = Arc::new(AppState {
