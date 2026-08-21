@@ -182,9 +182,19 @@ impl CompleteRequest {
             // per-model training metadata to filter on, unlike Requesty). Sent unconditionally
             // when the flag is set: an OpenAI-compatible provider that doesn't recognize
             // `provider` simply ignores the extra field.
+            //
+            // `sort: "latency"` is bundled in here too, not because it's related to data
+            // retention, but because OpenRouter's own docs (openrouter.ai/docs/features/
+            // provider-routing) say the default with no `sort` field is to load-balance
+            // "prioritizing price" — so restricting to ZDR-compliant providers without this
+            // can silently route to a slow-but-cheap one instead of the fastest ZDR-compliant
+            // provider available. Confirmed empirically via tools/test_detector_models.py in
+            // rtfc: adding this cut one model's measured latency from 29.4s to 5.7s on an
+            // identical call. There is currently no other path in this codebase that sets
+            // `sort`, so this doesn't override anything a caller intended.
             obj.insert(
                 "provider".into(),
-                json!({ "data_collection": "deny", "zdr": true }),
+                json!({ "data_collection": "deny", "zdr": true, "sort": "latency" }),
             );
         }
         body
