@@ -168,6 +168,25 @@ proviz providers sync-openrouter
 
 After that, a running `proviz-server` keeps it current automatically — it syncs once at startup and then every `PROVIZ_OPENROUTER_SYNC_SECS` (default 3600s). Set `OPENROUTER_API_KEY` for the models it selects to actually be callable. See [Data Model](data-model.md) for the underlying `pz_model_catalog` table this feeds into.
 
+#### Requesty (auto-synced catalog)
+
+Same idea as OpenRouter — Requesty aggregates 600+ models with pricing that changes often, so `providers/requesty/models.json` is generated the same way:
+
+```bash
+proviz providers sync-requesty --dry-run   # review the mapping first
+proviz providers sync-requesty             # generate providers/requesty/models.json for real
+```
+
+`proviz-server` syncs it automatically thereafter (`PROVIZ_REQUESTY_SYNC_SECS`, default 3600s). Set `REQUESTY_API_KEY` for the models it selects to be callable. One difference from OpenRouter: Requesty's `/models` response has no HuggingFace-style identity field, so `canonical_model` auto-fill isn't available for Requesty entries — add it by hand per-entry if you want a Requesty model to share a `model_catalog.json` entry with another brand (note this only survives until the next auto-sync overwrites the file, same caveat as any hand-edit to an auto-generated `models.json`). Requesty does report per-model `data_used_for_training`/`data_retention`, which OpenRouter doesn't report at all — see [Not training on your data](#not-training-on-your-data-require_no_training) below.
+
 #### Shared model catalog (`providers/model_catalog.json`)
 
 The same model is often hosted by more than one brand (e.g. a model available directly via groq/ovh *and* re-listed by OpenRouter). Rather than re-entering `quality_score`/`category`/context/capability flags per brand, define them once in `providers/model_catalog.json` under a `canonical_key` (convention: the model's HuggingFace `org/model` id), then reference it from any brand's model entry with `"canonical_model": "<canonical_key>"`. Fields the entry itself omits are filled in from the catalog; anything the entry does set always wins.
+
+A typo on either side (a `canonical_model` that doesn't match any `canonical_key`) fails **`cargo build`/`check`/`test`** — see `crates/core/build.rs`. Auto-synced providers (openrouter, requesty) only get a `cargo:warning` for this, since most of their models don't have a curated catalog entry yet and that's expected; every other provider's `models.json` is hand-edited, so a non-match there is treated as a typo and hard-fails the build — catching it before you push, in CI, without needing a separate git hook.
+
+#### Not training on your data (`require_no_training`)
+
+Pass `require_no_training: true` to `/select`/`/complete` (or `SelectRequest.require_no_training` / the Python client's `require_no_training=` kwarg on `select`/`call`/`call_litellm`/`call_litellm_tool_loop`/`complete`) to restrict selection to models the source explicitly confirms don't train on submitted data (`Model.trains_on_data == Some(false)`). Unlike `categories`/`languages`, an **unknown** status is excluded too, not treated as safe — most providers, including OpenRouter, don't report this at all, so without curating it yourself the flag mostly narrows you to Requesty's models with `data_used_for_training: false` (659 of its ~668, as of this writing).
+
+Because OpenRouter reports no per-model training status, per-model filtering can't protect calls routed there — instead, setting the flag also sends OpenRouter's own request-level opt-out (`provider: {"data_collection": "deny", "zdr": true}`) on every call, regardless of which brand actually gets selected (a harmless no-op for providers that don't recognize the field). `call_litellm`/`call_litellm_tool_loop`/`complete` do this automatically; the plain `call()` (where you supply your own `fn`) only applies the model-selection filter — add the `provider` block yourself inside `fn` if it might call OpenRouter directly.
