@@ -90,7 +90,9 @@ fn map_entry(m: &OpenRouterModel, synced_at: chrono::DateTime<Utc>) -> serde_jso
         "price_input_per_1m": pricing.and_then(|p| price_per_1m(&p.prompt)),
         "price_output_per_1m": pricing.and_then(|p| price_per_1m(&p.completion)),
         "category": "text",
-        "canonical_model": m.hugging_face_id,
+        // OpenRouter returns "" (not null) for closed-weight models with no HF repo (~139 of
+        // them, e.g. OpenAI's own models) — treat that the same as no id.
+        "canonical_model": m.hugging_face_id.as_deref().filter(|s| !s.is_empty()),
         "price_synced_at": synced_at.to_rfc3339(),
     })
 }
