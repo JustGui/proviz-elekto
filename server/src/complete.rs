@@ -477,8 +477,23 @@ async fn call_provider(
     let (remaining_requests, remaining_tokens) = extract_remaining(resp.headers());
 
     if !status.is_success() {
-        let is_rate_limit = status.as_u16() == 429;
         let body = resp.text().await.unwrap_or_default();
+        // Groq reports its tokens-per-minute limit as HTTP 413 (Payload Too Large) with a
+        // nested error body carrying code "rate_limit_exceeded" — NOT 429, a real provider
+        // quirk, not a genuine payload-size problem (real-world example: "Request too large
+        // for model `openai/gpt-oss-20b` ... on tokens per minute (TPM): Limit 8000, Requested
+        // 10326"). A plain status==429 check misses this — and it matters, because
+        // is_rate_limit drives RateLimitErrorType::Rpm downstream, whose
+        // is_account_scoped()==true blocks the WHOLE shared brand key (not just this one
+        // model) in `report_rate_limit`. Missing it meant this model's siblings sharing the
+        // same Groq key/org TPM ceiling (e.g. gpt-oss-120b, llama-3.3-70b-versatile,
+        // llama-4-scout) kept getting selected right after gpt-oss-20b failed, burning the
+        // /complete retry budget on candidates that were predictably going to fail the exact
+        // same way, instead of correctly backing the whole key off for cooldown_secs() and
+        // moving straight to a different brand.
+        let is_rate_limit = status.as_u16() == 429
+            || body.contains("rate_limit_exceeded")
+            || body.contains("tokens per minute");
         return Err(ProviderError {
             is_rate_limit,
             message: format!("HTTP {status}: {body}"),
