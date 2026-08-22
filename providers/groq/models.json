@@ -131,7 +131,7 @@
     "display_name": "GPT OSS 120B",
     "category": "text",
     "canonical_model": "openai/gpt-oss-120b",
-    "max_context_tokens": 131072,
+    "max_context_tokens": 8000,
     "supports_function_calling": true,
     "supports_json_mode": true,
     "rpm_limit": 30,
