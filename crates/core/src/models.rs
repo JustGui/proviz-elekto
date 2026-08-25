@@ -112,6 +112,29 @@ pub struct Model {
     pub retains_data: Option<bool>,
 }
 
+/// A measured, task-specific quality score for one model — e.g. a model's pass-rate on RTFC's
+/// detector claim-extraction benchmark. Distinct from `Model.quality_score`, which is a single
+/// hand-curated column shared across every step: a model good at claim extraction isn't
+/// necessarily good at verdict synthesis, so this is keyed by `(model_id, step)` instead.
+/// `Selector::effective_quality` prefers a row here over the global `Model.quality_score`,
+/// falling back to it when no step-specific measurement exists yet (e.g. every worker step,
+/// until a worker benchmark feeds this table too). Populated exclusively by automated sync
+/// (`POST /catalog/step-quality`) — never hand-edited, so there's no "preserve the curated
+/// value" tension: each push is a plain upsert.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelStepQuality {
+    pub model_id: Uuid,
+    pub step: String,
+    /// Measured score, same `[0.0, 1.0]` scale as `Model.quality_score` (e.g. a benchmark
+    /// pass-rate).
+    pub quality_score: f64,
+    /// How many benchmark cases this score was computed from — informational (surfaced via the
+    /// catalog, not read by the selector), lets an operator judge how much to trust a score
+    /// computed from very few cases.
+    pub sample_size: i32,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Shared intrinsic properties for a model family, keyed by a manually-curated `canonical_key`
 /// (typically a HuggingFace `org/model` id). Lets brands that host the same underlying model
 /// (e.g. "deepseek-v4-flash" under groq, ovh, and openrouter) share one `quality_score`/`category`/
@@ -222,6 +245,18 @@ pub struct Group {
     pub description: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
+    /// Group-level default for the Pass-2 cost/latency/quality scoring weights (see
+    /// `SelectRequest.cost_weight`/`latency_weight`/`quality_weight`). A group represents a
+    /// stable task (e.g. "detector", "worker") whose inherent quality/speed/price tradeoff
+    /// doesn't change per call, so it's configured once here rather than re-sent by every
+    /// caller. Precedence at selection time: request override > group override > built-in
+    /// default. `None` on all three reproduces today's behavior exactly.
+    #[serde(default)]
+    pub cost_weight_override: Option<f32>,
+    #[serde(default)]
+    pub latency_weight_override: Option<f32>,
+    #[serde(default)]
+    pub quality_weight_override: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -289,6 +324,21 @@ pub struct SelectRequest {
     /// training info at all — the only way to protect those calls is the request flag itself.
     #[serde(default)]
     pub require_no_training: bool,
+    /// Override the Pass-2 scoring weight given to the cost component (built-in default 0.15,
+    /// 0.20 without group priority — see `Selector::select`). `None` uses the group's own
+    /// `cost_weight_override` when group-based, else the built-in default. When set, the whole
+    /// weight set (including untouched components) is renormalized to sum to 1.0, so raising
+    /// this shrinks the others proportionally rather than zeroing them out — a low-quality or
+    /// rate-limited model still can't casually win just because it's cheap. Range `[0.0, 1.0]`;
+    /// out-of-range values are clamped.
+    #[serde(default)]
+    pub cost_weight: Option<f32>,
+    /// Same contract as `cost_weight`, for the latency component (built-in default 0.10).
+    #[serde(default)]
+    pub latency_weight: Option<f32>,
+    /// Same contract as `cost_weight`, for the quality component (built-in default 0.20).
+    #[serde(default)]
+    pub quality_weight: Option<f32>,
 }
 
 fn default_true() -> bool {

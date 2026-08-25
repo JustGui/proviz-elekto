@@ -47,6 +47,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/catalog/seed", post(handle_catalog_seed))
         .route("/catalog/refresh", post(handle_catalog_refresh))
         .route("/catalog/models", get(handle_catalog_models))
+        .route("/catalog/step-quality", post(handle_step_quality))
         .route("/stt/model-info", get(handle_stt_model_info))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
@@ -465,6 +466,89 @@ async fn handle_catalog_models(
 
     match result {
         Ok(entries) => (StatusCode::OK, Json(entries)).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// One measured `(model, step)` quality score to upsert — see `ModelStepQuality`. Identified by
+/// `(brand_slug, model_slug)` rather than a proviz `model_id`: the caller (e.g. RTFC's
+/// benchmark harness) knows models only by that pair, never proviz's internal UUID.
+#[derive(Deserialize)]
+struct StepQualityEntry {
+    brand_slug: String,
+    model_slug: String,
+    step: String,
+    quality_score: f64,
+    #[serde(default)]
+    sample_size: i32,
+}
+
+#[derive(Deserialize)]
+struct StepQualityRequest {
+    entries: Vec<StepQualityEntry>,
+}
+
+/// Batch upsert of measured per-step quality scores (see "Per-step measured quality" — RTFC's
+/// detector benchmark pushes here after a run). Unresolvable `(brand_slug, model_slug)` pairs
+/// (e.g. a model renamed/removed since the benchmark's model list was last updated) are
+/// reported back in `not_found` rather than failing the whole batch — one stale entry shouldn't
+/// block every other model's score from landing. Reloads the catalog in-place afterward so
+/// pushed scores affect selection immediately, without waiting out the 5-minute cache TTL.
+async fn handle_step_quality(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<StepQualityRequest>,
+) -> impl IntoResponse {
+    let sel = state.selector.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let storage = sel.storage();
+        let brands = storage.load_brands().map_err(|e| e.to_string())?;
+        let models = storage.load_models().map_err(|e| e.to_string())?;
+        let brand_ids_by_slug: std::collections::HashMap<&str, Uuid> =
+            brands.iter().map(|b| (b.slug.as_str(), b.id)).collect();
+
+        let mut updated = 0usize;
+        let mut not_found: Vec<String> = vec![];
+        for entry in &payload.entries {
+            let Some(&brand_id) = brand_ids_by_slug.get(entry.brand_slug.as_str()) else {
+                not_found.push(format!("{}/{}", entry.brand_slug, entry.model_slug));
+                continue;
+            };
+            let model = models
+                .iter()
+                .find(|m| m.brand_id == brand_id && m.slug == entry.model_slug);
+            match model {
+                Some(m) => {
+                    storage
+                        .upsert_step_quality(
+                            m.id,
+                            &entry.step,
+                            entry.quality_score,
+                            entry.sample_size,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    updated += 1;
+                }
+                None => not_found.push(format!("{}/{}", entry.brand_slug, entry.model_slug)),
+            }
+        }
+        if updated > 0 {
+            sel.reload().map_err(|e| e.to_string())?;
+        }
+        Ok::<_, String>((updated, not_found))
+    })
+    .await
+    .expect("step_quality task panicked");
+
+    match result {
+        Ok((updated, not_found)) => (
+            StatusCode::OK,
+            Json(json!({ "status": "ok", "updated": updated, "not_found": not_found })),
+        )
+            .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e })),

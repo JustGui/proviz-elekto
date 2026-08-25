@@ -11,8 +11,8 @@ use uuid::Uuid;
 use crate::{
     error::{ProvizError, Result},
     models::{
-        Brand, BrandApiKey, Group, GroupMember, Model, ModelCandidate, RateLimitErrorType,
-        SelectRequest, SelectionRule,
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCandidate, ModelStepQuality,
+        RateLimitErrorType, SelectRequest, SelectionRule,
     },
     rate_state::RateLimitState,
     storage::CatalogStorage,
@@ -35,7 +35,74 @@ struct CatalogCache {
     group_members: HashMap<Uuid, Vec<GroupMember>>,
     /// brand_id → API keys sorted by priority ASC
     brand_keys: HashMap<Uuid, Vec<BrandApiKey>>,
+    /// model_id → step → measured quality score (see `ModelStepQuality`). Checked before
+    /// `Model.quality_score` by `effective_quality()`.
+    step_quality: HashMap<Uuid, HashMap<String, f64>>,
     loaded_at: Instant,
+}
+
+/// Measured per-step quality (`pz_model_step_quality`) takes precedence over the model's own
+/// hand-curated `quality_score` — a model good at one step's task isn't necessarily good at
+/// another's. Falls back to the global column when no step-specific measurement exists yet
+/// (e.g. every worker step, until a worker benchmark feeds this table too). Mirrors the
+/// live-over-static precedence `effective_latency` already uses in Pass 2 below.
+fn effective_quality(cache: &CatalogCache, model: &Model, step: &str) -> Option<f64> {
+    cache
+        .step_quality
+        .get(&model.id)
+        .and_then(|by_step| by_step.get(step))
+        .copied()
+        .or(model.quality_score)
+}
+
+/// Pass-2 scoring weights after applying any request/group override and renormalizing to sum
+/// to 1.0. See `resolve_weights`.
+struct ResolvedWeights {
+    fast_hr: f32,
+    slow_hr: f32,
+    quality: f32,
+    cost: f32,
+    latency: f32,
+    /// Zero (and therefore inert) whenever `use_priority_scoring` is false.
+    priority: f32,
+    traffic: f32,
+}
+
+/// `base` is `[fast_hr, slow_hr, quality, cost, latency, priority, traffic]` — today's built-in
+/// constants for whichever formula (grouped/ungrouped) is in play. Substitutes
+/// `req.cost_weight`/`latency_weight`/`quality_weight` (request wins) or the group's own
+/// `*_weight_override` (group wins over the built-in default) for the corresponding slot when
+/// either is `Some`, clamped to `[0.0, 1.0]`, then renormalizes the WHOLE set (including
+/// untouched components) to sum to 1.0. This is what makes raising one weight shrink the
+/// others proportionally instead of zeroing them out — a low-headroom or low-quality model
+/// still can't casually win a call just because it's cheap. Omitting every override leaves
+/// `base` untouched and its sum is already 1.0, so renormalizing is a no-op: today's behavior
+/// is reproduced exactly.
+fn resolve_weights(
+    mut base: [f32; 7],
+    req: &SelectRequest,
+    group_overrides: (Option<f32>, Option<f32>, Option<f32>),
+) -> ResolvedWeights {
+    if let Some(v) = req.cost_weight.or(group_overrides.0) {
+        base[3] = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = req.latency_weight.or(group_overrides.1) {
+        base[4] = v.clamp(0.0, 1.0);
+    }
+    if let Some(v) = req.quality_weight.or(group_overrides.2) {
+        base[2] = v.clamp(0.0, 1.0);
+    }
+    let sum: f32 = base.iter().sum();
+    let sum = if sum > f32::EPSILON { sum } else { 1.0 };
+    ResolvedWeights {
+        fast_hr: base[0] / sum,
+        slow_hr: base[1] / sum,
+        quality: base[2] / sum,
+        cost: base[3] / sum,
+        latency: base[4] / sum,
+        priority: base[5] / sum,
+        traffic: base[6] / sum,
+    }
 }
 
 pub struct Selector {
@@ -139,6 +206,18 @@ impl Selector {
             keys.sort_by_key(|k| k.priority);
         }
 
+        let all_step_quality: Vec<ModelStepQuality> = self
+            .storage
+            .load_all_step_quality()
+            .map_err(ProvizError::Storage)?;
+        let mut step_quality: HashMap<Uuid, HashMap<String, f64>> = HashMap::new();
+        for q in all_step_quality {
+            step_quality
+                .entry(q.model_id)
+                .or_default()
+                .insert(q.step, q.quality_score);
+        }
+
         let model_count = models.len();
         let rule_count: usize = rules.values().map(|v| v.len()).sum();
 
@@ -158,6 +237,7 @@ impl Selector {
             group_slugs,
             group_members,
             brand_keys,
+            step_quality,
             loaded_at: Instant::now(),
         });
 
@@ -192,6 +272,12 @@ impl Selector {
 
         let synthetic_rules: Vec<SelectionRule>;
         let use_priority_scoring: bool;
+        // Group-level weight defaults (see `Group.cost_weight_override` etc.) — a stable
+        // per-task tradeoff configured once on the group, not re-sent by every caller. Stays
+        // `(None, None, None)` for non-group selection. Resolved against the request's own
+        // overrides (which win) in Pass 2 below.
+        let mut group_weight_overrides: (Option<f32>, Option<f32>, Option<f32>) =
+            (None, None, None);
         let rules: &[SelectionRule] = if req.group_id.is_some() || req.group_name.is_some() {
             // Group-based selection: restrict candidates to group members.
             let group_id = if let Some(id) = req.group_id {
@@ -212,6 +298,11 @@ impl Selector {
             if !group.is_active {
                 return Err(ProvizError::GroupNotFound(group.slug.clone()));
             }
+            group_weight_overrides = (
+                group.cost_weight_override,
+                group.latency_weight_override,
+                group.quality_weight_override,
+            );
 
             debug!(group = %group.slug, "group-based selection");
             let members = cache
@@ -403,7 +494,7 @@ impl Selector {
             }
 
             if req.quality_min > 0.0 {
-                match model.quality_score {
+                match effective_quality(cache, model, &req.step) {
                     None => {
                         debug!(model = %model.slug, "skipped: quality unknown, min required");
                         continue;
@@ -660,9 +751,23 @@ impl Selector {
             })
             .collect();
 
+        // ── Resolve scoring weights (once per call, not per candidate) ────────────
+        //
+        // Base weights per component, precedence request-override > group-override > this
+        // built-in default. Renormalized to sum to 1.0 after substitution — see
+        // `resolve_weights` doc comment. Omitting all three overrides reproduces the base
+        // weights exactly (sum is already 1.0), so today's behavior is unchanged by default.
+        let base_weights: [f32; 7] = if use_priority_scoring {
+            // [fast_hr, slow_hr, quality, cost, latency, priority, traffic]
+            [0.20, 0.15, 0.20, 0.15, 0.10, 0.10, 0.10]
+        } else {
+            [0.25, 0.20, 0.20, 0.15, 0.10, 0.00, 0.10]
+        };
+        let weights = resolve_weights(base_weights, req, group_weight_overrides);
+
         // ── Per-candidate scoring ────────────────────────────────────────────────
         for c in &mut candidates {
-            let quality = c.model.quality_score.unwrap_or(0.5) as f32;
+            let quality = effective_quality(cache, c.model, &req.step).unwrap_or(0.5) as f32;
 
             let cost_score = match c.model.price_input_per_1m {
                 None => 0.5_f32,
@@ -683,29 +788,21 @@ impl Selector {
 
             let traffic_score = *brand_balance_score.get(&c.brand.id).unwrap_or(&0.5);
 
-            c.score = if use_priority_scoring {
-                let priority_score = match c.member_priority {
-                    None => 0.5_f32,
-                    Some(_) if max_prio == min_prio => 1.0_f32,
-                    Some(p) => 1.0_f32 - ((p - min_prio) as f32 / (max_prio - min_prio) as f32),
-                };
-                // With group priority (sum = 1.0)
-                0.20 * fast_hr_norm
-                    + 0.15 * slow_hr_norm
-                    + 0.20 * quality
-                    + 0.15 * cost_score
-                    + 0.10 * latency_score
-                    + 0.10 * priority_score
-                    + 0.10 * traffic_score
-            } else {
-                // Without group (sum = 1.0)
-                0.25 * fast_hr_norm
-                    + 0.20 * slow_hr_norm
-                    + 0.20 * quality
-                    + 0.15 * cost_score
-                    + 0.10 * latency_score
-                    + 0.10 * traffic_score
+            // Only meaningful (nonzero weight) when use_priority_scoring — computed
+            // unconditionally anyway since it's cheap and c.member_priority is None otherwise.
+            let priority_score = match c.member_priority {
+                None => 0.5_f32,
+                Some(_) if max_prio == min_prio => 1.0_f32,
+                Some(p) => 1.0_f32 - ((p - min_prio) as f32 / (max_prio - min_prio) as f32),
             };
+
+            c.score = weights.fast_hr * fast_hr_norm
+                + weights.slow_hr * slow_hr_norm
+                + weights.quality * quality
+                + weights.cost * cost_score
+                + weights.latency * latency_score
+                + weights.priority * priority_score
+                + weights.traffic * traffic_score;
         }
 
         // Sort by (score DESC, rule_priority ASC) so priority is the tiebreaker.

@@ -74,6 +74,15 @@ enum Command {
         /// Only models the source confirms don't train on submitted data
         #[arg(long)]
         require_no_training: bool,
+        /// Override the Pass-2 cost-component weight (see SelectRequest.cost_weight)
+        #[arg(long)]
+        cost_weight: Option<f32>,
+        /// Override the Pass-2 latency-component weight (see SelectRequest.latency_weight)
+        #[arg(long)]
+        latency_weight: Option<f32>,
+        /// Override the Pass-2 quality-component weight (see SelectRequest.quality_weight)
+        #[arg(long)]
+        quality_weight: Option<f32>,
     },
     /// Hot-reload catalog in running server
     Reload,
@@ -330,6 +339,25 @@ enum GroupCmd {
     Delete {
         #[arg(long)]
         slug: String,
+    },
+    /// Set this group's cost/latency/quality scoring-weight overrides (see
+    /// `SelectRequest.cost_weight` etc. for the precedence/renormalization contract). A group
+    /// represents a stable task (e.g. "detector", "worker") whose quality/speed/price tradeoff
+    /// doesn't change per call, so it's configured once here instead of every caller resending
+    /// it. Only the flags you pass are changed — omitted ones keep their current value.
+    SetWeights {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        cost_weight: Option<f32>,
+        #[arg(long)]
+        latency_weight: Option<f32>,
+        #[arg(long)]
+        quality_weight: Option<f32>,
+        /// Reset all three overrides to unset (built-in defaults apply), ignoring any of the
+        /// three weight flags above if also passed.
+        #[arg(long)]
+        clear: bool,
     },
     /// Manage models within a group
     Member {
@@ -785,9 +813,37 @@ fn main() {
                     description,
                     is_active: true,
                     created_at: chrono::Utc::now(),
+                    cost_weight_override: None,
+                    latency_weight_override: None,
+                    quality_weight_override: None,
                 };
                 storage.insert_group(&group).unwrap();
                 println!("group '{slug}' added (id={})", group.id);
+            }
+            GroupCmd::SetWeights {
+                slug,
+                cost_weight,
+                latency_weight,
+                quality_weight,
+                clear,
+            } => {
+                let g = find_group(&storage, &slug);
+                let resolve = |flag: Option<f32>, current: Option<f32>| {
+                    if clear {
+                        None
+                    } else {
+                        flag.or(current)
+                    }
+                };
+                storage
+                    .set_group_weights(
+                        g.id,
+                        resolve(cost_weight, g.cost_weight_override),
+                        resolve(latency_weight, g.latency_weight_override),
+                        resolve(quality_weight, g.quality_weight_override),
+                    )
+                    .unwrap();
+                println!("group '{slug}' weight overrides updated");
             }
             GroupCmd::List => {
                 let groups = storage.load_groups().unwrap();
@@ -883,6 +939,9 @@ fn main() {
             group_id,
             group_name,
             require_no_training,
+            cost_weight,
+            latency_weight,
+            quality_weight,
         } => {
             let selector = Selector::new(storage);
             selector.reload().unwrap();
@@ -901,6 +960,9 @@ fn main() {
                 use_member_priority: true,
                 max_wait_ms: None,
                 require_no_training,
+                cost_weight,
+                latency_weight,
+                quality_weight,
             };
             match selector.select(&req) {
                 Ok(c) => {

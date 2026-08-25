@@ -589,11 +589,20 @@ class ProvizElekto:
         use_member_priority: bool = True,
         max_wait_ms: Optional[int] = None,
         require_no_training: bool = False,
+        cost_weight: Optional[float] = None,
+        latency_weight: Optional[float] = None,
+        quality_weight: Optional[float] = None,
     ) -> ModelCandidate:
         """
         require_no_training: only select models the source explicitly confirms don't train on
         submitted data (unknown status is excluded too, not treated as safe — most providers,
         including OpenRouter, don't report this at all). See ModelCandidate.trains_on_data.
+
+        cost_weight/latency_weight/quality_weight: override the Pass-2 scoring weight for that
+        component (built-in defaults 0.15/0.10/0.20). Omitted → the group's own
+        cost_weight_override/latency_weight_override/quality_weight_override (when group-based)
+        or the built-in default. Setting one renormalizes the whole weight set to sum to 1.0, so
+        raising it shrinks the others proportionally rather than zeroing them out.
         """
         payload: dict = {
             "step": step,
@@ -615,6 +624,12 @@ class ProvizElekto:
             payload["group_name"] = group_name
         if max_wait_ms is not None:
             payload["max_wait_ms"] = max_wait_ms
+        if cost_weight is not None:
+            payload["cost_weight"] = cost_weight
+        if latency_weight is not None:
+            payload["latency_weight"] = latency_weight
+        if quality_weight is not None:
+            payload["quality_weight"] = quality_weight
         _logger.debug(
             "select request: step=%s estimated_tokens=%d group_name=%s group_id=%s max_wait_ms=%s",
             step, estimated_tokens, group_name, group_id, max_wait_ms,
@@ -667,6 +682,9 @@ class ProvizElekto:
         tool_choice: Optional[Any] = None,
         timeout_secs: Optional[int] = None,
         require_no_training: bool = False,
+        cost_weight: Optional[float] = None,
+        latency_weight: Optional[float] = None,
+        quality_weight: Optional[float] = None,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
 
@@ -722,6 +740,12 @@ class ProvizElekto:
             payload["tool_choice"] = tool_choice
         if timeout_secs is not None:
             payload["timeout_secs"] = timeout_secs
+        if cost_weight is not None:
+            payload["cost_weight"] = cost_weight
+        if latency_weight is not None:
+            payload["latency_weight"] = latency_weight
+        if quality_weight is not None:
+            payload["quality_weight"] = quality_weight
 
         # /complete may block server-side for a provider call; relax the client read timeout.
         prev_timeout = self._timeout
@@ -863,6 +887,9 @@ class ProvizElekto:
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
         require_no_training: bool = False,
+        cost_weight: Optional[float] = None,
+        latency_weight: Optional[float] = None,
+        quality_weight: Optional[float] = None,
     ) -> CallResult:
         """Select a model, call fn(candidate), report the outcome, and retry on failure.
 
@@ -906,6 +933,9 @@ class ProvizElekto:
                     languages=languages,
                     max_wait_ms=server_wait_ms,
                     require_no_training=require_no_training,
+                    cost_weight=cost_weight,
+                    latency_weight=latency_weight,
+                    quality_weight=quality_weight,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -1003,6 +1033,9 @@ class ProvizElekto:
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
         require_no_training: bool = False,
+        cost_weight: Optional[float] = None,
+        latency_weight: Optional[float] = None,
+        quality_weight: Optional[float] = None,
         **litellm_kwargs: Any,
     ) -> CallResult:
         """call() with built-in LiteLLM integration.
@@ -1052,6 +1085,9 @@ class ProvizElekto:
             error_classifier=error_classifier,
             max_wait_secs=max_wait_secs,
             require_no_training=require_no_training,
+            cost_weight=cost_weight,
+            latency_weight=latency_weight,
+            quality_weight=quality_weight,
         )
 
     def call_litellm_tool_loop(
@@ -1074,6 +1110,9 @@ class ProvizElekto:
         error_classifier: Optional[Callable[[Exception], tuple[str, str]]] = None,
         max_wait_secs: float = 0.0,
         require_no_training: bool = False,
+        cost_weight: Optional[float] = None,
+        latency_weight: Optional[float] = None,
+        quality_weight: Optional[float] = None,
         **litellm_kwargs: Any,
     ) -> Optional["CallResult"]:
         """select → [litellm.completion → execute tools → append → repeat] → report_success
@@ -1110,6 +1149,7 @@ class ProvizElekto:
             "step", "estimated_tokens", "requires_fn_call", "requires_json_mode",
             "quality_min", "exclude_ids", "categories", "languages", "group_id", "group_name",
             "use_member_priority", "max_wait_secs", "max_wait_ms",
+            "cost_weight", "latency_weight", "quality_weight",
         })
         litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k not in _SELECTION_KEYS}
 
@@ -1135,6 +1175,9 @@ class ProvizElekto:
                     group_name=group_name,
                     max_wait_ms=server_wait_ms,
                     require_no_training=require_no_training,
+                    cost_weight=cost_weight,
+                    latency_weight=latency_weight,
+                    quality_weight=quality_weight,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:

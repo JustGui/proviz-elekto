@@ -3,8 +3,8 @@ use uuid::Uuid;
 use crate::{
     error::StorageError,
     models::{
-        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, RateLimitErrorType,
-        SelectionRule,
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
+        RateLimitErrorType, SelectionRule,
     },
 };
 
@@ -45,6 +45,30 @@ pub trait CatalogStorage: Send + Sync {
     fn set_group_active(&self, group_id: Uuid, active: bool) -> StorageResult<()>;
     fn insert_group_member(&self, member: &GroupMember) -> StorageResult<()>;
     fn remove_group_member(&self, group_id: Uuid, model_id: Uuid) -> StorageResult<()>;
+    /// Overwrite a group's cost/latency/quality weight overrides outright (each `None` clears
+    /// that column to NULL — unlike `sync_model_limits`, there's no "leave unchanged" sentinel
+    /// here, since the only caller (the CLI) always reads the current row first and merges in
+    /// just the flags the operator passed).
+    fn set_group_weights(
+        &self,
+        group_id: Uuid,
+        cost_weight: Option<f32>,
+        latency_weight: Option<f32>,
+        quality_weight: Option<f32>,
+    ) -> StorageResult<()>;
+
+    // Per-step measured model quality (RTFC benchmark sync — see ModelStepQuality)
+    fn load_all_step_quality(&self) -> StorageResult<Vec<ModelStepQuality>>;
+    /// Upsert one `(model_id, step)` row. Called once per model per sync run — always a plain
+    /// overwrite, since this table is populated exclusively by automated sync (see
+    /// `ModelStepQuality` doc comment).
+    fn upsert_step_quality(
+        &self,
+        model_id: Uuid,
+        step: &str,
+        quality_score: f64,
+        sample_size: i32,
+    ) -> StorageResult<()>;
 
     // Brand API keys (multi-account rotation)
     fn insert_brand_api_key(&self, key: &BrandApiKey) -> StorageResult<()>;

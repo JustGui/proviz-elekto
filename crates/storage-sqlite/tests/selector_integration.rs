@@ -106,6 +106,9 @@ fn base_req() -> SelectRequest {
         use_member_priority: true,
         max_wait_ms: None,
         require_no_training: false,
+        cost_weight: None,
+        latency_weight: None,
+        quality_weight: None,
     }
 }
 
@@ -754,4 +757,158 @@ fn account_scoped_error_still_blocks_whole_shared_key() {
         err,
         ProvizError::AllModelsExhausted { tried: 2, .. }
     ));
+}
+
+// ── tunable cost/latency/quality weights + per-step measured quality ──────────
+
+/// A cheap, low-quality model vs. an expensive, high-quality one — the default weights (quality
+/// 0.20, cost 0.15) pick the expensive one; overriding `cost_weight` heavily enough on the
+/// request flips the winner to the cheap one. Also proves the "omit everything" default is
+/// unaffected (same winner as before any override field existed).
+#[test]
+fn cost_weight_request_override_flips_winner() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let cheap_low_quality = Model {
+        price_input_per_1m: Some(1.0),
+        quality_score: Some(0.10),
+        ..make_model(brand.id, "cheap", 32_000)
+    };
+    let pricey_high_quality = Model {
+        price_input_per_1m: Some(10.0),
+        quality_score: Some(0.99),
+        ..make_model(brand.id, "pricey", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&cheap_low_quality).unwrap();
+    db.insert_model(&pricey_high_quality).unwrap();
+    db.insert_rule(&make_rule("chat", cheap_low_quality.id, 0))
+        .unwrap();
+    db.insert_rule(&make_rule("chat", pricey_high_quality.id, 0))
+        .unwrap();
+
+    let sel = selector(db);
+
+    // Default: no weight overrides at all — the expensive, higher-quality model wins.
+    let c = sel.select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "pricey");
+
+    // Heavily bias toward cost — the cheap model now wins instead.
+    let req = SelectRequest {
+        cost_weight: Some(0.7),
+        ..base_req()
+    };
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_slug, "cheap");
+}
+
+/// A group's own `cost_weight_override` applies when the request sends no override of its own,
+/// but a request-level `cost_weight` still wins over the group's when both are set.
+#[test]
+fn group_weight_override_applies_and_request_takes_precedence() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let cheap_low_quality = Model {
+        price_input_per_1m: Some(1.0),
+        quality_score: Some(0.10),
+        ..make_model(brand.id, "cheap", 32_000)
+    };
+    let pricey_high_quality = Model {
+        price_input_per_1m: Some(10.0),
+        quality_score: Some(0.99),
+        ..make_model(brand.id, "pricey", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&cheap_low_quality).unwrap();
+    db.insert_model(&pricey_high_quality).unwrap();
+
+    let group = proviz_elekto_core::models::Group {
+        id: Uuid::new_v4(),
+        slug: "detector".to_string(),
+        name: "detector".to_string(),
+        description: None,
+        is_active: true,
+        created_at: Utc::now(),
+        cost_weight_override: Some(0.7),
+        latency_weight_override: None,
+        quality_weight_override: None,
+    };
+    db.insert_group(&group).unwrap();
+    // Both members at priority 0 (== "unset", falls back to brand priority) — same brand for
+    // both, so the group-priority scoring component ties and isolates the cost-weight effect.
+    for model_id in [cheap_low_quality.id, pricey_high_quality.id] {
+        db.insert_group_member(&proviz_elekto_core::models::GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id,
+            priority: 0,
+            is_enabled: true,
+        })
+        .unwrap();
+    }
+
+    let sel = selector(db);
+
+    // No request-level override — the group's own cost bias picks the cheap model.
+    let req = SelectRequest {
+        group_id: Some(group.id),
+        ..base_req()
+    };
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_slug, "cheap");
+
+    // Request explicitly asks for the default cost weight back — overrides the group,
+    // so the higher-quality (pricier) model wins again.
+    let req = SelectRequest {
+        group_id: Some(group.id),
+        cost_weight: Some(0.15),
+        ..base_req()
+    };
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_slug, "pricey");
+}
+
+/// A measured per-step quality score outranks the model's global `quality_score` for the
+/// step it was recorded against, and has no effect on a different step (falls back to the
+/// global column there instead).
+#[test]
+fn step_quality_overrides_global_only_for_its_own_step() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    // Same price for both — quality is the only thing that should decide the winner here.
+    let low_global_high_step = Model {
+        quality_score: Some(0.10),
+        ..make_model(brand.id, "measured", 32_000)
+    };
+    let high_global_no_step = Model {
+        quality_score: Some(0.90),
+        ..make_model(brand.id, "curated", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&low_global_high_step).unwrap();
+    db.insert_model(&high_global_no_step).unwrap();
+    db.insert_rule(&make_rule("chat", low_global_high_step.id, 0))
+        .unwrap();
+    db.insert_rule(&make_rule("chat", high_global_no_step.id, 0))
+        .unwrap();
+    db.upsert_step_quality(low_global_high_step.id, "chat", 0.95, 12)
+        .unwrap();
+
+    let sel = selector(db);
+
+    // On the measured step, the benchmark score (0.95) beats the curated global one (0.90).
+    let c = sel.select(&base_req()).unwrap();
+    assert_eq!(c.model_slug, "measured");
+
+    // On a different step with no measured entry, both fall back to the global column —
+    // the curated model's higher global quality_score wins instead.
+    let req = SelectRequest {
+        step: "other_step".to_string(),
+        ..base_req()
+    };
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_slug, "curated");
 }
