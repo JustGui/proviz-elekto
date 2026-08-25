@@ -55,7 +55,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "medium"],
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 0.25,
     "price_output_per_1m": 0.5
   },
@@ -71,7 +71,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value":  ["low", "medium", "high"],
+    "reasoning_effort_value": "low",
     "price_input_per_1m": 0.15,
     "price_output_per_1m": 0.6
   },
@@ -115,7 +115,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "high"],
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 1.5,
     "price_output_per_1m": 7.5
   },
@@ -205,7 +205,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "medium"],
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 0.6,
     "price_output_per_1m": 3.6
   },
@@ -221,7 +221,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "medium"],
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 0.25,
     "price_output_per_1m": 1.5
   },
@@ -270,7 +270,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "low", "high", "max"],
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 0.4,
     "price_output_per_1m": 0.8
   },
@@ -288,7 +288,7 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": ["none", "high", "max"],
+    "reasoning_effort_value": "none", 
     "price_input_per_1m": 1.8,
     "price_output_per_1m": 5.5
   }
