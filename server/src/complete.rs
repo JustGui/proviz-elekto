@@ -71,6 +71,13 @@ pub struct CompleteRequest {
     /// See `SelectRequest.require_no_training`.
     #[serde(default)]
     pub require_no_training: bool,
+    /// See `SelectRequest.cost_weight`/`latency_weight`/`quality_weight`.
+    #[serde(default)]
+    pub cost_weight: Option<f32>,
+    #[serde(default)]
+    pub latency_weight: Option<f32>,
+    #[serde(default)]
+    pub quality_weight: Option<f32>,
 
     // ── completion fields ───────────────────────────────────────────────────
     pub messages: Vec<ChatMessage>,
@@ -133,6 +140,9 @@ impl CompleteRequest {
             use_member_priority: true,
             max_wait_ms: self.max_wait_ms,
             require_no_training: self.require_no_training,
+            cost_weight: self.cost_weight,
+            latency_weight: self.latency_weight,
+            quality_weight: self.quality_weight,
         }
     }
 

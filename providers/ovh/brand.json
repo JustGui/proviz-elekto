@@ -4,6 +4,7 @@
   "api_key_env": "OVHCLOUD_API_KEY",
   "base_url": "https://oai.endpoints.kepler.ai.cloud.ovh.net",
   "endpoints": {
+    "chat": "/v1/chat/completions",
     "stt": "/v1/audio/transcriptions",
     "tts": "/v1/audio/speech"
   }

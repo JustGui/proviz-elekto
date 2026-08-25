@@ -2,15 +2,16 @@ use chrono::{DateTime, Utc};
 use proviz_elekto_core::{
     error::StorageError,
     models::{
-        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, RateLimitErrorType,
-        SelectionRule,
+        Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
+        RateLimitErrorType, SelectionRule,
     },
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
     brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row,
-    model_catalog_from_row, model_from_row, rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS,
-    Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_MODEL_CATALOG, Q_RULES,
+    model_catalog_from_row, model_from_row, model_step_quality_from_row, rule_from_row, RowReader,
+    Q_BRANDS, Q_BRAND_API_KEYS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_MODEL_CATALOG,
+    Q_MODEL_STEP_QUALITY, Q_RULES,
 };
 use rusqlite::{params, Connection, OptionalExtension};
 use std::sync::Mutex;
@@ -52,7 +53,31 @@ impl SqliteStorage {
         s.migrate_reasoning_effort()?;
         s.migrate_model_catalog_fields()?;
         s.migrate_privacy_fields()?;
+        s.migrate_group_weights()?;
         Ok(s)
+    }
+
+    fn migrate_group_weights(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        for col in &[
+            "cost_weight_override",
+            "latency_weight_override",
+            "quality_weight_override",
+        ] {
+            let exists: bool = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('pz_groups') WHERE name=?1",
+                    [col],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|n| n > 0)
+                .unwrap_or(false);
+            if !exists {
+                conn.execute_batch(&format!("ALTER TABLE pz_groups ADD COLUMN {col} REAL;"))
+                    .map_err(|e| StorageError::Database(e.to_string()))?;
+            }
+        }
+        Ok(())
     }
 
     fn migrate_brand_api_keys(&self) -> Result<(), StorageError> {
@@ -612,8 +637,9 @@ impl CatalogStorage for SqliteStorage {
     fn insert_group(&self, group: &Group) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at)
-             VALUES (?1,?2,?3,?4,?5,?6)
+            "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at,
+               cost_weight_override,latency_weight_override,quality_weight_override)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, description=excluded.description, is_active=excluded.is_active",
             params![
@@ -623,6 +649,9 @@ impl CatalogStorage for SqliteStorage {
                 group.description,
                 group.is_active,
                 group.created_at.to_rfc3339(),
+                group.cost_weight_override.map(|v| v as f64),
+                group.latency_weight_override.map(|v| v as f64),
+                group.quality_weight_override.map(|v| v as f64),
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -644,6 +673,28 @@ impl CatalogStorage for SqliteStorage {
         conn.execute(
             "UPDATE pz_groups SET is_active=?1 WHERE id=?2",
             params![active, group_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_group_weights(
+        &self,
+        group_id: Uuid,
+        cost_weight: Option<f32>,
+        latency_weight: Option<f32>,
+        quality_weight: Option<f32>,
+    ) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pz_groups SET cost_weight_override=?1, latency_weight_override=?2,
+               quality_weight_override=?3 WHERE id=?4",
+            params![
+                cost_weight.map(|v| v as f64),
+                latency_weight.map(|v| v as f64),
+                quality_weight.map(|v| v as f64),
+                group_id.to_string(),
+            ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -673,6 +724,44 @@ impl CatalogStorage for SqliteStorage {
         conn.execute(
             "DELETE FROM pz_group_members WHERE group_id=?1 AND model_id=?2",
             params![group_id.to_string(), model_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_all_step_quality(&self) -> StorageResult<Vec<ModelStepQuality>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(Q_MODEL_STEP_QUALITY)
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| Ok(model_step_quality_from_row(&SqliteRow(row))))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
+    fn upsert_step_quality(
+        &self,
+        model_id: Uuid,
+        step: &str,
+        quality_score: f64,
+        sample_size: i32,
+    ) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO pz_model_step_quality (model_id,step,quality_score,sample_size,updated_at)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(model_id,step) DO UPDATE SET
+               quality_score=excluded.quality_score, sample_size=excluded.sample_size,
+               updated_at=excluded.updated_at",
+            params![
+                model_id.to_string(),
+                step,
+                quality_score,
+                sample_size,
+                Utc::now().to_rfc3339(),
+            ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -852,7 +941,19 @@ CREATE TABLE IF NOT EXISTS pz_groups (
     name        TEXT NOT NULL,
     description TEXT,
     is_active   INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    cost_weight_override    REAL,
+    latency_weight_override REAL,
+    quality_weight_override REAL
+);
+
+CREATE TABLE IF NOT EXISTS pz_model_step_quality (
+    model_id      TEXT NOT NULL REFERENCES pz_models(id) ON DELETE CASCADE,
+    step          TEXT NOT NULL,
+    quality_score REAL NOT NULL,
+    sample_size   INTEGER NOT NULL DEFAULT 0,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (model_id, step)
 );
 
 CREATE TABLE IF NOT EXISTS pz_group_members (

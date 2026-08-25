@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use proviz_elekto_core::models::{
-    Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, SelectionRule,
+    Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
+    SelectionRule,
 };
 use uuid::Uuid;
 
@@ -27,11 +28,15 @@ pub const Q_RULES: &str =
     "SELECT id,step,model_id,priority,max_ctx_tokens,requires_fn_call,is_enabled \
      FROM pz_selection_rules";
 
-pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at \
+pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at,\
+     cost_weight_override,latency_weight_override,quality_weight_override \
      FROM pz_groups";
 
 pub const Q_GROUP_MEMBERS: &str = "SELECT id,group_id,model_id,priority,is_enabled \
      FROM pz_group_members";
+
+pub const Q_MODEL_STEP_QUALITY: &str =
+    "SELECT model_id,step,quality_score,sample_size,updated_at FROM pz_model_step_quality";
 
 pub const Q_BRAND_API_KEYS: &str = "SELECT id,brand_id,api_key_env,priority,is_active,created_at \
      FROM pz_brand_api_keys";
@@ -146,6 +151,19 @@ pub fn group_from_row(row: &impl RowReader) -> Group {
         description: row.opt_string(3),
         is_active: row.bool_val(4),
         created_at: row.datetime(5),
+        cost_weight_override: row.opt_f64(6).map(|v| v as f32),
+        latency_weight_override: row.opt_f64(7).map(|v| v as f32),
+        quality_weight_override: row.opt_f64(8).map(|v| v as f32),
+    }
+}
+
+pub fn model_step_quality_from_row(row: &impl RowReader) -> ModelStepQuality {
+    ModelStepQuality {
+        model_id: row.uuid(0),
+        step: row.string(1),
+        quality_score: row.opt_f64(2).unwrap_or(0.0),
+        sample_size: row.opt_i32(3).unwrap_or(0),
+        updated_at: row.datetime(4),
     }
 }
 

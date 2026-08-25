@@ -547,6 +547,11 @@ pub async fn handle_batch_submit(
         use_member_priority: true,
         max_wait_ms: None,
         require_no_training: false,
+        // Not exposed on BatchSubmitRequest — batch jobs are Mistral-only and already priced
+        // at a flat 50% discount, so cost/latency/quality tuning isn't a meaningful lever here.
+        cost_weight: None,
+        latency_weight: None,
+        quality_weight: None,
     };
 
     let sel = selector.clone();
