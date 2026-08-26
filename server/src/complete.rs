@@ -194,23 +194,45 @@ impl CompleteRequest {
         if let Some(ref tc) = self.tool_choice {
             obj.insert("tool_choice".into(), tc.clone());
         }
-        if self.require_no_training {
-            // OpenRouter-specific request-level opt-out — the exact, documented mechanism to
-            // restrict routing to providers that don't collect/retain data (OpenRouter has no
-            // per-model training metadata to filter on, unlike Requesty). Sent unconditionally
-            // when the flag is set: an OpenAI-compatible provider that doesn't recognize
-            // `provider` simply ignores the extra field.
-            //
-            // `sort: "latency"` is bundled in here too, not because it's related to data
-            // retention, but because OpenRouter's own docs (openrouter.ai/docs/features/
-            // provider-routing) say the default with no `sort` field is to load-balance
-            // "prioritizing price" — so restricting to ZDR-compliant providers without this
-            // can silently route to a slow-but-cheap one instead of the fastest ZDR-compliant
-            // provider available.
-            obj.insert(
-                "provider".into(),
-                json!({ "data_collection": "deny", "zdr": true, "sort": "latency" }),
-            );
+        // OpenRouter aggregates several upstream inference providers behind one model slug,
+        // and picks between them itself — a second, inner routing decision our own Pass-2
+        // model-vs-model scoring (cost_weight/latency_weight, see "Tunable weights + measured
+        // per-step quality") has no visibility into. OpenRouter's own `provider.sort` field
+        // (openrouter.ai/docs/features/provider-routing) is the documented way to steer that
+        // inner choice — `"price"` picks the cheapest eligible upstream, `"latency"` the
+        // fastest-responding one. Whichever of our own two weights the caller set higher
+        // decides which one we ask for here, so a request that told proviz "favor cheap
+        // models" also tells OpenRouter "favor the cheap upstream" for whichever OpenRouter
+        // model got selected — same intent, both levels. Only sent to OpenRouter — other
+        // OpenAI-compatible providers have no such field and no equivalent decision to make.
+        if brand_slug == "openrouter" {
+            let mut provider_obj = serde_json::Map::new();
+            if self.require_no_training {
+                // OpenRouter-specific request-level opt-out — the exact, documented mechanism
+                // to restrict routing to providers that don't collect/retain data (OpenRouter
+                // has no per-model training metadata to filter on, unlike Requesty).
+                provider_obj.insert("data_collection".into(), json!("deny"));
+                provider_obj.insert("zdr".into(), json!(true));
+            }
+            let cost_w = self.cost_weight.unwrap_or(0.0);
+            let latency_w = self.latency_weight.unwrap_or(0.0);
+            if latency_w > cost_w && latency_w > 0.0 {
+                provider_obj.insert("sort".into(), json!("latency"));
+            } else if cost_w > latency_w && cost_w > 0.0 {
+                provider_obj.insert("sort".into(), json!("price"));
+            } else if self.require_no_training {
+                // Neither weight distinguishes a preference (both unset, or an exact tie) —
+                // preserve this endpoint's prior behavior from before cost_weight/latency_weight
+                // existed: require_no_training alone still requests "latency", since OpenRouter's
+                // own docs say the default with no `sort` field load-balances "prioritizing
+                // price" — restricting to ZDR-compliant providers without this can silently
+                // route to a slow-but-cheap one instead of the fastest ZDR-compliant provider
+                // available.
+                provider_obj.insert("sort".into(), json!("latency"));
+            }
+            if !provider_obj.is_empty() {
+                obj.insert("provider".into(), Value::Object(provider_obj));
+            }
         }
         body
     }
@@ -695,5 +717,84 @@ mod payload_tests {
         let req = base_request();
         let payload = req.payload("some-model", "groq", None);
         assert!(payload.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn latency_weight_higher_sorts_openrouter_by_latency() {
+        let req = CompleteRequest {
+            cost_weight: Some(0.2),
+            latency_weight: Some(0.5),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "openrouter", None);
+        assert_eq!(payload["provider"]["sort"], json!("latency"));
+    }
+
+    #[test]
+    fn cost_weight_higher_sorts_openrouter_by_price() {
+        let req = CompleteRequest {
+            cost_weight: Some(0.7),
+            latency_weight: Some(0.1),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "openrouter", None);
+        assert_eq!(payload["provider"]["sort"], json!("price"));
+    }
+
+    /// A tie (or both unset) leaves `sort` unset entirely - OpenRouter's own default balancing
+    /// applies rather than proviz guessing a preference the caller never expressed.
+    #[test]
+    fn equal_weights_leave_openrouter_sort_unset() {
+        let req = CompleteRequest {
+            cost_weight: Some(0.4),
+            latency_weight: Some(0.4),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "openrouter", None);
+        assert!(payload.get("provider").is_none());
+    }
+
+    /// Weights never touch a non-OpenRouter brand's payload - there's no such field to send.
+    #[test]
+    fn weights_have_no_effect_on_non_openrouter_brand() {
+        let req = CompleteRequest {
+            cost_weight: Some(0.9),
+            latency_weight: Some(0.9),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "groq", None);
+        assert!(payload.get("provider").is_none());
+    }
+
+    /// require_no_training alone (no weights set) preserves the endpoint's prior behavior from
+    /// before cost_weight/latency_weight existed: still asks OpenRouter for "latency", since its
+    /// own docs say the unset-sort default load-balances "prioritizing price".
+    #[test]
+    fn require_no_training_alone_still_defaults_openrouter_sort_to_latency() {
+        let req = CompleteRequest {
+            require_no_training: true,
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "openrouter", None);
+        assert_eq!(
+            payload["provider"],
+            json!({ "data_collection": "deny", "zdr": true, "sort": "latency" })
+        );
+    }
+
+    /// A weight preference combines with require_no_training's privacy fields in the same
+    /// object, and wins over its "latency" default.
+    #[test]
+    fn cost_weight_overrides_require_no_trainings_default_sort() {
+        let req = CompleteRequest {
+            require_no_training: true,
+            cost_weight: Some(0.6),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "openrouter", None);
+        assert_eq!(
+            payload["provider"],
+            json!({ "data_collection": "deny", "zdr": true, "sort": "price" })
+        );
     }
 }
