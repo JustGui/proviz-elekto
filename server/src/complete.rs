@@ -146,7 +146,12 @@ impl CompleteRequest {
         }
     }
 
-    fn payload(&self, model_slug: &str, brand_slug: &str, reasoning_effort_value: Option<&str>) -> Value {
+    fn payload(
+        &self,
+        model_slug: &str,
+        brand_slug: &str,
+        reasoning_effort_value: Option<&str>,
+    ) -> Value {
         let messages: Vec<Value> = self
             .messages
             .iter()
@@ -201,7 +206,7 @@ impl CompleteRequest {
             // provider-routing) say the default with no `sort` field is to load-balance
             // "prioritizing price" — so restricting to ZDR-compliant providers without this
             // can silently route to a slow-but-cheap one instead of the fastest ZDR-compliant
-            // provider available. 
+            // provider available.
             obj.insert(
                 "provider".into(),
                 json!({ "data_collection": "deny", "zdr": true, "sort": "latency" }),

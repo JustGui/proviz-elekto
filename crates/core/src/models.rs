@@ -112,7 +112,7 @@ pub struct Model {
     pub retains_data: Option<bool>,
 }
 
-/// A measured, task-specific quality score for one model. 
+/// A measured, task-specific quality score for one model.
 /// Distinct from `Model.quality_score`, which is a single
 /// hand-curated column shared across every step: a model good at claim extraction isn't
 /// necessarily good at verdict synthesis, so this is keyed by `(model_id, step)` instead.
