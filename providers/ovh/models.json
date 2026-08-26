@@ -58,21 +58,6 @@
     "price_output_per_1m": 0.14
   },
   {
-    "slug": "mistral-small-3.2-24b-instruct-2506",
-    "display_name": "Mistral Small 3.2 24B Instruct 2506",
-    "category": "text",
-    "canonical_model": "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
-    "max_context_tokens": 131072,
-    "supports_function_calling": true,
-    "supports_json_mode": true,
-    "rpm_limit": null,
-    "rpd_limit": null,
-    "tpm_limit": null,
-    "tpd_limit": null,
-    "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.31
-  },
-  {
     "slug": "qwen3.6-27b",
     "display_name": "Qwen3.6 27B",
     "category": "text",
