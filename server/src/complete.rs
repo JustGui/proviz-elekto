@@ -146,7 +146,7 @@ impl CompleteRequest {
         }
     }
 
-    fn payload(&self, model_slug: &str, reasoning_effort_value: Option<&str>) -> Value {
+    fn payload(&self, model_slug: &str, brand_slug: &str, reasoning_effort_value: Option<&str>) -> Value {
         let messages: Vec<Value> = self
             .messages
             .iter()
@@ -180,6 +180,9 @@ impl CompleteRequest {
         if let Some(re) = reasoning_effort_value {
             obj.insert("reasoning_effort".into(), json!(re));
         }
+        if brand_slug == "openrouter" && reasoning_effort_value.is_none() {
+            obj.insert("reasoning".into(), json!({ "enabled": false }));
+        }
         if let Some(ref tools) = self.tools {
             obj.insert("tools".into(), json!(tools));
         }
@@ -198,10 +201,7 @@ impl CompleteRequest {
             // provider-routing) say the default with no `sort` field is to load-balance
             // "prioritizing price" — so restricting to ZDR-compliant providers without this
             // can silently route to a slow-but-cheap one instead of the fastest ZDR-compliant
-            // provider available. Confirmed empirically via tools/test_detector_models.py in
-            // rtfc: adding this cut one model's measured latency from 29.4s to 5.7s on an
-            // identical call. There is currently no other path in this codebase that sets
-            // `sort`, so this doesn't override anything a caller intended.
+            // provider available. 
             obj.insert(
                 "provider".into(),
                 json!({ "data_collection": "deny", "zdr": true, "sort": "latency" }),
@@ -279,6 +279,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
 
         let payload = req.payload(
             &candidate.model_slug,
+            &candidate.brand_slug,
             candidate.reasoning_effort_value.as_deref(),
         );
         debug!(
@@ -627,4 +628,67 @@ fn compute_cost(
             + price_out.unwrap_or(0.0) * completion_tokens as f64)
             / 1_000_000.0,
     )
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn base_request() -> CompleteRequest {
+        CompleteRequest {
+            step: "detector".into(),
+            estimated_tokens: 1000,
+            requires_fn_call: false,
+            requires_json_mode: false,
+            quality_min: 0.0,
+            exclude_ids: vec![],
+            categories: vec![],
+            languages: vec![],
+            group_id: None,
+            group_name: None,
+            max_wait_ms: None,
+            require_no_training: false,
+            cost_weight: None,
+            latency_weight: None,
+            quality_weight: None,
+            messages: vec![ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            temperature: None,
+            max_tokens: None,
+            response_format: None,
+            reasoning_effort: None,
+            tools: None,
+            tool_choice: None,
+            timeout_secs: None,
+        }
+    }
+
+    #[test]
+    fn openrouter_without_reasoning_effort_disables_reasoning() {
+        let req = base_request();
+        let payload = req.payload("deepseek/deepseek-v4-flash-0731", "openrouter", None);
+        assert_eq!(payload["reasoning"], json!({ "enabled": false }));
+    }
+
+    /// A model with an explicit, curated `reasoning_effort_value` (graded reasoning, not fully
+    /// off) must keep that choice - the brand-wide disable must not silently override it.
+    #[test]
+    fn openrouter_with_explicit_reasoning_effort_is_not_overridden() {
+        let req = base_request();
+        let payload = req.payload("some/graded-reasoning-model", "openrouter", Some("low"));
+        assert_eq!(payload["reasoning_effort"], json!("low"));
+        assert!(payload.get("reasoning").is_none());
+    }
+
+    /// Non-OpenRouter brands never see the OpenRouter-specific `reasoning` field.
+    #[test]
+    fn non_openrouter_brand_gets_no_reasoning_field() {
+        let req = base_request();
+        let payload = req.payload("some-model", "groq", None);
+        assert!(payload.get("reasoning").is_none());
+    }
 }
