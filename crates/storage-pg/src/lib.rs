@@ -19,14 +19,6 @@ use uuid::Uuid;
 
 pub struct PostgresStorage {
     client: Mutex<Client>,
-    /// Kept so a dead connection can be transparently re-established (see `connected_client()`)
-    /// instead of permanently failing every query with "connection closed" until the whole
-    /// process is restarted by hand — the same class of bug already fixed in RTFC's listener
-    /// (`SessionStore::get_pg()`, see rtfc CLAUDE.md "Postgres crash-restart") and still open in
-    /// rtfc's worker-rs `Pg::connect()`. `PostgresStorage::connect()` previously dialed ONCE at
-    /// startup with no retry — any transient postgres restart/network blip after that point (not
-    /// just at boot) permanently 500'd every `/select` and `/complete` call for every caller
-    /// (detector, worker, elector) until proviz-elekto itself was restarted.
     database_url: String,
 }
 
@@ -60,12 +52,6 @@ impl PostgresStorage {
         Ok(s)
     }
 
-    /// Every query goes through this instead of locking `self.client` directly. `is_closed()` is
-    /// a cheap local check (no round-trip) reflecting whether a PREVIOUS operation already
-    /// observed the connection drop — cheaper than pinging on every call, and matches the
-    /// pattern already validated in rtfc's listener. Reconnect is attempted inline and the lock
-    /// is held across it, so concurrent callers block briefly rather than each independently
-    /// racing to redial.
     fn connected_client(&self) -> Result<std::sync::MutexGuard<'_, Client>, StorageError> {
         let mut guard = self.client.lock().expect("client mutex poisoned");
         if guard.is_closed() {

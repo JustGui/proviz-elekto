@@ -112,8 +112,8 @@ pub struct Model {
     pub retains_data: Option<bool>,
 }
 
-/// A measured, task-specific quality score for one model — e.g. a model's pass-rate on RTFC's
-/// detector claim-extraction benchmark. Distinct from `Model.quality_score`, which is a single
+/// A measured, task-specific quality score for one model. 
+/// Distinct from `Model.quality_score`, which is a single
 /// hand-curated column shared across every step: a model good at claim extraction isn't
 /// necessarily good at verdict synthesis, so this is keyed by `(model_id, step)` instead.
 /// `Selector::effective_quality` prefers a row here over the global `Model.quality_score`,

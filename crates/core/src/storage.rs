@@ -57,7 +57,7 @@ pub trait CatalogStorage: Send + Sync {
         quality_weight: Option<f32>,
     ) -> StorageResult<()>;
 
-    // Per-step measured model quality (RTFC benchmark sync — see ModelStepQuality)
+    // Per-step measured model quality
     fn load_all_step_quality(&self) -> StorageResult<Vec<ModelStepQuality>>;
     /// Upsert one `(model_id, step)` row. Called once per model per sync run — always a plain
     /// overwrite, since this table is populated exclusively by automated sync (see

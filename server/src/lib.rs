@@ -474,9 +474,6 @@ async fn handle_catalog_models(
     }
 }
 
-/// One measured `(model, step)` quality score to upsert — see `ModelStepQuality`. Identified by
-/// `(brand_slug, model_slug)` rather than a proviz `model_id`: the caller (e.g. RTFC's
-/// benchmark harness) knows models only by that pair, never proviz's internal UUID.
 #[derive(Deserialize)]
 struct StepQualityEntry {
     brand_slug: String,
@@ -492,12 +489,6 @@ struct StepQualityRequest {
     entries: Vec<StepQualityEntry>,
 }
 
-/// Batch upsert of measured per-step quality scores (see "Per-step measured quality" — RTFC's
-/// detector benchmark pushes here after a run). Unresolvable `(brand_slug, model_slug)` pairs
-/// (e.g. a model renamed/removed since the benchmark's model list was last updated) are
-/// reported back in `not_found` rather than failing the whole batch — one stale entry shouldn't
-/// block every other model's score from landing. Reloads the catalog in-place afterward so
-/// pushed scores affect selection immediately, without waiting out the 5-minute cache TTL.
 async fn handle_step_quality(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<StepQualityRequest>,

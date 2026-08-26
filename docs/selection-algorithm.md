@@ -178,9 +178,6 @@ result = pz.call_litellm(step="detector", messages=messages, max_wait_secs=0)
 The sleep uses `retry_after_ms × uniform(0.8, 1.2)` jitter so concurrent workers don't
 all wake up and hammer the same freed slots simultaneously.
 
-When using `model_selector.py` (the rtfc wrapper), the default is controlled by the
-`PROVIZ_MAX_WAIT_SECS` environment variable (default `60`).
-
 ## Priority System
 
 Two independent priority axes control selection order. Both use **lower = preferred**.
