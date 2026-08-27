@@ -1,0 +1,11 @@
+{
+  "slug": "infomaniak",
+  "name": "Infomaniak",
+  "api_key_env": "INFOMANIAK_API_KEY",
+  "base_url": "https://api.infomaniak.com/2/ai/${INFOMANIAK_PRODUCT_ID}/openai/v1",
+  "endpoints": {
+    "chat": "/chat/completions",
+    "embeddings": "/embeddings",
+    "stt": "/openai/audio/transcriptions"
+  }
+}
