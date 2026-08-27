@@ -58,6 +58,16 @@ struct Args {
     /// PROVIZ_OPENROUTER_SYNC_SECS, for the requesty provider.
     #[arg(long, env = "PROVIZ_REQUESTY_SYNC_SECS", default_value = "3600")]
     requesty_sync_secs: u64,
+
+    /// Endpoint for FX rate lookups (currency -> USD, for per-brand `price_currency`
+    /// normalisation). Frankfurter `base=USD` shape. Fetched once eagerly at startup, then
+    /// lazily (at most hourly) whenever a selection finds the rates stale.
+    #[arg(
+        long,
+        env = "PROVIZ_FX_BASE_URL",
+        default_value = proviz_elekto_core::fx::DEFAULT_FX_URL
+    )]
+    fx_base_url: String,
 }
 
 /// Periodically fetches OpenRouter's live catalog and upserts it (see
@@ -228,8 +238,10 @@ async fn main() {
     };
 
     // Initial catalog load — run in a blocking thread so postgres storage can call block_on.
+    let fx_base_url = args.fx_base_url.clone();
     let selector = tokio::task::spawn_blocking(move || {
         let sel = Selector::new(storage);
+        sel.set_fx_url(fx_base_url);
         match sel.reload() {
             Ok((models, rules)) => info!(models, rules, "catalog loaded"),
             Err(e) => error!("catalog load failed: {e}"),
@@ -240,6 +252,13 @@ async fn main() {
     .expect("catalog load task panicked");
 
     let selector = Arc::new(selector);
+
+    // Eager FX refresh so a fresh server is immediately current; thereafter the lazy
+    // per-selection trigger keeps rates fresh (at most one fetch per hour).
+    {
+        let sel = selector.clone();
+        tokio::task::spawn_blocking(move || sel.refresh_fx());
+    }
 
     let http = reqwest::Client::new();
 

@@ -34,6 +34,15 @@ pub struct Brand {
     /// Provider-specific endpoint paths keyed by capability (e.g. "stt", "tts").
     /// Stored as JSON; None for brands that don't declare custom endpoints.
     pub endpoints: Option<JsonValue>,
+    /// ISO currency code the model prices in this brand's `models.json` are denominated in.
+    /// Defaults to `"USD"`. Non-USD prices are converted to USD for cost scoring and reporting
+    /// via `crate::fx::FxRates`. Declared per-brand in `brand.json` (`"price_currency"`).
+    #[serde(default = "default_currency")]
+    pub price_currency: String,
+}
+
+pub(crate) fn default_currency() -> String {
+    "USD".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -400,6 +409,11 @@ pub struct ModelCandidate {
     /// Echo of `Model.retains_data`. `None` when the source doesn't report it.
     #[serde(default)]
     pub retains_data: Option<bool>,
+    /// Echo of `Brand.price_currency` — the ISO currency `price_input_per_1m` /
+    /// `price_output_per_1m` on this candidate are denominated in. `"USD"` for the vast
+    /// majority of brands. `estimated_input_cost_usd` is always already in USD.
+    #[serde(default = "default_currency")]
+    pub price_currency: String,
 }
 
 /// Input to /report

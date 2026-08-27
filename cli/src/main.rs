@@ -168,6 +168,10 @@ enum BrandCmd {
         /// Traffic weight for load distribution (default 1.0, higher = more traffic)
         #[arg(long, default_value = "1.0")]
         traffic_weight: f64,
+        /// ISO currency the model prices are denominated in (default USD; converted to USD
+        /// for scoring/reporting via live FX rates)
+        #[arg(long, default_value = "USD")]
+        price_currency: String,
     },
     List,
     Disable {
@@ -456,6 +460,7 @@ fn main() {
                 base_url,
                 priority,
                 traffic_weight,
+                price_currency,
             } => {
                 let brand = Brand {
                     id: Uuid::new_v4(),
@@ -467,6 +472,7 @@ fn main() {
                     created_at: chrono::Utc::now(),
                     traffic_weight,
                     endpoints: None,
+                    price_currency,
                 };
                 storage.insert_brand(&brand).unwrap();
                 if let Some(env) = api_key_env {

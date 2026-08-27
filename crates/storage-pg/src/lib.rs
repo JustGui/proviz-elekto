@@ -2,6 +2,7 @@ use chrono::{DateTime, Utc};
 use postgres::{Client, NoTls};
 use proviz_elekto_core::{
     error::StorageError,
+    fx::FxRate,
     models::{
         Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
         RateLimitErrorType, SelectionRule,
@@ -9,10 +10,10 @@ use proviz_elekto_core::{
     storage::{CatalogStorage, StorageResult},
 };
 use proviz_elekto_storage_common::{
-    brand_api_key_from_row, brand_from_row, group_from_row, group_member_from_row,
-    model_catalog_from_row, model_from_row, model_step_quality_from_row, rule_from_row, RowReader,
-    Q_BRANDS, Q_BRAND_API_KEYS, Q_GROUPS, Q_GROUP_MEMBERS, Q_MODELS, Q_MODEL_CATALOG,
-    Q_MODEL_STEP_QUALITY, Q_RULES,
+    brand_api_key_from_row, brand_from_row, fx_rate_from_row, group_from_row,
+    group_member_from_row, model_catalog_from_row, model_from_row, model_step_quality_from_row,
+    rule_from_row, RowReader, Q_BRANDS, Q_BRAND_API_KEYS, Q_FX_RATES, Q_GROUPS, Q_GROUP_MEMBERS,
+    Q_MODELS, Q_MODEL_CATALOG, Q_MODEL_STEP_QUALITY, Q_RULES,
 };
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -47,6 +48,7 @@ impl PostgresStorage {
         s.migrate_model_catalog_fields()?;
         s.migrate_privacy_fields()?;
         s.migrate_group_weights()?;
+        s.migrate_price_currency()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -96,6 +98,16 @@ impl PostgresStorage {
         let mut client = self.connected_client()?;
         client
             .batch_execute("ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS endpoints TEXT;")
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn migrate_price_currency(&self) -> Result<(), StorageError> {
+        let mut client = self.connected_client()?;
+        client
+            .batch_execute(
+                "ALTER TABLE pz_brands ADD COLUMN IF NOT EXISTS price_currency VARCHAR(8) NOT NULL DEFAULT 'USD';",
+            )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -305,14 +317,15 @@ impl CatalogStorage for PostgresStorage {
             .as_ref()
             .map(|v| serde_json::to_string(v).unwrap_or_default());
         client.execute(
-            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            "INSERT INTO pz_brands (id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints,price_currency)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
              ON CONFLICT (slug) DO UPDATE SET
                name=EXCLUDED.name, base_url=EXCLUDED.base_url,
                is_active=EXCLUDED.is_active, priority=EXCLUDED.priority,
                traffic_weight=EXCLUDED.traffic_weight,
-               endpoints=EXCLUDED.endpoints",
-            &[&brand.id, &brand.slug, &brand.name, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight, &endpoints_json],
+               endpoints=EXCLUDED.endpoints,
+               price_currency=EXCLUDED.price_currency",
+            &[&brand.id, &brand.slug, &brand.name, &brand.base_url, &brand.is_active, &brand.priority, &brand.created_at, &brand.traffic_weight, &endpoints_json, &brand.price_currency],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
@@ -680,6 +693,35 @@ impl CatalogStorage for PostgresStorage {
         Ok(())
     }
 
+    fn load_fx_rates(&self) -> StorageResult<Vec<FxRate>> {
+        let mut client = self.connected_client()?;
+        let rows = client
+            .query(Q_FX_RATES, &[])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows.iter().map(|r| fx_rate_from_row(&PgRow(r))).collect())
+    }
+
+    fn save_fx_rates(&self, rates: &[FxRate]) -> StorageResult<()> {
+        let mut client = self.connected_client()?;
+        let mut tx = client
+            .transaction()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        for r in rates {
+            tx.execute(
+                "INSERT INTO pz_fx_rates (currency,per_usd,rate_date,fetched_at)
+                 VALUES ($1,$2,$3,$4)
+                 ON CONFLICT (currency) DO UPDATE SET
+                   per_usd=EXCLUDED.per_usd, rate_date=EXCLUDED.rate_date,
+                   fetched_at=EXCLUDED.fetched_at",
+                &[&r.currency, &r.per_usd, &r.rate_date, &r.fetched_at],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+        tx.commit()
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()> {
         let mut client = self.connected_client()?;
         let id = Uuid::new_v4();
@@ -731,7 +773,15 @@ CREATE TABLE IF NOT EXISTS pz_brands (
     priority       SMALLINT         NOT NULL DEFAULT 0,
     created_at     TIMESTAMPTZ      NOT NULL DEFAULT NOW(),
     traffic_weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    endpoints      TEXT
+    endpoints      TEXT,
+    price_currency VARCHAR(8)       NOT NULL DEFAULT 'USD'
+);
+
+CREATE TABLE IF NOT EXISTS pz_fx_rates (
+    currency   VARCHAR(8)       PRIMARY KEY,
+    per_usd    DOUBLE PRECISION NOT NULL,
+    rate_date  VARCHAR(16)      NOT NULL,
+    fetched_at TIMESTAMPTZ      NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS pz_models (

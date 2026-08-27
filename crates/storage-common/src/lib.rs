@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use proviz_elekto_core::fx::FxRate;
 use proviz_elekto_core::models::{
     Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
     SelectionRule,
@@ -7,7 +8,8 @@ use uuid::Uuid;
 
 // Base SELECT queries — append WHERE / ORDER BY in each adapter.
 pub const Q_BRANDS: &str =
-    "SELECT id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints \
+    "SELECT id,slug,name,base_url,is_active,priority,created_at,traffic_weight,endpoints,\
+     price_currency \
      FROM pz_brands";
 
 pub const Q_MODELS: &str =
@@ -41,6 +43,8 @@ pub const Q_MODEL_STEP_QUALITY: &str =
 pub const Q_BRAND_API_KEYS: &str = "SELECT id,brand_id,api_key_env,priority,is_active,created_at \
      FROM pz_brand_api_keys";
 
+pub const Q_FX_RATES: &str = "SELECT currency,per_usd,rate_date,fetched_at FROM pz_fx_rates";
+
 /// Uniform read interface over a single result row.
 /// Implementations must match column indices to the constants above.
 /// Methods panic on schema mismatch — these are programming errors, not runtime errors.
@@ -72,6 +76,19 @@ pub fn brand_from_row(row: &impl RowReader) -> Brand {
         endpoints: row
             .opt_string(8)
             .and_then(|s| serde_json::from_str(&s).ok()),
+        price_currency: row
+            .opt_string(9)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "USD".to_string()),
+    }
+}
+
+pub fn fx_rate_from_row(row: &impl RowReader) -> FxRate {
+    FxRate {
+        currency: row.string(0),
+        per_usd: row.opt_f64(1).unwrap_or(0.0),
+        rate_date: row.opt_string(2).unwrap_or_default(),
+        fetched_at: row.datetime(3),
     }
 }
 

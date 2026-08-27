@@ -81,6 +81,10 @@ class ModelCandidate:
     trains_on_data: Optional[bool] = None
     # Whether this model/provider retains submitted data. None when not reported.
     retains_data: Optional[bool] = None
+    # ISO currency price_input_per_1m / price_output_per_1m are denominated in (echo of the
+    # brand's price_currency). "USD" for almost every brand. estimated_input_cost_usd is
+    # already in USD regardless. _compute_cost() converts non-USD figures via /fx/rates.
+    price_currency: str = "USD"
 
 
 @dataclass
@@ -333,13 +337,23 @@ def _compute_cost(
     candidate: "ModelCandidate",
     prompt_tokens: int,
     completion_tokens: int,
+    fx_rates: Optional[dict] = None,
 ) -> Optional[float]:
-    """Compute actual cost in USD from model prices and token counts. Returns None if prices unknown."""
+    """Compute actual cost in USD from model prices and token counts. Returns None if prices
+    unknown. `candidate.price_currency` may be non-USD (see ModelCandidate); `fx_rates` maps
+    currency -> units-per-USD (from the server's /fx/rates). Missing rate -> treated as USD."""
     p_in = candidate.price_input_per_1m
     p_out = candidate.price_output_per_1m
     if p_in is None and p_out is None:
         return None
-    return ((p_in or 0.0) * prompt_tokens + (p_out or 0.0) * completion_tokens) / 1_000_000.0
+    cur = (candidate.price_currency or "USD").upper()
+    rate = 1.0
+    if cur != "USD" and fx_rates:
+        r = fx_rates.get(cur)
+        if r and r > 0:
+            rate = r
+    native = ((p_in or 0.0) * prompt_tokens + (p_out or 0.0) * completion_tokens) / 1_000_000.0
+    return native / rate
 
 
 def _estimate_tokens(messages: list[dict]) -> int:
@@ -441,6 +455,8 @@ class ProvizElekto:
         self._base = f"http://{host}:{port}"
         self._timeout = timeout
         self._sync_provider_limits = sync_provider_limits
+        self._fx_cache: Optional[dict] = None
+        self._fx_cache_at: float = 0.0
 
         # If pointing at a remote host (not localhost), never spawn — just attach.
         if host != "localhost" and port > 0:
@@ -576,6 +592,21 @@ class ProvizElekto:
     def _get(self, path: str) -> dict:
         return self._request_with_retry(path, method="GET")
 
+    def _fx_rates(self) -> dict:
+        """currency -> units-per-USD, from the server's /fx/rates. Cached in-process for 1 h.
+        Returns {} on any failure (so _compute_cost falls back to treating prices as USD)."""
+        now = time.monotonic()
+        if self._fx_cache is not None and (now - self._fx_cache_at) < 3600:
+            return self._fx_cache
+        try:
+            rates = self._get("/fx/rates").get("rates", {}) or {}
+            rates = {str(k).upper(): float(v) for k, v in rates.items()}
+        except Exception:  # noqa: BLE001 — cost is best-effort
+            rates = {}
+        self._fx_cache = rates
+        self._fx_cache_at = now
+        return rates
+
     def _post_fire_and_forget(self, path: str, body: dict) -> None:
         """Send a report in a background thread — caller is not blocked.
 
@@ -673,6 +704,7 @@ class ProvizElekto:
             price_synced_at=r.get("price_synced_at"),
             trains_on_data=r.get("trains_on_data"),
             retains_data=r.get("retains_data"),
+            price_currency=r.get("price_currency", "USD"),
         )
         _logger.debug(
             "select response: model=%s brand=%s cost_usd=%s",
@@ -990,7 +1022,11 @@ class ProvizElekto:
                         list(_collect_response_headers(response).keys()) or "none",
                     )
                 provider_cost_usd = _extract_provider_cost(response)
-                actual_cost_usd = provider_cost_usd if provider_cost_usd is not None else _compute_cost(candidate, prompt, completion)
+                actual_cost_usd = (
+                    provider_cost_usd
+                    if provider_cost_usd is not None
+                    else _compute_cost(candidate, prompt, completion, self._fx_rates())
+                )
                 self.report_success(
                     candidate.model_id,
                     estimated_tokens=estimated_tokens,
@@ -1270,7 +1306,9 @@ class ProvizElekto:
                         actual_cost_usd = (
                             total_provider_cost
                             if total_provider_cost is not None
-                            else _compute_cost(candidate, total_prompt, total_completion)
+                            else _compute_cost(
+                                candidate, total_prompt, total_completion, self._fx_rates()
+                            )
                         )
                         self.report_success(
                             candidate.model_id,

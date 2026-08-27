@@ -334,9 +334,16 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 )
                 .await;
                 let cost_usd = cost.or_else(|| {
+                    // Fallback estimate — convert the candidate's native-currency prices to USD
+                    // first (no-op for USD brands). The primary `report()` path already does.
+                    let fx = state.selector.fx();
                     compute_cost(
-                        candidate.price_input_per_1m,
-                        candidate.price_output_per_1m,
+                        candidate
+                            .price_input_per_1m
+                            .map(|p| fx.to_usd(p, &candidate.price_currency)),
+                        candidate
+                            .price_output_per_1m
+                            .map(|p| fx.to_usd(p, &candidate.price_currency)),
                         parsed.prompt_tokens,
                         parsed.completion_tokens,
                     )
