@@ -14,7 +14,7 @@
     "price_input_per_1m": 0.30,
     "price_output_per_1m": 0.40,
     "supported_languages": ["en", "es", "fr", "de", "it", "ja"],
-    "notes": "Multimodal (image understanding). Infomaniak prices in EUR."
+    "notes": "Multimodal (image understanding)."
   },
   {
     "slug": "google/gemma-4-31B-it",
@@ -30,7 +30,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.20,
     "price_output_per_1m": 0.40,
-    "notes": "Multimodal; strong at reasoning and code. Infomaniak prices in EUR."
+    "notes": "Multimodal; strong at reasoning and code."
   },
   {
     "slug": "mistralai/Mistral-Small-4-119B-2603",
@@ -46,7 +46,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.20,
     "price_output_per_1m": 0.75,
-    "notes": "Instruction + reasoning hybrid, agentic workflows. Infomaniak prices in EUR."
+    "notes": "Instruction + reasoning hybrid, agentic workflows."
   },
   {
     "slug": "moonshotai/Kimi-K2.6",
@@ -62,7 +62,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.60,
     "price_output_per_1m": 3.00,
-    "notes": "Beta. Native multimodal, tuned for code generation. Infomaniak prices in EUR."
+    "notes": "Beta. Native multimodal, tuned for code generation."
   },
   {
     "slug": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
@@ -78,7 +78,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.05,
     "price_output_per_1m": 0.20,
-    "notes": "Beta. Hybrid MoE, native/optimised function calling, 140+ languages. Infomaniak prices in EUR."
+    "notes": "Beta. Hybrid MoE, native/optimised function calling, 140+ languages."
   },
   {
     "slug": "Qwen/Qwen3.5-122B-A10B-FP8",
@@ -94,7 +94,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.40,
     "price_output_per_1m": 3.20,
-    "notes": "Broad-context reasoning MoE. Infomaniak prices in EUR."
+    "notes": "Broad-context reasoning MoE."
   },
   {
     "slug": "Qwen/Qwen3.5-397B-A17B-FP8",
@@ -110,7 +110,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.80,
     "price_output_per_1m": 3.60,
-    "notes": "Beta. Large MoE for scientific reasoning, multi-step planning, tool use. Infomaniak prices in EUR."
+    "notes": "Beta. Large MoE for scientific reasoning, multi-step planning, tool use."
   },
   {
     "slug": "swiss-ai/Apertus-v1.5-70B",
@@ -126,7 +126,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.70,
     "price_output_per_1m": 2.50,
-    "notes": "Beta. Fully transparent weights/data; multimodal (text, image, audio). Infomaniak prices in EUR."
+    "notes": "Beta. Fully transparent weights/data; multimodal (text, image, audio)."
   },
 
   {
@@ -142,7 +142,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.065,
     "price_output_per_1m": 0.0,
-    "notes": "Text embedding endpoint (/embeddings). Infomaniak prices in EUR."
+    "notes": "Text embedding endpoint (/embeddings)."
   },
   {
     "slug": "mini_lm_l12_v2",
@@ -172,7 +172,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.07,
     "price_output_per_1m": 0.0,
-    "notes": "Text embedding endpoint (/embeddings). Infomaniak prices in EUR."
+    "notes": "Text embedding endpoint (/embeddings)."
   },
 
   {
@@ -189,7 +189,7 @@
     "price_input_per_1m": 0.01,
     "price_output_per_1m": 0.0,
     "base_url": "https://api.infomaniak.com/2/ai/${INFOMANIAK_PRODUCT_ID}/cohere/v2",
-    "notes": "Cohere-compatible rerank endpoint (/rerank); catalog-only, not routable by the selector. Infomaniak prices in EUR."
+    "notes": "Cohere-compatible rerank endpoint (/rerank); catalog-only, not routable by the selector."
   },
   {
     "slug": "Qwen/Qwen3-Reranker-0.6B",
@@ -205,7 +205,7 @@
     "price_input_per_1m": 0.009,
     "price_output_per_1m": 0.0,
     "base_url": "https://api.infomaniak.com/2/ai/${INFOMANIAK_PRODUCT_ID}/cohere/v2",
-    "notes": "Cohere-compatible rerank endpoint (/rerank); catalog-only, not routable by the selector. Infomaniak prices in EUR."
+    "notes": "Cohere-compatible rerank endpoint (/rerank); catalog-only, not routable by the selector."
   },
 
   {
@@ -226,7 +226,7 @@
     "http_batch": true,
     "word_timestamps": false,
     "base_url": "https://api.infomaniak.com/1/ai/${INFOMANIAK_PRODUCT_ID}",
-    "notes": "OpenAI-compatible /openai/audio/transcriptions. price_input_per_1m holds the EUR per-minute rate (audio pricing, same convention as other STT brands here)."
+    "notes": "OpenAI-compatible /openai/audio/transcriptions. price_input_per_1m holds the per-minute rate in the brand's price_currency (audio pricing, same convention as other STT brands here)."
   },
 
   {
@@ -243,7 +243,7 @@
     "price_input_per_1m": 0.30,
     "price_output_per_1m": 0.0,
     "base_url": "https://api.infomaniak.com/2/ai/${INFOMANIAK_PRODUCT_ID}/openai",
-    "notes": "OpenAI-compatible /images/generations; catalog-only, not routable by the selector. price_input_per_1m holds the EUR per-minute (generation-time) rate."
+    "notes": "OpenAI-compatible /images/generations; catalog-only, not routable by the selector. price_input_per_1m holds the per-minute (generation-time) rate in the brand's price_currency."
   },
   {
     "slug": "photomaker",
@@ -259,6 +259,6 @@
     "price_input_per_1m": 0.30,
     "price_output_per_1m": 0.0,
     "base_url": "https://api.infomaniak.com/1/ai/${INFOMANIAK_PRODUCT_ID}",
-    "notes": "/images/generations/photo_maker; catalog-only, not routable by the selector. price_input_per_1m holds the EUR per-minute (generation-time) rate."
+    "notes": "/images/generations/photo_maker; catalog-only, not routable by the selector. price_input_per_1m holds the per-minute (generation-time) rate in the brand's price_currency."
   }
 ]
