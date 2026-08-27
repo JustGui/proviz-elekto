@@ -339,7 +339,32 @@ impl Selector {
         // overrides (which win) in Pass 2 below.
         let mut group_weight_overrides: (Option<f32>, Option<f32>, Option<f32>) =
             (None, None, None);
-        let rules: &[SelectionRule] = if req.group_id.is_some() || req.group_name.is_some() {
+        let rules: &[SelectionRule] = if req.pin_model.is_some() {
+            // Benchmark pin: ignore group + step rules, consider every enabled model — the
+            // Pass-1 `pin_model` filter below narrows to the single matching slug. Same shape
+            // as the no-rules brand-priority fallback further down.
+            use_priority_scoring = false;
+            let mut entries: Vec<(i16, Uuid)> = cache
+                .models
+                .values()
+                .filter_map(|m| cache.brands.get(&m.brand_id).map(|b| (b.priority, m.id)))
+                .collect();
+            entries.sort_unstable();
+            synthetic_rules = entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, (_, model_id))| SelectionRule {
+                    id: Uuid::nil(),
+                    step: req.step.clone(),
+                    model_id,
+                    priority: i as i16,
+                    max_ctx_tokens: None,
+                    requires_fn_call: false,
+                    is_enabled: true,
+                })
+                .collect();
+            &synthetic_rules
+        } else if req.group_id.is_some() || req.group_name.is_some() {
             // Group-based selection: restrict candidates to group members.
             let group_id = if let Some(id) = req.group_id {
                 if cache.groups.contains_key(&id) {
@@ -485,6 +510,19 @@ impl Selector {
 
             if !brand.is_active {
                 continue;
+            }
+
+            if let Some(pin) = req.pin_model.as_deref() {
+                // Case-insensitive: catalog slugs vary in case across providers (litellm-style
+                // `ovhcloud/Qwen3.6-27B` vs proviz `ovhcloud/qwen3.6-27b`).
+                let pin_l = pin.to_lowercase();
+                let full = format!("{}/{}", brand.slug, model.slug).to_lowercase();
+                let matches_pin = pin_l == full
+                    || pin_l == model.slug.to_lowercase()
+                    || model.canonical_key.as_deref().map(str::to_lowercase) == Some(pin_l);
+                if !matches_pin {
+                    continue;
+                }
             }
 
             if model.max_context_tokens < req.estimated_tokens {

@@ -552,6 +552,7 @@ pub async fn handle_batch_submit(
         cost_weight: None,
         latency_weight: None,
         quality_weight: None,
+        pin_model: None,
     };
 
     let sel = selector.clone();

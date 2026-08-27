@@ -83,6 +83,10 @@ enum Command {
         /// Override the Pass-2 quality-component weight (see SelectRequest.quality_weight)
         #[arg(long)]
         quality_weight: Option<f32>,
+        /// Benchmark hook: pin selection to one model (bypasses group/step rules), matched on
+        /// `brand/slug`, bare `slug`, or `canonical_key` (see SelectRequest.pin_model)
+        #[arg(long)]
+        pin_model: Option<String>,
     },
     /// Hot-reload catalog in running server
     Reload,
@@ -948,6 +952,7 @@ fn main() {
             cost_weight,
             latency_weight,
             quality_weight,
+            pin_model,
         } => {
             let selector = Selector::new(storage);
             selector.reload().unwrap();
@@ -969,6 +974,7 @@ fn main() {
                 cost_weight,
                 latency_weight,
                 quality_weight,
+                pin_model,
             };
             match selector.select(&req) {
                 Ok(c) => {

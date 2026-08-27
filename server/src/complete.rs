@@ -78,6 +78,10 @@ pub struct CompleteRequest {
     pub latency_weight: Option<f32>,
     #[serde(default)]
     pub quality_weight: Option<f32>,
+    /// See `SelectRequest.pin_model` — benchmark hook, pins selection to one catalog model
+    /// (bypassing group/step rules). `None` = normal selection.
+    #[serde(default)]
+    pub pin_model: Option<String>,
 
     // ── completion fields ───────────────────────────────────────────────────
     pub messages: Vec<ChatMessage>,
@@ -143,6 +147,7 @@ impl CompleteRequest {
             cost_weight: self.cost_weight,
             latency_weight: self.latency_weight,
             quality_weight: self.quality_weight,
+            pin_model: self.pin_model.clone(),
         }
     }
 
@@ -686,6 +691,7 @@ mod payload_tests {
             cost_weight: None,
             latency_weight: None,
             quality_weight: None,
+            pin_model: None,
             messages: vec![ChatMessage {
                 role: "user".into(),
                 content: "hi".into(),

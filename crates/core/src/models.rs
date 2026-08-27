@@ -348,6 +348,14 @@ pub struct SelectRequest {
     /// Same contract as `cost_weight`, for the quality component (built-in default 0.20).
     #[serde(default)]
     pub quality_weight: Option<f32>,
+    /// Benchmark / A-B hook: pin selection to ONE specific model, bypassing group and step
+    /// rules entirely — every enabled catalog model is considered and Pass 1 keeps only the
+    /// one whose `brand_slug/model_slug`, bare `model_slug`, or `canonical_key` matches this
+    /// string (tolerant match: callers may pass a litellm-style `brand/slug`). Heatroom,
+    /// rate-limit and exhaustion handling are unchanged — a pinned model that is rate-limited
+    /// still waits/retries then 409s. `None` (default) = normal selection.
+    #[serde(default)]
+    pub pin_model: Option<String>,
 }
 
 fn default_true() -> bool {

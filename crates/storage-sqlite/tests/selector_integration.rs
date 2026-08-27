@@ -110,6 +110,7 @@ fn base_req() -> SelectRequest {
         cost_weight: None,
         latency_weight: None,
         quality_weight: None,
+        pin_model: None,
     }
 }
 
@@ -912,4 +913,47 @@ fn step_quality_overrides_global_only_for_its_own_step() {
     };
     let c = sel.select(&req).unwrap();
     assert_eq!(c.model_slug, "curated");
+}
+
+#[test]
+fn pin_model_selects_only_the_named_model_bypassing_step_rules() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    let a = make_model(brand.id, "acme-7b", 32_000);
+    let b = make_model(brand.id, "acme-70b", 32_000);
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&a).unwrap();
+    db.insert_model(&b).unwrap();
+    // Only `a` has a rule for the step; pin must still be able to reach `b`.
+    db.insert_rule(&make_rule("chat", a.id, 0)).unwrap();
+
+    let sel = selector(db);
+
+    // bare slug match
+    let c = sel
+        .select(&SelectRequest {
+            pin_model: Some("acme-70b".to_string()),
+            ..base_req()
+        })
+        .unwrap();
+    assert_eq!(c.model_slug, "acme-70b");
+
+    // brand/slug match, case-insensitive
+    let c = sel
+        .select(&SelectRequest {
+            pin_model: Some("ACME/Acme-7B".to_string()),
+            ..base_req()
+        })
+        .unwrap();
+    assert_eq!(c.model_slug, "acme-7b");
+
+    // no match → exhausted
+    let err = sel
+        .select(&SelectRequest {
+            pin_model: Some("acme/nonesuch".to_string()),
+            ..base_req()
+        })
+        .unwrap_err();
+    assert!(matches!(err, ProvizError::AllModelsExhausted { .. }));
 }
