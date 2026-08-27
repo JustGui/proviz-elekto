@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::{
     error::{ProvizError, Result},
+    fx::FxRates,
     models::{
         Brand, BrandApiKey, Group, GroupMember, Model, ModelCandidate, ModelStepQuality,
         RateLimitErrorType, SelectRequest, SelectionRule,
@@ -117,10 +118,20 @@ pub struct Selector {
     /// Per-brand selection timestamps for traffic-share balancing.
     /// Entries older than TRAFFIC_WINDOW_SECS are drained lazily on each selection.
     brand_traffic: DashMap<Uuid, Arc<Mutex<VecDeque<Instant>>>>,
+    /// Currency -> USD conversion factors for normalising non-USD brand prices. Seeded with a
+    /// builtin table, overlaid with any persisted `pz_fx_rates` rows at construction, and
+    /// refreshed lazily (see `select()` / `refresh_fx`).
+    fx: Arc<FxRates>,
+    /// Endpoint the lazy FX refresh fetches from (Frankfurter `base=USD` shape).
+    fx_url: RwLock<String>,
 }
 
 impl Selector {
     pub fn new(storage: Arc<dyn CatalogStorage>) -> Self {
+        let fx = Arc::new(FxRates::with_builtin_seed());
+        if let Ok(rows) = storage.load_fx_rates() {
+            fx.overlay_rows(&rows);
+        }
         Self {
             storage,
             cache: RwLock::new(None),
@@ -128,7 +139,55 @@ impl Selector {
             key_rate_state: RateLimitState::new(),
             usage_tracker: UsageTracker::new(),
             brand_traffic: DashMap::new(),
+            fx,
+            fx_url: RwLock::new(crate::fx::DEFAULT_FX_URL.to_string()),
         }
+    }
+
+    /// The FX rate table (shared handle — cheap to clone).
+    pub fn fx(&self) -> Arc<FxRates> {
+        self.fx.clone()
+    }
+
+    /// Set the URL the lazy FX refresh fetches from (server startup wires `PROVIZ_FX_BASE_URL`).
+    pub fn set_fx_url(&self, url: String) {
+        *self.fx_url.write().unwrap() = url;
+    }
+
+    /// Blocking FX refresh: fetch fresh rates and, on success, persist them to `pz_fx_rates`.
+    /// Called once eagerly at server startup and from the lazy background trigger in `select`.
+    pub fn refresh_fx(&self) {
+        let url = self.fx_url.read().unwrap().clone();
+        match self.fx.refresh_blocking(&url) {
+            Ok(rows) => {
+                if let Err(e) = self.storage.save_fx_rates(&rows) {
+                    warn!("failed to persist fx rates: {e}");
+                }
+            }
+            Err(e) => warn!("fx refresh failed: {e}"),
+        }
+    }
+
+    /// If the FX snapshot is stale, kick off one background refresh (single-flight). Never
+    /// blocks the caller — the current selection proceeds on the existing snapshot.
+    fn maybe_refresh_fx(&self) {
+        if !self.fx.begin_refresh_if_stale() {
+            return;
+        }
+        let fx = self.fx.clone();
+        let storage = self.storage.clone();
+        let url = self.fx_url.read().unwrap().clone();
+        std::thread::spawn(move || {
+            match fx.refresh_blocking(&url) {
+                Ok(rows) => {
+                    if let Err(e) = storage.save_fx_rates(&rows) {
+                        warn!("failed to persist fx rates: {e}");
+                    }
+                }
+                Err(e) => warn!("fx refresh failed: {e}"),
+            }
+            fx.finish_refresh();
+        });
     }
 
     /// Force reload from storage. Called at startup and by POST /catalog/reload.
@@ -266,6 +325,8 @@ impl Selector {
 
     pub fn select(&self, req: &SelectRequest) -> Result<ModelCandidate> {
         self.ensure_cache()?;
+        // Cheap check; spawns at most one background fetch per hour (single-flight).
+        self.maybe_refresh_fx();
 
         let guard = self.cache.read().unwrap();
         let cache = guard.as_ref().unwrap();
@@ -643,10 +704,15 @@ impl Selector {
         // rank below models that have capacity.  Traffic balance steers load toward
         // under-served brands according to their traffic_weight.
 
-        let prices: Vec<f64> = candidates
-            .iter()
-            .filter_map(|c| c.model.price_input_per_1m)
-            .collect();
+        // Prices are per-brand and may be in different currencies (see `Brand.price_currency`
+        // / `crate::fx`); normalise every one to USD before they're compared or reported.
+        let price_input_usd = |c: &Candidate| -> Option<f64> {
+            c.model
+                .price_input_per_1m
+                .map(|p| self.fx.to_usd(p, &c.brand.price_currency))
+        };
+
+        let prices: Vec<f64> = candidates.iter().filter_map(&price_input_usd).collect();
         let min_price = prices.iter().cloned().fold(f64::INFINITY, f64::min);
         let max_price = prices.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
 
@@ -769,7 +835,7 @@ impl Selector {
         for c in &mut candidates {
             let quality = effective_quality(cache, c.model, &req.step).unwrap_or(0.5) as f32;
 
-            let cost_score = match c.model.price_input_per_1m {
+            let cost_score = match price_input_usd(c) {
                 None => 0.5_f32,
                 Some(_) if (max_price - min_price).abs() < f64::EPSILON => 0.5_f32,
                 Some(p) => 1.0_f32 - ((p - min_price) / (max_price - min_price)) as f32,
@@ -835,10 +901,9 @@ impl Selector {
             w.push_back(now);
         }
 
-        let estimated_input_cost_usd = winner
-            .model
-            .price_input_per_1m
-            .map(|p| p * estimated_tokens as f64 / 1_000_000.0);
+        let estimated_input_cost_usd = winner.model.price_input_per_1m.map(|p| {
+            self.fx.to_usd(p, &winner.brand.price_currency) * estimated_tokens as f64 / 1_000_000.0
+        });
 
         // The serving key was chosen at filter time (Pass 1) so headroom and the in-flight
         // reservation track the specific account; reuse it here rather than re-picking.
@@ -860,11 +925,13 @@ impl Selector {
             brand_slug: winner.brand.slug.clone(),
             model_slug: winner.model.slug.clone(),
             api_key_env,
-            base_url: winner
-                .model
-                .base_url
-                .clone()
-                .or_else(|| winner.brand.base_url.clone()),
+            base_url: crate::env_expand::expand_env_placeholders_opt(
+                winner
+                    .model
+                    .base_url
+                    .clone()
+                    .or_else(|| winner.brand.base_url.clone()),
+            ),
             brand_key_id,
             max_context_tokens: winner.model.max_context_tokens,
             supports_function_calling: winner.model.supports_function_calling,
@@ -886,6 +953,7 @@ impl Selector {
             price_synced_at: winner.model.price_synced_at,
             trains_on_data: winner.model.trains_on_data,
             retains_data: winner.model.retains_data,
+            price_currency: winner.brand.price_currency.clone(),
         })
     }
 
@@ -975,28 +1043,32 @@ impl Selector {
             return provider_cost_usd;
         }
 
-        // Compute actual cost from model prices + token breakdown when available.
+        // Compute actual cost from model prices + token breakdown when available. Prices are
+        // in the brand's `price_currency`; convert to USD (no-op for USD brands).
         let guard = self.cache.read().unwrap();
-        guard
-            .as_ref()
-            .and_then(|c| c.models.get(&model_id))
-            .and_then(|m| {
-                let in_cost = m
-                    .price_input_per_1m
-                    .zip(prompt_tokens)
-                    .map(|(p, t)| p * t as f64 / 1_000_000.0)
-                    .unwrap_or(0.0);
-                let out_cost = m
-                    .price_output_per_1m
-                    .zip(completion_tokens)
-                    .map(|(p, t)| p * t as f64 / 1_000_000.0)
-                    .unwrap_or(0.0);
-                if m.price_input_per_1m.is_some() || m.price_output_per_1m.is_some() {
-                    Some(in_cost + out_cost)
-                } else {
-                    None
-                }
-            })
+        guard.as_ref().and_then(|c| {
+            let m = c.models.get(&model_id)?;
+            let currency = c
+                .brands
+                .get(&m.brand_id)
+                .map(|b| b.price_currency.as_str())
+                .unwrap_or("USD");
+            let in_cost = m
+                .price_input_per_1m
+                .zip(prompt_tokens)
+                .map(|(p, t)| self.fx.to_usd(p, currency) * t as f64 / 1_000_000.0)
+                .unwrap_or(0.0);
+            let out_cost = m
+                .price_output_per_1m
+                .zip(completion_tokens)
+                .map(|(p, t)| self.fx.to_usd(p, currency) * t as f64 / 1_000_000.0)
+                .unwrap_or(0.0);
+            if m.price_input_per_1m.is_some() || m.price_output_per_1m.is_some() {
+                Some(in_cost + out_cost)
+            } else {
+                None
+            }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

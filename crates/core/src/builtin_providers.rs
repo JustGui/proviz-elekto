@@ -16,6 +16,10 @@ struct BrandDef {
     api_key_env: Option<String>,
     base_url: Option<String>,
     endpoints: Option<JsonValue>,
+    /// ISO currency the model prices in this provider's `models.json` are in. Defaults to
+    /// `"USD"`. See `crate::fx`.
+    #[serde(default)]
+    price_currency: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -255,6 +259,10 @@ pub fn load_from_dir(
                 endpoints: brand_def.endpoints.clone(),
                 base_url: brand_def.base_url.clone(),
                 name: brand_def.name.clone(),
+                price_currency: brand_def
+                    .price_currency
+                    .clone()
+                    .unwrap_or_else(|| existing.price_currency.clone()),
                 ..existing.clone()
             };
             storage.insert_brand(&updated)?;
@@ -270,6 +278,10 @@ pub fn load_from_dir(
                 created_at: Utc::now(),
                 traffic_weight: 1.0,
                 endpoints: brand_def.endpoints.clone(),
+                price_currency: brand_def
+                    .price_currency
+                    .clone()
+                    .unwrap_or_else(|| "USD".to_string()),
             };
             let id = brand.id;
             storage.insert_brand(&brand)?;

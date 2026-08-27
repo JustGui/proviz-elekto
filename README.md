@@ -127,7 +127,11 @@ print(result.brand, result.model, result.prompt_tokens, result.completion_tokens
 # → mistral mistral-small-latest 2487 312 0.00031
 ```
 
-`complete()` does select + provider call + report in a single round-trip. On provider failure it excludes the model and retries the next-best candidate server-side (up to 4 attempts). Pass `tools=`/`tool_choice=` to get un-executed `tool_calls` back and drive the tool loop yourself. Any OpenAI-compatible provider (groq, mistral, ovh, scaleway) works.
+`complete()` does select + provider call + report in a single round-trip. On provider failure it excludes the model and retries the next-best candidate server-side (up to 4 attempts). Pass `tools=`/`tool_choice=` to get un-executed `tool_calls` back and drive the tool loop yourself. Any OpenAI-compatible provider (groq, mistral, ovh, scaleway, novita, infomaniak, …) works.
+
+> **Infomaniak** embeds an account-specific `product_id` in its API URL. `providers/infomaniak/brand.json` stores it as a `${INFOMANIAK_PRODUCT_ID}` placeholder in `base_url`, expanded from the environment at request time — set `INFOMANIAK_PRODUCT_ID` (from `GET https://api.infomaniak.com/1/ai`) next to `INFOMANIAK_API_KEY` wherever the server/Docker container runs. Any `base_url` in a provider's `brand.json`/`models.json` may use `${VAR}` this way.
+
+> **Non-USD pricing.** A `brand.json` may set `"price_currency"` (e.g. `"EUR"` for Infomaniak); the model prices in its `models.json` are then in that currency. The selector converts everything to USD for cost scoring and for the `cost_usd` / `actual_cost_usd` figures using live ECB rates (from [frankfurter.dev](https://frankfurter.dev), fetched at most hourly, persisted so last-good values survive restarts). `GET /fx/rates` shows the current table. USD-only setups are unaffected.
 
 The legacy `/select` + client-side call + `/report` flow (below) stays fully supported — use it when you want to own the provider call (streaming, custom SDK).
 

@@ -51,6 +51,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/stt/model-info", get(handle_stt_model_info))
         .route("/batch/submit", post(handle_batch_submit))
         .route("/batch/result/{request_id}", get(handle_batch_result))
+        .route("/fx/rates", get(handle_fx_rates))
         .with_state(state)
         .layer(tower_http::cors::CorsLayer::permissive())
 }
@@ -276,6 +277,12 @@ async fn handle_health(State(state): State<Arc<AppState>>) -> impl IntoResponse 
         status: "ok",
         uptime_secs: state.started_at.elapsed().as_secs(),
     })
+}
+
+/// Current FX snapshot (`{base:"USD", date, fetched_at, stale, rates}`) used to convert
+/// non-USD per-brand prices. See `proviz_elekto_core::fx`.
+async fn handle_fx_rates(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(state.selector.fx().snapshot_json())
 }
 
 async fn handle_reload(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -623,6 +630,7 @@ async fn handle_stt_model_info(
                     .filter(|u| !u.is_empty())
                     .map(|u| u.trim_end_matches('/').to_string())
             })
+            .map(|u| proviz_elekto_core::env_expand::expand_env_placeholders(&u))
             .or_else(|| {
                 let prefix = brand_slug.split('-').next().unwrap_or(&brand_slug);
                 match prefix {

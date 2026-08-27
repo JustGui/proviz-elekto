@@ -2,6 +2,7 @@ use uuid::Uuid;
 
 use crate::{
     error::StorageError,
+    fx::FxRate,
     models::{
         Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
         RateLimitErrorType, SelectionRule,
@@ -74,6 +75,12 @@ pub trait CatalogStorage: Send + Sync {
     fn insert_brand_api_key(&self, key: &BrandApiKey) -> StorageResult<()>;
     fn load_all_brand_api_keys(&self) -> StorageResult<Vec<BrandApiKey>>;
     fn delete_brand_api_key(&self, key_id: Uuid) -> StorageResult<()>;
+
+    // FX rates (currency -> USD conversion factors, persisted so last-good values survive
+    // restarts and are shared with the CLI). See `crate::fx`.
+    fn load_fx_rates(&self) -> StorageResult<Vec<FxRate>>;
+    /// Upsert one row per currency (`currency` is the primary key).
+    fn save_fx_rates(&self, rates: &[FxRate]) -> StorageResult<()>;
 
     // Rate events
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()>;
