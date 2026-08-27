@@ -13,6 +13,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.30,
     "price_output_per_1m": 0.40,
+    "reasoning_effort_value": "none",
     "supported_languages": ["en", "es", "fr", "de", "it", "ja"],
     "notes": "Multimodal (image understanding)."
   },
@@ -30,6 +31,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.20,
     "price_output_per_1m": 0.40,
+    "reasoning_effort_value": "none",
     "notes": "Multimodal; strong at reasoning and code."
   },
   {
@@ -46,6 +48,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.20,
     "price_output_per_1m": 0.75,
+    "reasoning_effort_value": "none",
     "notes": "Instruction + reasoning hybrid, agentic workflows."
   },
   {
@@ -62,6 +65,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.60,
     "price_output_per_1m": 3.00,
+    "reasoning_effort_value": "none",
     "notes": "Beta. Native multimodal, tuned for code generation."
   },
   {
@@ -78,6 +82,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.05,
     "price_output_per_1m": 0.20,
+    "reasoning_effort_value": "none",
     "notes": "Beta. Hybrid MoE, native/optimised function calling, 140+ languages."
   },
   {
@@ -94,6 +99,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.40,
     "price_output_per_1m": 3.20,
+    "reasoning_effort_value": "none",
     "notes": "Broad-context reasoning MoE."
   },
   {
@@ -110,6 +116,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.80,
     "price_output_per_1m": 3.60,
+    "reasoning_effort_value": "none",
     "notes": "Beta. Large MoE for scientific reasoning, multi-step planning, tool use."
   },
   {
@@ -126,6 +133,7 @@
     "tpd_limit": null,
     "price_input_per_1m": 0.70,
     "price_output_per_1m": 2.50,
+    "reasoning_effort_value": "none",
     "notes": "Beta. Fully transparent weights/data; multimodal (text, image, audio)."
   },
 
