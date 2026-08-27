@@ -2,6 +2,7 @@
   "slug": "scaleway",
   "name": "Scaleway",
   "api_key_env": "SCALEWAY_API_KEY",
+  "price_currency": "EUR",
   "base_url": "https://api.scaleway.ai",
   "endpoints": {
     "chat": "/v1/chat/completions",

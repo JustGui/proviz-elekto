@@ -2,6 +2,7 @@
   "slug": "ovhcloud",
   "name": "OVH",
   "api_key_env": "OVHCLOUD_API_KEY",
+  "price_currency": "EUR",
   "base_url": "https://oai.endpoints.kepler.ai.cloud.ovh.net",
   "endpoints": {
     "chat": "/v1/chat/completions",
