@@ -461,6 +461,7 @@ fn resolve_chat_url(
 
     if let Some(u) = base_url {
         if !u.is_empty() {
+            let u = proviz_elekto_core::env_expand::expand_env_placeholders(u);
             return Some(format!("{}{path}", u.trim_end_matches('/')));
         }
     }
@@ -796,5 +797,22 @@ mod payload_tests {
             payload["provider"],
             json!({ "data_collection": "deny", "zdr": true, "sort": "price" })
         );
+    }
+
+    #[test]
+    fn resolve_chat_url_expands_env_placeholder_in_base_url() {
+        std::env::set_var("PROVIZ_TEST_IM_PRODUCT", "acct-XXXX");
+        let url = resolve_chat_url(
+            "infomaniak",
+            &Some(
+                "https://api.infomaniak.com/2/ai/${PROVIZ_TEST_IM_PRODUCT}/openai/v1".to_string(),
+            ),
+            &Some("/chat/completions".to_string()),
+        );
+        assert_eq!(
+            url.as_deref(),
+            Some("https://api.infomaniak.com/2/ai/acct-XXXX/openai/v1/chat/completions")
+        );
+        std::env::remove_var("PROVIZ_TEST_IM_PRODUCT");
     }
 }

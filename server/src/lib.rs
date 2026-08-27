@@ -623,6 +623,7 @@ async fn handle_stt_model_info(
                     .filter(|u| !u.is_empty())
                     .map(|u| u.trim_end_matches('/').to_string())
             })
+            .map(|u| proviz_elekto_core::env_expand::expand_env_placeholders(&u))
             .or_else(|| {
                 let prefix = brand_slug.split('-').next().unwrap_or(&brand_slug);
                 match prefix {

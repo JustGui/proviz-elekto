@@ -347,6 +347,26 @@ def _estimate_tokens(messages: list[dict]) -> int:
     return max(1, total // 4)
 
 
+# Brands that are OpenAI-compatible but not registered as first-class litellm providers.
+# They must be driven through litellm's "openai/" pseudo-provider with an explicit api_base.
+# Infomaniak is one: its base_url embeds an account-specific product_id that the proviz server
+# resolves (from ${INFOMANIAK_PRODUCT_ID}) into candidate.base_url. Split-flow callers using
+# call_litellm* get the resolved URL echoed back on the candidate; the dependency-free
+# complete() path needs none of this since the server makes the call itself.
+_OPENAI_COMPAT_BRANDS = {"infomaniak"}
+
+
+def _litellm_target(candidate: "ModelCandidate") -> tuple[str, dict]:
+    """Return (model_id, extra_kwargs) for litellm.completion() for this candidate."""
+    prefix = (candidate.brand_slug or "").split("-")[0]
+    if prefix in _OPENAI_COMPAT_BRANDS:
+        extra = {}
+        if candidate.base_url:
+            extra["api_base"] = candidate.base_url
+        return f"openai/{candidate.model_slug}", extra
+    return f"{candidate.brand_slug}/{candidate.model_slug}", {}
+
+
 def _find_binary() -> str:
     """Locate the proviz-server binary bundled with the package or on PATH."""
     import sysconfig
@@ -1065,10 +1085,12 @@ class ProvizElekto:
             kwargs = dict(litellm_kwargs)
             if require_no_training:
                 kwargs["provider"] = {"data_collection": "deny", "zdr": True}
+            model_id, target_kwargs = _litellm_target(candidate)
             return litellm.completion(
-                model=f"{candidate.brand_slug}/{candidate.model_slug}",
+                model=model_id,
                 messages=messages,
                 api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                **target_kwargs,
                 **kwargs,
             )
 
@@ -1213,14 +1235,16 @@ class ProvizElekto:
                 iter_kwargs["provider"] = {"data_collection": "deny", "zdr": True}
 
             loop_started = time.monotonic()
+            _tl_model_id, _tl_target_kwargs = _litellm_target(candidate)
             try:
                 for iteration in range(max_iterations):
                     response = litellm.completion(
-                        model=f"{candidate.brand_slug}/{candidate.model_slug}",
+                        model=_tl_model_id,
                         messages=current_messages,
                         tools=tools,
                         tool_choice=tool_choice,
                         api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                        **_tl_target_kwargs,
                         **iter_kwargs,
                     )
                     pt, ct, tot = _extract_usage(response)

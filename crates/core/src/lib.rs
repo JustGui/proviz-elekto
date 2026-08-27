@@ -1,4 +1,5 @@
 pub mod builtin_providers;
+pub mod env_expand;
 pub mod error;
 pub mod models;
 pub mod openrouter_sync;
