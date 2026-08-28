@@ -83,8 +83,8 @@ enum Command {
         /// Override the Pass-2 quality-component weight (see SelectRequest.quality_weight)
         #[arg(long)]
         quality_weight: Option<f32>,
-        /// Benchmark hook: pin selection to one model (bypasses group/step rules), matched on
-        /// `brand/slug`, bare `slug`, or `canonical_key` (see SelectRequest.pin_model)
+        /// Benchmark hook: pin selection to one model (bypasses group/step rules), matched
+        /// case-insensitively on `brand_slug/model_slug` or `canonical_key` (see SelectRequest.pin_model)
         #[arg(long)]
         pin_model: Option<String>,
     },

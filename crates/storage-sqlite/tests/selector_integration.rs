@@ -930,10 +930,10 @@ fn pin_model_selects_only_the_named_model_bypassing_step_rules() {
 
     let sel = selector(db);
 
-    // bare slug match
+    // brand/slug match reaches a model with no step rule
     let c = sel
         .select(&SelectRequest {
-            pin_model: Some("acme-70b".to_string()),
+            pin_model: Some("acme/acme-70b".to_string()),
             ..base_req()
         })
         .unwrap();
@@ -948,12 +948,17 @@ fn pin_model_selects_only_the_named_model_bypassing_step_rules() {
         .unwrap();
     assert_eq!(c.model_slug, "acme-7b");
 
-    // no match → exhausted
-    let err = sel
-        .select(&SelectRequest {
-            pin_model: Some("acme/nonesuch".to_string()),
-            ..base_req()
-        })
-        .unwrap_err();
-    assert!(matches!(err, ProvizError::AllModelsExhausted { .. }));
+    // no match → exhausted. A BARE model slug is not accepted (ambiguous across brands).
+    for miss in ["acme/nonesuch", "acme-7b", "acme-70b"] {
+        let err = sel
+            .select(&SelectRequest {
+                pin_model: Some(miss.to_string()),
+                ..base_req()
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, ProvizError::AllModelsExhausted { .. }),
+            "expected no match for pin {miss:?}"
+        );
+    }
 }

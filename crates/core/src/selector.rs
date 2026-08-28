@@ -513,12 +513,14 @@ impl Selector {
             }
 
             if let Some(pin) = req.pin_model.as_deref() {
-                // Case-insensitive: catalog slugs vary in case across providers (litellm-style
-                // `ovhcloud/Qwen3.6-27B` vs proviz `ovhcloud/qwen3.6-27b`).
+                // Match on the fully-qualified `brand_slug/model_slug` or `canonical_key`, both
+                // case-insensitive (catalog slugs vary in case across providers, e.g. litellm-style
+                // `ovhcloud/Qwen3.6-27B` vs proviz `ovhcloud/qwen3.6-27b`). Deliberately NOT a bare
+                // `model_slug` match: one brand's `model_slug` can equal another's `brand/model`
+                // (Requesty ships `mistral/mistral-small-2603`), which would make a bare pin ambiguous.
                 let pin_l = pin.to_lowercase();
                 let full = format!("{}/{}", brand.slug, model.slug).to_lowercase();
                 let matches_pin = pin_l == full
-                    || pin_l == model.slug.to_lowercase()
                     || model.canonical_key.as_deref().map(str::to_lowercase) == Some(pin_l);
                 if !matches_pin {
                     continue;
