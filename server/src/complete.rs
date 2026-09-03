@@ -124,6 +124,11 @@ pub struct CompleteResponse {
     pub brand: String,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// Of `prompt_tokens`, how many were prompt-cache hits (billed at the discounted cached rate).
+    /// `0` when the provider doesn't cache or the prefix wasn't warm. Exposed so a caller can tell
+    /// whether its prompt prefix is actually being cached across calls.
+    #[serde(default)]
+    pub cached_tokens: u64,
     pub cost_usd: Option<f64>,
 }
 
@@ -190,7 +195,14 @@ impl CompleteRequest {
         if let Some(re) = reasoning_effort_value {
             obj.insert("reasoning_effort".into(), json!(re));
         }
-        if brand_slug == "openrouter" && reasoning_effort_value.is_none() {
+        // OpenRouter and Nous Portal share the same request schema (Nous's API is an OpenRouter
+        // fork — verified: identical `/models` shape, and `reasoning: {enabled: false}` is
+        // accepted and honoured, returning `completion_tokens_details.reasoning_tokens: 0`).
+        // Many of their models (e.g. `deepseek/deepseek-v4-flash*`) default reasoning ON, which
+        // burns the whole `max_tokens` budget on a hidden trace and returns unparseable content
+        // (rtfc CLAUDE.md "Common Pitfalls" #7) — so disable it unless a candidate explicitly
+        // configures a graded `reasoning_effort_value`.
+        if matches!(brand_slug, "openrouter" | "nousportal") && reasoning_effort_value.is_none() {
             obj.insert("reasoning".into(), json!({ "enabled": false }));
         }
         if let Some(ref tools) = self.tools {
@@ -277,6 +289,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
@@ -295,6 +308,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     &candidate,
                     ReportOutcome::Error,
                     RateLimitErrorType::Auth,
+                    None,
                     None,
                     None,
                     None,
@@ -332,6 +346,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     RateLimitErrorType::Other,
                     Some(parsed.prompt_tokens),
                     Some(parsed.completion_tokens),
+                    Some(parsed.cached_tokens),
                     parsed.remaining_requests,
                     parsed.remaining_tokens,
                     parsed.provider_cost_usd,
@@ -349,8 +364,12 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                         candidate
                             .price_output_per_1m
                             .map(|p| fx.to_usd(p, &candidate.price_currency)),
+                        candidate
+                            .price_cached_input_per_1m
+                            .map(|p| fx.to_usd(p, &candidate.price_currency)),
                         parsed.prompt_tokens,
                         parsed.completion_tokens,
+                        parsed.cached_tokens,
                     )
                 });
                 return (
@@ -362,6 +381,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                         brand: candidate.brand_slug.clone(),
                         prompt_tokens: parsed.prompt_tokens,
                         completion_tokens: parsed.completion_tokens,
+                        cached_tokens: parsed.cached_tokens,
                         cost_usd,
                     }),
                 )
@@ -397,6 +417,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     &candidate,
                     outcome,
                     et,
+                    None,
                     None,
                     None,
                     None,
@@ -491,6 +512,12 @@ struct ParsedCompletion {
     tool_calls: Option<Value>,
     prompt_tokens: u64,
     completion_tokens: u64,
+    /// Of `prompt_tokens`, how many were served from the provider's prompt cache (a warm KV-cache
+    /// of a repeated prefix, billed at a large discount). Read from
+    /// `usage.prompt_tokens_details.cached_tokens` (OpenAI / Nous Portal shape) or
+    /// `usage.prompt_cache_hit_tokens` (DeepSeek). `0` when the provider doesn't cache or the
+    /// prefix wasn't warm.
+    cached_tokens: u64,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
     /// Real, request-specific cost from the provider's own response (e.g. OpenRouter's
@@ -565,6 +592,15 @@ async fn call_provider(
     let usage = &body["usage"];
     let prompt_tokens = usage["prompt_tokens"].as_u64().unwrap_or(0);
     let completion_tokens = usage["completion_tokens"].as_u64().unwrap_or(0);
+    // Prompt-cache hits: `usage.prompt_tokens_details.cached_tokens` is the OpenAI/Nous shape;
+    // `usage.prompt_cache_hit_tokens` is DeepSeek's first-party field. Either can be present; take
+    // whichever is set, clamped to the prompt total so a provider over-report can't underflow the
+    // full-price count downstream.
+    let cached_tokens = usage["prompt_tokens_details"]["cached_tokens"]
+        .as_u64()
+        .or_else(|| usage["prompt_cache_hit_tokens"].as_u64())
+        .unwrap_or(0)
+        .min(prompt_tokens);
     // OpenRouter (and any other aggregator that routes to a variable-priced upstream) returns the
     // real, request-specific cost in `usage.cost` — the catalog's static price can't capture which
     // sub-provider actually served this call, so prefer this when present.
@@ -575,6 +611,7 @@ async fn call_provider(
         tool_calls,
         prompt_tokens,
         completion_tokens,
+        cached_tokens,
         remaining_requests,
         remaining_tokens,
         provider_cost_usd,
@@ -626,6 +663,7 @@ async fn report(
     error_type: RateLimitErrorType,
     prompt_tokens: Option<u64>,
     completion_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
     remaining_requests: Option<u32>,
     remaining_tokens: Option<u64>,
     provider_cost_usd: Option<f64>,
@@ -639,6 +677,7 @@ async fn report(
         actual_tokens: None,
         prompt_tokens,
         completion_tokens,
+        cached_tokens,
         remaining_requests,
         remaining_tokens,
         limit_requests: None,
@@ -657,14 +696,23 @@ async fn report(
 fn compute_cost(
     price_in: Option<f64>,
     price_out: Option<f64>,
+    price_cached_in: Option<f64>,
     prompt_tokens: u64,
     completion_tokens: u64,
+    cached_tokens: u64,
 ) -> Option<f64> {
     if price_in.is_none() && price_out.is_none() {
         return None;
     }
+    let full_rate = price_in.unwrap_or(0.0);
+    let cached = cached_tokens.min(prompt_tokens);
+    let uncached = prompt_tokens - cached;
+    // Cached input tokens bill at the discounted rate when the model quotes one; otherwise they
+    // fall back to the full input rate, so this is a no-op for providers without a cached price.
+    let cached_rate = price_cached_in.unwrap_or(full_rate);
     Some(
-        (price_in.unwrap_or(0.0) * prompt_tokens as f64
+        (full_rate * uncached as f64
+            + cached_rate * cached as f64
             + price_out.unwrap_or(0.0) * completion_tokens as f64)
             / 1_000_000.0,
     )
@@ -731,6 +779,62 @@ mod payload_tests {
         let req = base_request();
         let payload = req.payload("some-model", "groq", None);
         assert!(payload.get("reasoning").is_none());
+    }
+
+    /// Nous Portal shares OpenRouter's request schema — its DeepSeek models default reasoning ON,
+    /// so the same brand-gated disable must fire (verified against the live API).
+    #[test]
+    fn nousportal_without_reasoning_effort_disables_reasoning() {
+        let req = base_request();
+        let payload = req.payload("deepseek/deepseek-v4-flash", "nousportal", None);
+        assert_eq!(payload["reasoning"], json!({ "enabled": false }));
+    }
+
+    /// A Nous candidate with a curated `reasoning_effort_value` keeps it (same as OpenRouter).
+    #[test]
+    fn nousportal_with_explicit_reasoning_effort_is_not_overridden() {
+        let req = base_request();
+        let payload = req.payload("some/graded-model", "nousportal", Some("low"));
+        assert_eq!(payload["reasoning_effort"], json!("low"));
+        assert!(payload.get("reasoning").is_none());
+    }
+
+    /// The OpenRouter-only `provider.sort` / ZDR block must NOT leak onto Nous Portal — sending an
+    /// unrecognised `provider`-shaped field to a provider that doesn't expect it is a live risk.
+    #[test]
+    fn nousportal_gets_no_provider_routing_block() {
+        let req = CompleteRequest {
+            cost_weight: Some(0.5),
+            latency_weight: Some(0.1),
+            require_no_training: true,
+            ..base_request()
+        };
+        let payload = req.payload("deepseek/deepseek-v4-flash", "nousportal", None);
+        assert!(payload.get("provider").is_none());
+    }
+
+    #[test]
+    fn compute_cost_discounts_cached_input() {
+        // 1000 prompt tokens, 600 of them cache hits; input $1/M, cached $0.1/M, output $2/M.
+        // (400 * 1.0 + 600 * 0.1 + 200 * 2.0) / 1e6 = (400 + 60 + 400) / 1e6 = 8.6e-4
+        let c = compute_cost(Some(1.0), Some(2.0), Some(0.1), 1000, 200, 600).unwrap();
+        assert!((c - 8.6e-4).abs() < 1e-12, "got {c}");
+    }
+
+    #[test]
+    fn compute_cost_no_cached_price_falls_back_to_full_rate() {
+        // No cached rate quoted → the 600 "cached" tokens still bill at the full input rate,
+        // identical to the pre-cache behaviour: (1000 * 1.0 + 200 * 2.0) / 1e6.
+        let c = compute_cost(Some(1.0), Some(2.0), None, 1000, 200, 600).unwrap();
+        assert!((c - 1.4e-3).abs() < 1e-12, "got {c}");
+    }
+
+    #[test]
+    fn compute_cost_clamps_overreported_cached_tokens() {
+        // Provider claims more cache hits than prompt tokens — clamp to 100, never underflow.
+        // (0 * 1.0 + 100 * 0.1 + 0 * 2.0) / 1e6 = 1.0e-5
+        let c = compute_cost(Some(1.0), Some(2.0), Some(0.1), 100, 0, 999).unwrap();
+        assert!((c - 1.0e-5).abs() < 1e-15, "got {c}");
     }
 
     #[test]

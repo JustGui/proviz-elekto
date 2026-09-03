@@ -18,7 +18,8 @@ pub const Q_MODELS: &str =
      tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,\
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
      diarization,streaming,http_batch,word_timestamps,base_url,supported_languages,\
-     reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data \
+     reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,\
+     price_cached_input_per_1m \
      FROM pz_models";
 
 pub const Q_MODEL_CATALOG: &str =
@@ -130,6 +131,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         price_synced_at: row.opt_datetime(31),
         trains_on_data: row.opt_bool(32),
         retains_data: row.opt_bool(33),
+        price_cached_input_per_1m: row.opt_f64(34),
     }
 }
 

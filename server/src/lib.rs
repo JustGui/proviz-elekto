@@ -194,6 +194,7 @@ pub(crate) fn apply_report(sel: &Selector, req: ReportRequest) -> Option<f64> {
     let actual = req.actual_tokens;
     let prompt = req.prompt_tokens;
     let completion = req.completion_tokens;
+    let cached = req.cached_tokens;
     let rem_req = req.remaining_requests;
     let rem_tok = req.remaining_tokens;
     let brand_key_id = req.brand_key_id;
@@ -207,6 +208,7 @@ pub(crate) fn apply_report(sel: &Selector, req: ReportRequest) -> Option<f64> {
             actual,
             prompt,
             completion,
+            cached,
             rem_req,
             rem_tok,
             provider_cost_usd,

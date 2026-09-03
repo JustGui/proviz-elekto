@@ -59,6 +59,12 @@ struct Args {
     #[arg(long, env = "PROVIZ_REQUESTY_SYNC_SECS", default_value = "3600")]
     requesty_sync_secs: u64,
 
+    /// Seconds between automatic Nous Portal catalog syncs. Same behavior as
+    /// PROVIZ_OPENROUTER_SYNC_SECS, for the nousportal provider. No-op if
+    /// providers/nousportal/brand.json is missing.
+    #[arg(long, env = "PROVIZ_NOUSPORTAL_SYNC_SECS", default_value = "3600")]
+    nousportal_sync_secs: u64,
+
     /// Endpoint for FX rate lookups (currency -> USD, for per-brand `price_currency`
     /// normalisation). Frankfurter `base=USD` shape. Fetched once eagerly at startup, then
     /// lazily (at most hourly) whenever a selection finds the rates stale.
@@ -192,6 +198,69 @@ fn spawn_requesty_sync_task(selector: Arc<Selector>, providers_dir: String, inte
     });
 }
 
+/// Spawns the background Nous Portal catalog sync (fetch + upsert + reload via
+/// `proviz_elekto_core::nousportal_sync`) — Nous Portal's API is an OpenRouter fork (same
+/// `/models` schema) aggregating 350+ models with pricing that drifts, plus a `pricing.input_cache_read`
+/// per-model cache-hit rate the sync maps into `Model.price_cached_input_per_1m`. Same rationale
+/// and shape as `spawn_openrouter_sync_task`. No-op if the provider hasn't been onboarded
+/// (`providers/nousportal/brand.json` missing).
+fn spawn_nousportal_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
+    let brand_file = std::path::Path::new(&providers_dir)
+        .join("nousportal")
+        .join("brand.json");
+    if !brand_file.exists() {
+        info!("nousportal not onboarded (no providers/nousportal/brand.json) — skipping auto-sync");
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            let dir = providers_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let storage = sel.storage();
+                let outcome = proviz_elekto_core::nousportal_sync::sync(
+                    storage.as_ref(),
+                    &dir,
+                    proviz_elekto_core::nousportal_sync::DEFAULT_BASE_URL,
+                );
+                if let Ok(ref summary) = outcome {
+                    if !summary.skipped_suspicious {
+                        if let Err(e) = sel.reload() {
+                            error!("nousportal sync: catalog reload failed: {e}");
+                        }
+                    }
+                }
+                outcome
+            })
+            .await
+            .expect("nousportal sync task panicked");
+
+            match result {
+                Ok(summary) if summary.skipped_suspicious => {
+                    warn!(
+                        fetched = summary.fetched,
+                        "nousportal sync skipped: suspiciously few models returned"
+                    );
+                }
+                Ok(summary) => {
+                    info!(
+                        fetched = summary.fetched,
+                        brands_added = summary.brands_added,
+                        models_added = summary.models_added,
+                        models_updated = summary.models_updated,
+                        models_disabled = summary.models_disabled,
+                        "nousportal catalog synced"
+                    );
+                }
+                Err(e) => error!("nousportal sync failed: {e}"),
+            }
+
+            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -286,6 +355,12 @@ async fn main() {
         selector.clone(),
         providers_dir.clone(),
         args.requesty_sync_secs,
+    );
+
+    spawn_nousportal_sync_task(
+        selector.clone(),
+        providers_dir.clone(),
+        args.nousportal_sync_secs,
     );
 
     let state = Arc::new(AppState {

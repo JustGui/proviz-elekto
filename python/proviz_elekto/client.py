@@ -63,6 +63,10 @@ class ModelCandidate:
     reasoning_effort_value: Optional[str] = None
     price_input_per_1m: Optional[float] = None
     price_output_per_1m: Optional[float] = None
+    # Per-million price for prompt-cache-hit input tokens (providers that price them separately:
+    # DeepSeek, Nous Portal, OpenAI, Anthropic, ...). None when the provider doesn't cache or
+    # doesn't quote a distinct rate; _compute_cost then bills every prompt token at the full rate.
+    price_cached_input_per_1m: Optional[float] = None
     # Brand's OpenAI-compatible base URL (None for brands using a well-known default endpoint).
     base_url: Optional[str] = None
     # ID of the specific brand API key selected. Echo back in report calls so the server
@@ -96,6 +100,8 @@ class CallResult:
     completion_tokens: int
     total_tokens: int
     actual_cost_usd: Optional[float] = None
+    # Of prompt_tokens, how many were prompt-cache hits (billed at the discounted cached rate).
+    cached_tokens: int = 0
 
 
 @dataclass
@@ -109,6 +115,10 @@ class CompleteResult:
     cost_usd: Optional[float] = None
     # Un-executed tool calls returned by the provider (caller drives the tool loop).
     tool_calls: Optional[Any] = None
+    # Of prompt_tokens, how many were prompt-cache hits (billed at the discounted cached rate).
+    # 0 when the provider doesn't cache or the prefix wasn't warm. Lets a caller tell whether its
+    # prompt prefix is actually being cached across calls.
+    cached_tokens: int = 0
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -333,15 +343,59 @@ def _extract_provider_cost(response: Any) -> Optional[float]:
     return None
 
 
+def _extract_cached_tokens(response: Any) -> int:
+    """Prompt-cache hit count from the provider response usage block. Tries the OpenAI/Nous shape
+    (`usage.prompt_tokens_details.cached_tokens`) then DeepSeek's first-party field
+    (`usage.prompt_cache_hit_tokens`). 0 when neither is present."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return 0
+
+    def _as_int(v: Any) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is not None:
+        n = _as_int(getattr(details, "cached_tokens", None))
+        if n:
+            return n
+        if isinstance(details, dict):
+            n = _as_int(details.get("cached_tokens"))
+            if n:
+                return n
+    n = _as_int(getattr(usage, "prompt_cache_hit_tokens", None))
+    if n:
+        return n
+    extra = getattr(usage, "model_extra", None)
+    if isinstance(extra, dict):
+        pd = extra.get("prompt_tokens_details")
+        if isinstance(pd, dict):
+            n = _as_int(pd.get("cached_tokens"))
+            if n:
+                return n
+        n = _as_int(extra.get("prompt_cache_hit_tokens"))
+        if n:
+            return n
+    return 0
+
+
 def _compute_cost(
     candidate: "ModelCandidate",
     prompt_tokens: int,
     completion_tokens: int,
     fx_rates: Optional[dict] = None,
+    cached_tokens: int = 0,
 ) -> Optional[float]:
     """Compute actual cost in USD from model prices and token counts. Returns None if prices
     unknown. `candidate.price_currency` may be non-USD (see ModelCandidate); `fx_rates` maps
-    currency -> units-per-USD (from the server's /fx/rates). Missing rate -> treated as USD."""
+    currency -> units-per-USD (from the server's /fx/rates). Missing rate -> treated as USD.
+
+    `cached_tokens` (of `prompt_tokens`) are billed at `candidate.price_cached_input_per_1m` when
+    the provider quotes one; otherwise they fall back to the full input rate, so passing a count
+    for a provider with no cached price is a no-op."""
     p_in = candidate.price_input_per_1m
     p_out = candidate.price_output_per_1m
     if p_in is None and p_out is None:
@@ -352,7 +406,15 @@ def _compute_cost(
         r = fx_rates.get(cur)
         if r and r > 0:
             rate = r
-    native = ((p_in or 0.0) * prompt_tokens + (p_out or 0.0) * completion_tokens) / 1_000_000.0
+    full_in = p_in or 0.0
+    cached = max(0, min(int(cached_tokens or 0), prompt_tokens))
+    uncached = prompt_tokens - cached
+    cached_rate = candidate.price_cached_input_per_1m
+    if cached_rate is None:
+        cached_rate = full_in
+    native = (
+        full_in * uncached + cached_rate * cached + (p_out or 0.0) * completion_tokens
+    ) / 1_000_000.0
     return native / rate
 
 
@@ -697,6 +759,7 @@ class ProvizElekto:
             estimated_input_cost_usd=r.get("estimated_input_cost_usd"),
             price_input_per_1m=r.get("price_input_per_1m"),
             price_output_per_1m=r.get("price_output_per_1m"),
+            price_cached_input_per_1m=r.get("price_cached_input_per_1m"),
             base_url=r.get("base_url"),
             brand_key_id=r.get("brand_key_id"),
             reasoning_effort_value=r.get("reasoning_effort_value"),
@@ -816,6 +879,7 @@ class ProvizElekto:
             completion_tokens=r.get("completion_tokens", 0),
             cost_usd=r.get("cost_usd"),
             tool_calls=r.get("tool_calls"),
+            cached_tokens=r.get("cached_tokens", 0) or 0,
         )
         _logger.debug(
             "complete: model=%s/%s prompt=%d completion=%d cost_usd=%s",
@@ -831,6 +895,7 @@ class ProvizElekto:
         actual_tokens: Optional[int] = None,
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
+        cached_tokens: Optional[int] = None,
         remaining_requests: Optional[int] = None,
         remaining_tokens: Optional[int] = None,
         limit_requests: Optional[int] = None,
@@ -852,6 +917,8 @@ class ProvizElekto:
             payload["prompt_tokens"] = prompt_tokens
         if completion_tokens is not None:
             payload["completion_tokens"] = completion_tokens
+        if cached_tokens is not None:
+            payload["cached_tokens"] = cached_tokens
         if actual_tokens is not None:
             payload["actual_tokens"] = actual_tokens
         if remaining_requests is not None:
@@ -1022,16 +1089,20 @@ class ProvizElekto:
                         list(_collect_response_headers(response).keys()) or "none",
                     )
                 provider_cost_usd = _extract_provider_cost(response)
+                cached = _extract_cached_tokens(response)
                 actual_cost_usd = (
                     provider_cost_usd
                     if provider_cost_usd is not None
-                    else _compute_cost(candidate, prompt, completion, self._fx_rates())
+                    else _compute_cost(
+                        candidate, prompt, completion, self._fx_rates(), cached_tokens=cached
+                    )
                 )
                 self.report_success(
                     candidate.model_id,
                     estimated_tokens=estimated_tokens,
                     prompt_tokens=prompt if prompt else None,
                     completion_tokens=completion if completion else None,
+                    cached_tokens=cached or None,
                     remaining_requests=rem_req,
                     remaining_tokens=rem_tok,
                     limit_requests=lim_req,
@@ -1054,6 +1125,7 @@ class ProvizElekto:
                     completion_tokens=completion,
                     total_tokens=total,
                     actual_cost_usd=actual_cost_usd,
+                    cached_tokens=cached,
                 )
             except AllModelsExhausted:
                 raise
@@ -1258,7 +1330,7 @@ class ProvizElekto:
                 attempt, step, candidate.brand_slug, candidate.model_slug,
             )
 
-            total_prompt = total_completion = total_tokens = 0
+            total_prompt = total_completion = total_tokens = total_cached = 0
             total_provider_cost: Optional[float] = None
             last_rem_req: Optional[int] = None
             last_rem_tok: Optional[int] = None
@@ -1295,6 +1367,7 @@ class ProvizElekto:
                     total_prompt += pt
                     total_completion += ct
                     total_tokens += tot
+                    total_cached += _extract_cached_tokens(response)
                     iter_cost = _extract_provider_cost(response)
                     if iter_cost is not None:
                         total_provider_cost = (total_provider_cost or 0.0) + iter_cost
@@ -1307,7 +1380,8 @@ class ProvizElekto:
                             total_provider_cost
                             if total_provider_cost is not None
                             else _compute_cost(
-                                candidate, total_prompt, total_completion, self._fx_rates()
+                                candidate, total_prompt, total_completion, self._fx_rates(),
+                                cached_tokens=total_cached,
                             )
                         )
                         self.report_success(
@@ -1316,6 +1390,7 @@ class ProvizElekto:
                             actual_tokens=total_tokens,
                             prompt_tokens=total_prompt if total_prompt else None,
                             completion_tokens=total_completion if total_completion else None,
+                            cached_tokens=total_cached or None,
                             remaining_requests=last_rem_req,
                             remaining_tokens=last_rem_tok,
                             limit_requests=last_lim_req,
@@ -1340,6 +1415,7 @@ class ProvizElekto:
                             completion_tokens=total_completion,
                             total_tokens=total_tokens,
                             actual_cost_usd=actual_cost_usd,
+                            cached_tokens=total_cached,
                         )
 
                     current_messages = current_messages + [msg]

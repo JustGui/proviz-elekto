@@ -107,6 +107,7 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         price_synced_at: None,
         trains_on_data: None,
         retains_data: None,
+        price_cached_input_per_1m: None,
     };
     let rule = SelectionRule {
         id: Uuid::new_v4(),
@@ -206,4 +207,144 @@ async fn complete_selects_calls_and_reports() {
     let cost = body["cost_usd"].as_f64().expect("cost present");
     assert!((cost - 25.0 / 1_000_000.0).abs() < 1e-12, "cost was {cost}");
     assert!(body["tool_calls"].is_null());
+}
+
+/// Mock provider that reports a prompt-cache hit the way Nous Portal / OpenAI do:
+/// `usage.prompt_tokens_details.cached_tokens`, and no `usage.cost` (so the server must fall back
+/// to the cached-aware catalog computation).
+async fn mock_chat_completions_cached() -> impl axum::response::IntoResponse {
+    Json(json!({
+        "id": "chatcmpl-cached",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "cached hello" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 1000,
+            "completion_tokens": 10,
+            "total_tokens": 1010,
+            "prompt_tokens_details": { "cached_tokens": 800 }
+        }
+    }))
+}
+
+#[tokio::test]
+async fn complete_discounts_cached_prompt_tokens_in_cost() {
+    const KEY: &str = "PROVIZ_TEST_CACHED_KEY";
+    std::env::set_var(KEY, "secret");
+
+    // Mock provider.
+    let app = Router::new().route("/v1/chat/completions", post(mock_chat_completions_cached));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let base_url = format!("http://{addr}/v1");
+
+    // Catalog: one model, input $1/M, output $2/M, cached input $0.10/M.
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let brand = Brand {
+        id: Uuid::new_v4(),
+        slug: "cachebrand".into(),
+        name: "Cache Brand".into(),
+        base_url: Some(base_url),
+        is_active: true,
+        priority: 0,
+        created_at: Utc::now(),
+        traffic_weight: 1.0,
+        endpoints: None,
+        price_currency: "USD".into(),
+    };
+    let model = Model {
+        id: Uuid::new_v4(),
+        brand_id: brand.id,
+        slug: "cache-7b".into(),
+        display_name: "Cache 7B".into(),
+        max_context_tokens: 32_000,
+        max_output_tokens: None,
+        supports_function_calling: true,
+        supports_json_mode: true,
+        reasoning_effort_value: None,
+        price_input_per_1m: Some(1.0),
+        price_output_per_1m: Some(2.0),
+        tpm_limit: None,
+        rpm_limit: None,
+        rpd_limit: None,
+        tpd_limit: None,
+        tpm_limit_month: None,
+        rps_limit: None,
+        quality_score: Some(0.8),
+        avg_latency_ms: None,
+        is_enabled: true,
+        notes: None,
+        category: None,
+        created_at: Utc::now(),
+        batch_price_multiplier: None,
+        diarization: None,
+        streaming: None,
+        http_batch: None,
+        word_timestamps: None,
+        base_url: None,
+        supported_languages: None,
+        canonical_key: None,
+        price_synced_at: None,
+        trains_on_data: None,
+        retains_data: None,
+        price_cached_input_per_1m: Some(0.10),
+    };
+    let rule = SelectionRule {
+        id: Uuid::new_v4(),
+        step: "chat".into(),
+        model_id: model.id,
+        priority: 0,
+        max_ctx_tokens: None,
+        requires_fn_call: false,
+        is_enabled: true,
+    };
+    storage.insert_brand(&brand).unwrap();
+    storage.insert_model(&model).unwrap();
+    storage.insert_rule(&rule).unwrap();
+    {
+        use proviz_elekto_core::models::BrandApiKey;
+        storage
+            .insert_brand_api_key(&BrandApiKey {
+                id: Uuid::new_v4(),
+                brand_id: brand.id,
+                api_key_env: KEY.into(),
+                priority: 0,
+                is_active: true,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+    }
+    let selector = Arc::new(Selector::new(Arc::new(storage)));
+    selector.reload().unwrap();
+
+    let server_url = spawn_proviz_server(selector).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{server_url}/complete"))
+        .json(&json!({
+            "step": "chat",
+            "estimated_tokens": 1000,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        body["cached_tokens"], 800,
+        "cached_tokens surfaced in response"
+    );
+    // 200 uncached @ $1/M + 800 cached @ $0.10/M + 10 output @ $2/M
+    // = (200 + 80 + 20) / 1e6 = 300 / 1e6
+    let cost = body["cost_usd"].as_f64().expect("cost present");
+    assert!(
+        (cost - 300.0 / 1_000_000.0).abs() < 1e-12,
+        "cached discount not applied: cost was {cost}"
+    );
 }

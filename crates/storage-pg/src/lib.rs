@@ -49,6 +49,7 @@ impl PostgresStorage {
         s.migrate_privacy_fields()?;
         s.migrate_group_weights()?;
         s.migrate_price_currency()?;
+        s.migrate_cached_input_price()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -212,6 +213,19 @@ impl PostgresStorage {
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
     }
+
+    /// Adds `price_cached_input_per_1m` (per-million price for prompt-cache-hit input tokens) to
+    /// `pz_models`. Nullable — `NULL` means the provider doesn't price cached input separately,
+    /// so cost falls back to `price_input_per_1m` for every prompt token exactly as before.
+    fn migrate_cached_input_price(&self) -> Result<(), StorageError> {
+        let mut client = self.connected_client()?;
+        client
+            .batch_execute(
+                "ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS price_cached_input_per_1m DOUBLE PRECISION;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
 }
 
 struct PgRow<'a>(&'a postgres::Row);
@@ -339,8 +353,9 @@ impl CatalogStorage for PostgresStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34)
+              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,
+              price_cached_input_per_1m)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -359,7 +374,8 @@ impl CatalogStorage for PostgresStorage {
                canonical_key=EXCLUDED.canonical_key,
                price_synced_at=EXCLUDED.price_synced_at,
                trains_on_data=EXCLUDED.trains_on_data,
-               retains_data=EXCLUDED.retains_data",
+               retains_data=EXCLUDED.retains_data,
+               price_cached_input_per_1m=EXCLUDED.price_cached_input_per_1m",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -386,6 +402,7 @@ impl CatalogStorage for PostgresStorage {
                 &model.price_synced_at,
                 &model.trains_on_data,
                 &model.retains_data,
+                &model.price_cached_input_per_1m,
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -818,7 +835,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     canonical_key             TEXT,
     price_synced_at           TIMESTAMPTZ,
     trains_on_data            BOOLEAN,
-    retains_data              BOOLEAN
+    retains_data              BOOLEAN,
+    price_cached_input_per_1m DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (

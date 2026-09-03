@@ -119,6 +119,15 @@ pub struct Model {
     /// Informational only today — not enforced by any selector filter (see
     /// `SelectRequest.require_no_training`, which filters on `trains_on_data`).
     pub retains_data: Option<bool>,
+    /// Per-million-token price for *cached* input tokens (prompt-cache hits). Providers that keep
+    /// a warm KV-cache of a repeated prompt prefix bill those tokens at a large discount
+    /// (typically ~5–20% of the normal input price) and report the hit count in the response —
+    /// DeepSeek's `prompt_cache_hit_tokens` / OpenAI-style `usage.prompt_tokens_details.cached_tokens`.
+    /// `None` = provider doesn't cache or doesn't quote a distinct cached rate; cost then uses
+    /// `price_input_per_1m` for all prompt tokens exactly as before. Denominated in the brand's
+    /// `price_currency`, same as `price_input_per_1m`. Auto-filled from a live catalog's cache
+    /// price (e.g. Nous Portal's `pricing.input_cache_read`) or hand-curated per row.
+    pub price_cached_input_per_1m: Option<f64>,
 }
 
 /// A measured, task-specific quality score for one model.
@@ -395,6 +404,12 @@ pub struct ModelCandidate {
     pub price_input_per_1m: Option<f64>,
     /// Provider's per-million-token output price.
     pub price_output_per_1m: Option<f64>,
+    /// Provider's per-million-token price for *cached* input tokens (prompt-cache hits), when the
+    /// provider prices them separately (DeepSeek, Nous Portal, OpenAI, Anthropic, …). `None` when
+    /// the provider doesn't cache or doesn't quote a distinct cached rate — callers should then
+    /// fall back to `price_input_per_1m` for every prompt token. See `Model.price_cached_input_per_1m`.
+    #[serde(default)]
+    pub price_cached_input_per_1m: Option<f64>,
     /// Multiplier applied to pricing when this model is used via batch API (e.g. 0.5 for 50% discount).
     #[serde(default)]
     pub batch_price_multiplier: Option<f64>,
@@ -447,6 +462,14 @@ pub struct ReportRequest {
     /// Output (completion) tokens from the provider response (e.g. response.usage.completion_tokens).
     #[serde(default)]
     pub completion_tokens: Option<u64>,
+    /// Of `prompt_tokens`, how many were served from the provider's prompt cache (a warm KV-cache
+    /// of a repeated prefix), billed at the discounted `Model.price_cached_input_per_1m` rather
+    /// than the full input rate. From `usage.prompt_tokens_details.cached_tokens` (OpenAI/Nous
+    /// shape) or `usage.prompt_cache_hit_tokens` (DeepSeek). `None`/`0` = no cache hit, cost is
+    /// computed exactly as before. Only affects the fallback catalog-price computation — a
+    /// provider-supplied `actual_cost_usd` still wins outright.
+    #[serde(default)]
+    pub cached_tokens: Option<u64>,
     /// Remaining requests in the current window as reported by the provider response headers
     /// (e.g. `x-ratelimit-remaining-requests`). Used to anchor the UsageTracker windows
     /// against provider reality rather than relying solely on internal estimation.

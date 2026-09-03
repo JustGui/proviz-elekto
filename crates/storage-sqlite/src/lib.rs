@@ -56,6 +56,7 @@ impl SqliteStorage {
         s.migrate_privacy_fields()?;
         s.migrate_group_weights()?;
         s.migrate_price_currency()?;
+        s.migrate_cached_input_price()?;
         Ok(s)
     }
 
@@ -305,6 +306,26 @@ impl SqliteStorage {
         }
         Ok(())
     }
+
+    /// Adds `price_cached_input_per_1m` (per-million price for prompt-cache-hit input tokens) to
+    /// `pz_models`. Nullable — `NULL` means the provider doesn't price cached input separately, so
+    /// cost falls back to `price_input_per_1m` for every prompt token exactly as before.
+    fn migrate_cached_input_price(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_models') WHERE name='price_cached_input_per_1m'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !exists {
+            conn.execute_batch("ALTER TABLE pz_models ADD COLUMN price_cached_input_per_1m REAL;")
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 struct SqliteRow<'a>(&'a rusqlite::Row<'a>);
@@ -476,8 +497,9 @@ impl CatalogStorage for SqliteStorage {
               tpm_limit,rpm_limit,rpd_limit,tpd_limit,tpm_limit_month,rps_limit,quality_score,avg_latency_ms,
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
-              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34)",
+              reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,
+              price_cached_input_per_1m)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -516,6 +538,7 @@ impl CatalogStorage for SqliteStorage {
                 model.price_synced_at.map(|v| v.to_rfc3339()),
                 model.trains_on_data.map(|v| v as i64),
                 model.retains_data.map(|v| v as i64),
+                model.price_cached_input_per_1m,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -977,7 +1000,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     canonical_key             TEXT,
     price_synced_at           TEXT,
     trains_on_data            INTEGER,
-    retains_data              INTEGER
+    retains_data              INTEGER,
+    price_cached_input_per_1m REAL
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (
@@ -1126,6 +1150,7 @@ mod tests {
             price_synced_at: None,
             trains_on_data: None,
             retains_data: None,
+            price_cached_input_per_1m: None,
         }
     }
 

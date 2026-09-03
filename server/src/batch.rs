@@ -376,6 +376,7 @@ async fn flush_model_group(
                 None,
                 None,
                 None,
+                None,
                 // Batch jobs are polled asynchronously over minutes/hours — elapsed time here
                 // reflects queue/poll latency, not per-request generation speed, so it's not a
                 // meaningful sample for the live response-time signal.

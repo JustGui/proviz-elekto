@@ -34,6 +34,11 @@ struct ModelDef {
     reasoning_effort_value: Option<String>,
     price_input_per_1m: Option<f64>,
     price_output_per_1m: Option<f64>,
+    /// Per-million price for prompt-cache-hit input tokens. Auto-filled by the Nous Portal sync
+    /// from `pricing.input_cache_read`, or set by hand for a curated provider (DeepSeek). `None`
+    /// = no distinct cached rate; cost uses `price_input_per_1m` for all prompt tokens.
+    #[serde(default)]
+    price_cached_input_per_1m: Option<f64>,
     tpm_limit: Option<u32>,
     rpm_limit: Option<u32>,
     rpd_limit: Option<u32>,
@@ -361,6 +366,7 @@ pub fn load_from_dir(
                     price_synced_at: def.price_synced_at,
                     trains_on_data: def.trains_on_data,
                     retains_data: def.retains_data,
+                    price_cached_input_per_1m: def.price_cached_input_per_1m,
                     diarization: def.diarization,
                     streaming: def.streaming,
                     http_batch: def.http_batch,
@@ -432,6 +438,7 @@ pub fn load_from_dir(
                     price_synced_at: def.price_synced_at,
                     trains_on_data: def.trains_on_data,
                     retains_data: def.retains_data,
+                    price_cached_input_per_1m: def.price_cached_input_per_1m,
                     diarization: def.diarization,
                     streaming: def.streaming,
                     http_batch: def.http_batch,
