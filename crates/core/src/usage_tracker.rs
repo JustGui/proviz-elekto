@@ -17,6 +17,7 @@ struct WindowEntry {
     value: u64,
 }
 
+#[derive(Default)]
 struct ModelWindows {
     rps: VecDeque<WindowEntry>,
     rpm: VecDeque<WindowEntry>,
@@ -40,23 +41,6 @@ struct ModelWindows {
     /// until at least one sample has arrived. Preferred over the static catalog `Model.avg_latency_ms`
     /// in scoring once present, since it reflects live provider behaviour instead of a curated guess.
     latency_ewma_ms: Option<f64>,
-}
-
-impl Default for ModelWindows {
-    fn default() -> Self {
-        Self {
-            rps: VecDeque::new(),
-            rpm: VecDeque::new(),
-            tpm: VecDeque::new(),
-            rpd: VecDeque::new(),
-            tpd: VecDeque::new(),
-            provider_remaining_requests: None,
-            provider_remaining_tokens: None,
-            provider_limit_requests: None,
-            provider_limit_tokens: None,
-            latency_ewma_ms: None,
-        }
-    }
 }
 
 /// Smoothing factor for the response-time EWMA: weight given to each new sample.
@@ -347,7 +331,7 @@ impl UsageTracker {
 
         let effective_tpm =
             if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, tpm_limit) {
-                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                let provider_used = (limit as u64).saturating_sub(rem);
                 tpm_sum.max(provider_used)
             } else {
                 tpm_sum
@@ -406,7 +390,7 @@ impl UsageTracker {
         }
         if let Some(limit) = model.tpd_limit {
             let projected = tpd_sum + in_flight_tok + estimated_tokens;
-            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+            min_hr = min_hr.min(headroom_ratio(projected, limit));
         }
 
         min_hr
@@ -462,7 +446,7 @@ impl UsageTracker {
 
         let effective_tpm =
             if let (Some(rem), Some(limit)) = (w.provider_remaining_tokens, tpm_limit) {
-                let provider_used = (limit as u64).saturating_sub(rem as u64);
+                let provider_used = (limit as u64).saturating_sub(rem);
                 tpm_sum.max(provider_used)
             } else {
                 tpm_sum
@@ -490,7 +474,7 @@ impl UsageTracker {
         }
         if let Some(limit) = model.tpd_limit {
             let projected = tpd_sum + in_flight_tok + estimated_tokens;
-            min_hr = min_hr.min(headroom_ratio(projected, limit as u64));
+            min_hr = min_hr.min(headroom_ratio(projected, limit));
         }
 
         min_hr
