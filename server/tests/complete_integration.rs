@@ -348,3 +348,142 @@ async fn complete_discounts_cached_prompt_tokens_in_cost() {
         "cached discount not applied: cost was {cost}"
     );
 }
+
+/// Mock provider returning Nous Portal's degenerate `usage.cost` (rounds to `5e-05` regardless of
+/// real token consumption) alongside real token counts.
+async fn mock_chat_completions_nous_degenerate_cost() -> impl axum::response::IntoResponse {
+    Json(json!({
+        "id": "chatcmpl-nous",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "nous hi" },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 1000,
+            "completion_tokens": 10,
+            "total_tokens": 1010,
+            "cost": 5e-05,
+            "prompt_tokens_details": { "cached_tokens": 800 }
+        }
+    }))
+}
+
+#[tokio::test]
+async fn complete_ignores_nousportal_degenerate_usage_cost() {
+    const KEY: &str = "PROVIZ_TEST_NOUS_KEY";
+    std::env::set_var(KEY, "secret");
+
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(mock_chat_completions_nous_degenerate_cost),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    // Brand slug MUST be "nousportal" — the drop-`usage.cost` rule is brand-gated.
+    let brand = Brand {
+        id: Uuid::new_v4(),
+        slug: "nousportal".into(),
+        name: "Nous Portal".into(),
+        base_url: Some(format!("http://{addr}/v1")),
+        is_active: true,
+        priority: 0,
+        created_at: Utc::now(),
+        traffic_weight: 1.0,
+        endpoints: None,
+        price_currency: "USD".into(),
+    };
+    let model = Model {
+        id: Uuid::new_v4(),
+        brand_id: brand.id,
+        slug: "deepseek/deepseek-v4-flash".into(),
+        display_name: "DS V4 Flash".into(),
+        max_context_tokens: 32_000,
+        max_output_tokens: None,
+        supports_function_calling: true,
+        supports_json_mode: true,
+        reasoning_effort_value: None,
+        price_input_per_1m: Some(0.066),
+        price_output_per_1m: Some(0.132),
+        tpm_limit: None,
+        rpm_limit: None,
+        rpd_limit: None,
+        tpd_limit: None,
+        tpm_limit_month: None,
+        rps_limit: None,
+        quality_score: Some(0.8),
+        avg_latency_ms: None,
+        is_enabled: true,
+        notes: None,
+        category: None,
+        created_at: Utc::now(),
+        batch_price_multiplier: None,
+        diarization: None,
+        streaming: None,
+        http_batch: None,
+        word_timestamps: None,
+        base_url: None,
+        supported_languages: None,
+        canonical_key: None,
+        price_synced_at: None,
+        trains_on_data: Some(false),
+        retains_data: Some(false),
+        price_cached_input_per_1m: Some(0.0132),
+    };
+    let rule = SelectionRule {
+        id: Uuid::new_v4(),
+        step: "chat".into(),
+        model_id: model.id,
+        priority: 0,
+        max_ctx_tokens: None,
+        requires_fn_call: false,
+        is_enabled: true,
+    };
+    storage.insert_brand(&brand).unwrap();
+    storage.insert_model(&model).unwrap();
+    storage.insert_rule(&rule).unwrap();
+    {
+        use proviz_elekto_core::models::BrandApiKey;
+        storage
+            .insert_brand_api_key(&BrandApiKey {
+                id: Uuid::new_v4(),
+                brand_id: brand.id,
+                api_key_env: KEY.into(),
+                priority: 0,
+                is_active: true,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+    }
+    let selector = Arc::new(Selector::new(Arc::new(storage)));
+    selector.reload().unwrap();
+
+    let server_url = spawn_proviz_server(selector).await;
+    let resp = reqwest::Client::new()
+        .post(format!("{server_url}/complete"))
+        .json(&json!({
+            "step": "chat",
+            "estimated_tokens": 1000,
+            "messages": [{ "role": "user", "content": "hi" }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+
+    // Must NOT be the degenerate 5e-05 — the server drops it and computes from the catalog:
+    // 200 uncached @ $0.066/M + 800 cached @ $0.0132/M + 10 output @ $0.132/M
+    // = (0.0132 + 0.01056 + 0.00132) / 1e6 = 0.02508 / 1e6
+    let cost = body["cost_usd"].as_f64().expect("cost present");
+    let expected = (0.066 * 200.0 + 0.0132 * 800.0 + 0.132 * 10.0) / 1_000_000.0;
+    assert!(
+        (cost - expected).abs() < 1e-12,
+        "expected catalog cost {expected}, got {cost} (degenerate usage.cost not dropped?)"
+    );
+}

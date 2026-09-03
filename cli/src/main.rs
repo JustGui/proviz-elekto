@@ -167,6 +167,24 @@ enum ProvidersCmd {
         #[arg(long, default_value = "https://inference-api.nousresearch.com/v1")]
         base_url: String,
     },
+    /// Fetch OrcaRouter's live catalog and write providers/orcarouter/models.json (then upsert
+    /// into the DB unless --dry-run). OrcaRouter's /v1/models omits capability flags + cache
+    /// pricing, so newly-seen models are scraped once from the SEO model detail page (up to
+    /// --enrich-max). Models already in models.json are never re-scraped.
+    SyncOrcarouter {
+        /// Root directory containing provider subdirectories
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        /// Fetch and print the mapped models.json to stdout without writing to disk or the DB
+        #[arg(long)]
+        dry_run: bool,
+        /// Max newly-seen models to enrich (scrape the detail page for) this run. The one-time
+        /// manual seed wants everything; the server task defaults to 30.
+        #[arg(long, default_value = "500")]
+        enrich_max: usize,
+        #[arg(long, default_value = "https://api.orcarouter.ai/v1")]
+        base_url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1187,6 +1205,52 @@ fn main() {
                         ),
                         Err(e) => {
                             eprintln!("nousportal sync failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            ProvidersCmd::SyncOrcarouter {
+                dir,
+                dry_run,
+                enrich_max,
+                base_url,
+            } => {
+                if dry_run {
+                    match proviz_elekto_core::orcarouter_sync::fetch_preview(&base_url, enrich_max)
+                    {
+                        Ok(entries) => {
+                            println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                            eprintln!(
+                                "\n{} models mapped (dry run — nothing written)",
+                                entries.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("orcarouter dry-run fetch failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    match proviz_elekto_core::orcarouter_sync::sync(
+                        storage.as_ref(),
+                        &dir,
+                        &base_url,
+                        enrich_max,
+                    ) {
+                        Ok(s) if s.skipped_suspicious => {
+                            eprintln!(
+                                "orcarouter sync: only {} models returned, skipping (nothing written)",
+                                s.fetched
+                            );
+                            std::process::exit(1);
+                        }
+                        Ok(s) => println!(
+                            "orcarouter sync: {} fetched, {} brands added, {} models added, {} updated, {} disabled, {} enriched",
+                            s.fetched, s.brands_added, s.models_added, s.models_updated, s.models_disabled, s.enriched
+                        ),
+                        Err(e) => {
+                            eprintln!("orcarouter sync failed: {e}");
                             std::process::exit(1);
                         }
                     }

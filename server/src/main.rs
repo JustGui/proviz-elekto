@@ -65,6 +65,12 @@ struct Args {
     #[arg(long, env = "PROVIZ_NOUSPORTAL_SYNC_SECS", default_value = "3600")]
     nousportal_sync_secs: u64,
 
+    /// Seconds between automatic OrcaRouter catalog syncs. Same behavior as
+    /// PROVIZ_OPENROUTER_SYNC_SECS, for the orcarouter provider. No-op if
+    /// providers/orcarouter/brand.json is missing.
+    #[arg(long, env = "PROVIZ_ORCAROUTER_SYNC_SECS", default_value = "3600")]
+    orcarouter_sync_secs: u64,
+
     /// Endpoint for FX rate lookups (currency -> USD, for per-brand `price_currency`
     /// normalisation). Frankfurter `base=USD` shape. Fetched once eagerly at startup, then
     /// lazily (at most hourly) whenever a selection finds the rates stale.
@@ -261,6 +267,71 @@ fn spawn_nousportal_sync_task(selector: Arc<Selector>, providers_dir: String, in
     });
 }
 
+/// Spawns the background OrcaRouter catalog sync (fetch + upsert + reload via
+/// `proviz_elekto_core::orcarouter_sync`). OrcaRouter's `/v1/models` is OpenRouter-shaped for the
+/// basics but omits capability flags and cache pricing — those are scraped once per newly-seen
+/// model from the SEO detail page (capped at `PROVIZ_ORCAROUTER_ENRICH_MAX` per run). Same
+/// spawn/interval shape as `spawn_openrouter_sync_task`. No-op if the provider hasn't been
+/// onboarded (`providers/orcarouter/brand.json` missing).
+fn spawn_orcarouter_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
+    let brand_file = std::path::Path::new(&providers_dir)
+        .join("orcarouter")
+        .join("brand.json");
+    if !brand_file.exists() {
+        info!("orcarouter not onboarded (no providers/orcarouter/brand.json) — skipping auto-sync");
+        return;
+    }
+
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            let dir = providers_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let storage = sel.storage();
+                let outcome = proviz_elekto_core::orcarouter_sync::sync(
+                    storage.as_ref(),
+                    &dir,
+                    proviz_elekto_core::orcarouter_sync::DEFAULT_BASE_URL,
+                    proviz_elekto_core::orcarouter_sync::enrich_max_from_env(),
+                );
+                if let Ok(ref summary) = outcome {
+                    if !summary.skipped_suspicious {
+                        if let Err(e) = sel.reload() {
+                            error!("orcarouter sync: catalog reload failed: {e}");
+                        }
+                    }
+                }
+                outcome
+            })
+            .await
+            .expect("orcarouter sync task panicked");
+
+            match result {
+                Ok(summary) if summary.skipped_suspicious => {
+                    warn!(
+                        fetched = summary.fetched,
+                        "orcarouter sync skipped: suspiciously few models returned"
+                    );
+                }
+                Ok(summary) => {
+                    info!(
+                        fetched = summary.fetched,
+                        brands_added = summary.brands_added,
+                        models_added = summary.models_added,
+                        models_updated = summary.models_updated,
+                        models_disabled = summary.models_disabled,
+                        enriched = summary.enriched,
+                        "orcarouter catalog synced"
+                    );
+                }
+                Err(e) => error!("orcarouter sync failed: {e}"),
+            }
+
+            tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -361,6 +432,12 @@ async fn main() {
         selector.clone(),
         providers_dir.clone(),
         args.nousportal_sync_secs,
+    );
+
+    spawn_orcarouter_sync_task(
+        selector.clone(),
+        providers_dir.clone(),
+        args.orcarouter_sync_secs,
     );
 
     let state = Arc::new(AppState {
