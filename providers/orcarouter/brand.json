@@ -1,0 +1,8 @@
+{
+  "slug": "orcarouter",
+  "name": "OrcaRouter",
+  "api_key_env": "ORCAROUTER_API_KEY",
+  "base_url": "https://api.orcarouter.ai/v1",
+  "endpoints": {},
+  "price_currency": "USD"
+}
