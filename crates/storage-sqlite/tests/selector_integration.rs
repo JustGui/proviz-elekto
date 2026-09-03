@@ -839,6 +839,7 @@ fn group_weight_override_applies_and_request_takes_precedence() {
         cost_weight_override: Some(0.7),
         latency_weight_override: None,
         quality_weight_override: None,
+        sticky_model: false,
     };
     db.insert_group(&group).unwrap();
     // Both members at priority 0 (== "unset", falls back to brand priority) — same brand for
@@ -873,6 +874,85 @@ fn group_weight_override_applies_and_request_takes_precedence() {
     };
     let c = sel.select(&req).unwrap();
     assert_eq!(c.model_slug, "pricey");
+}
+
+/// `Group.sticky_model` keeps consecutive calls on the same model for prompt-cache warmth, but
+/// yields immediately when that model is rate-limited.
+#[test]
+fn sticky_model_prefers_last_pick_but_yields_on_rate_limit() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    // Two identical models — base scores tie; member priority is the only differentiator.
+    let a = make_model(brand.id, "model-a", 32_000);
+    let b = make_model(brand.id, "model-b", 32_000);
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&a).unwrap();
+    db.insert_model(&b).unwrap();
+
+    let group = proviz_elekto_core::models::Group {
+        id: Uuid::new_v4(),
+        slug: "detector".to_string(),
+        name: "detector".to_string(),
+        description: None,
+        is_active: true,
+        created_at: Utc::now(),
+        cost_weight_override: None,
+        latency_weight_override: None,
+        quality_weight_override: None,
+        sticky_model: true,
+    };
+    db.insert_group(&group).unwrap();
+    // B has the better (lower) member priority, so without stickiness B always wins.
+    for (model_id, priority) in [(a.id, 1_i16), (b.id, 0_i16)] {
+        db.insert_group_member(&proviz_elekto_core::models::GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id,
+            priority,
+            is_enabled: true,
+        })
+        .unwrap();
+    }
+
+    let sel = selector(db);
+    let req = SelectRequest {
+        group_id: Some(group.id),
+        ..base_req()
+    };
+
+    // 1) Block B → A is forced to win, and becomes the sticky model for this group.
+    sel.report_rate_limit(
+        b.id,
+        None,
+        RateLimitErrorType::Rpm,
+        0,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(sel.select(&req).unwrap().model_slug, "model-a");
+
+    // 2) Unblock B. It has the priority edge, but A's sticky bonus outweighs it → A still wins.
+    sel.report_success(
+        b.id, None, 0, None, None, None, None, None, None, None, None,
+    );
+    assert_eq!(sel.select(&req).unwrap().model_slug, "model-a");
+
+    // 3) Now block A → the selector must rotate to B despite A being sticky (rate-limited models
+    //    are filtered out of the pool entirely before the bonus is ever considered).
+    sel.report_rate_limit(
+        a.id,
+        None,
+        RateLimitErrorType::Rpm,
+        0,
+        None,
+        None,
+        None,
+        None,
+    );
+    assert_eq!(sel.select(&req).unwrap().model_slug, "model-b");
 }
 
 /// A measured per-step quality score outranks the model's global `quality_score` for the

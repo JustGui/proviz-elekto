@@ -381,6 +381,17 @@ enum GroupCmd {
         #[arg(long)]
         clear: bool,
     },
+    /// Toggle prompt-cache stickiness for this group (see `Group.sticky_model`). When on, the
+    /// selector nudges consecutive calls toward the model that served this group's last call, so
+    /// a large repeated prompt prefix (e.g. the detector's system prompt) stays cache-warm — a
+    /// bounded bonus that still yields to heatroom rotation under load.
+    SetSticky {
+        #[arg(long)]
+        slug: String,
+        /// `--enabled` turns it on; omit (or `--enabled=false`) turns it off.
+        #[arg(long, action = clap::ArgAction::Set, default_value_t = true)]
+        enabled: bool,
+    },
     /// Manage models within a group
     Member {
         #[command(subcommand)]
@@ -842,6 +853,7 @@ fn main() {
                     cost_weight_override: None,
                     latency_weight_override: None,
                     quality_weight_override: None,
+                    sticky_model: false,
                 };
                 storage.insert_group(&group).unwrap();
                 println!("group '{slug}' added (id={})", group.id);
@@ -870,6 +882,14 @@ fn main() {
                     )
                     .unwrap();
                 println!("group '{slug}' weight overrides updated");
+            }
+            GroupCmd::SetSticky { slug, enabled } => {
+                let g = find_group(&storage, &slug);
+                storage.set_group_sticky(g.id, enabled).unwrap();
+                println!(
+                    "group '{slug}' prompt-cache stickiness {}",
+                    if enabled { "ENABLED" } else { "disabled" }
+                );
             }
             GroupCmd::List => {
                 let groups = storage.load_groups().unwrap();

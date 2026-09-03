@@ -11,7 +11,9 @@
     "rps_limit": 8.33,
     "price_input_per_1m": 0.3,
     "price_output_per_1m": 0.9,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "codestral-embed",
@@ -23,7 +25,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "price_input_per_1m": 0.15
+    "price_input_per_1m": 0.15,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "devstral-2512",
@@ -38,7 +42,9 @@
     "quality_score": 0.78,
     "price_input_per_1m": 0.4,
     "price_output_per_1m": 2,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "magistral-medium-2509",
@@ -53,7 +59,9 @@
     "quality_score": 0.78,
     "price_input_per_1m": 2.0,
     "price_output_per_1m": 5.0,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "ministral-14b-2512",
@@ -68,7 +76,9 @@
     "quality_score": 0.85,
     "price_input_per_1m": 0.2,
     "price_output_per_1m": 0.2,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "ministral-3b-2512",
@@ -83,7 +93,9 @@
     "quality_score": 0.25,
     "price_input_per_1m": 0.1,
     "price_output_per_1m": 0.1,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "ministral-8b-2512",
@@ -98,7 +110,9 @@
     "quality_score": 0.8,
     "price_input_per_1m": 0.15,
     "price_output_per_1m": 0.15,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-embed-2312",
@@ -111,7 +125,9 @@
     "tpm_limit_month": 200000000000,
     "rps_limit": 6.0,
     "quality_score": 0.5,
-    "price_input_per_1m": 0.1
+    "price_input_per_1m": 0.1,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-large-2512",
@@ -126,7 +142,9 @@
     "tpm_limit_month": null,
     "rps_limit": 6.0,
     "quality_score": 0.95,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-medium-3-5",
@@ -141,7 +159,9 @@
     "quality_score": 0.88,
     "price_input_per_1m": 1.5,
     "price_output_per_1m": 7.5,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-moderation-2603",
@@ -152,7 +172,9 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 8.33
+    "rps_limit": 8.33,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-ocr-2512",
@@ -164,7 +186,9 @@
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
     "rps_limit": 6.0,
-    "quality_score": 0.70
+    "quality_score": 0.7,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-small-2603",
@@ -179,7 +203,9 @@
     "tpm_limit_month": null,
     "rps_limit": 1.67,
     "quality_score": 0.7,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "mistral-vibe-cli-latest",
@@ -192,7 +218,9 @@
     "tpm_limit_month": null,
     "rps_limit": 1.67,
     "quality_score": 0.75,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "open-mistral-nemo",
@@ -207,7 +235,9 @@
     "quality_score": 0.93,
     "price_input_per_1m": 0.15,
     "price_output_per_1m": 0.15,
-    "batch_price_multiplier": 0.5
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "voxtral-mini-2602",
@@ -218,7 +248,9 @@
     "supports_json_mode": false,
     "tpm_limit": 2000000,
     "tpm_limit_month": null,
-    "rps_limit": 6.0
+    "rps_limit": 6.0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "voxtral-mini-tts-2603",
@@ -231,7 +263,9 @@
     "rps_limit": 6.0,
     "quality_score": 0.9,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 16
+    "price_output_per_1m": 16,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "voxtral-small-2507",
@@ -244,6 +278,8 @@
     "tpm_limit_month": null,
     "rps_limit": 6.0,
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.3
+    "price_output_per_1m": 0.3,
+    "trains_on_data": false,
+    "retains_data": true
   }
 ]

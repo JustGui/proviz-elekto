@@ -25,6 +25,20 @@ const TRAFFIC_WINDOW_SECS: u64 = 300;
 
 const CACHE_TTL_SECS: u64 = 300; // 5 minutes
 
+/// Prompt-cache stickiness (opt-in per group via `Group.sticky_model`).
+/// How long a group's last-selected model stays "sticky" before the bonus lapses — roughly one
+/// provider prompt-cache lifetime.
+const STICKY_TTL_SECS: u64 = 300;
+/// Score bonus added to the sticky model in Pass 2. Deliberately small: enough to win a tie or a
+/// near-tie (so consecutive calls clump on one provider and keep its prompt cache warm), far too
+/// small to keep a rate-limited or headroom-drained model winning — heatroom rotation under load
+/// is unaffected.
+const STICKY_BONUS: f32 = 0.12;
+/// The sticky bonus is only applied while the sticky model still has at least this much raw fast
+/// headroom (RPS/RPM/TPM). Stops feeding it *before* it saturates, so the handoff to the next
+/// model (which then becomes sticky) is smooth rather than an oscillation at the quota edge.
+const STICKY_MIN_HEADROOM: f32 = 0.2;
+
 struct CatalogCache {
     models: HashMap<Uuid, Model>,
     brands: HashMap<Uuid, Brand>,
@@ -118,6 +132,11 @@ pub struct Selector {
     /// Per-brand selection timestamps for traffic-share balancing.
     /// Entries older than TRAFFIC_WINDOW_SECS are drained lazily on each selection.
     brand_traffic: DashMap<Uuid, Arc<Mutex<VecDeque<Instant>>>>,
+    /// Per-group (`group_id` → `(model_id, when)`) record of the model that served this group's
+    /// most recent selection. Read in Pass 2 to give that model the `STICKY_BONUS` when the
+    /// group has `sticky_model` set and the entry is fresher than `STICKY_TTL_SECS`. In-memory
+    /// only, like `brand_traffic`; empty for every non-sticky group.
+    sticky_last: DashMap<Uuid, (Uuid, Instant)>,
     /// Currency -> USD conversion factors for normalising non-USD brand prices. Seeded with a
     /// builtin table, overlaid with any persisted `pz_fx_rates` rows at construction, and
     /// refreshed lazily (see `select()` / `refresh_fx`).
@@ -139,6 +158,7 @@ impl Selector {
             key_rate_state: RateLimitState::new(),
             usage_tracker: UsageTracker::new(),
             brand_traffic: DashMap::new(),
+            sticky_last: DashMap::new(),
             fx,
             fx_url: RwLock::new(crate::fx::DEFAULT_FX_URL.to_string()),
         }
@@ -339,6 +359,9 @@ impl Selector {
         // overrides (which win) in Pass 2 below.
         let mut group_weight_overrides: (Option<f32>, Option<f32>, Option<f32>) =
             (None, None, None);
+        // `Some(group_id)` when this is a group-based selection AND the group opted into prompt-cache
+        // stickiness — drives the `STICKY_BONUS` in Pass 2 and the `sticky_last` record afterwards.
+        let mut sticky_group: Option<Uuid> = None;
         let rules: &[SelectionRule] = if req.pin_model.is_some() {
             // Benchmark pin: ignore group + step rules, consider every enabled model — the
             // Pass-1 `pin_model` filter below narrows to the single matching slug. Same shape
@@ -389,6 +412,9 @@ impl Selector {
                 group.latency_weight_override,
                 group.quality_weight_override,
             );
+            if group.sticky_model {
+                sticky_group = Some(group_id);
+            }
 
             debug!(group = %group.slug, "group-based selection");
             let members = cache
@@ -911,6 +937,28 @@ impl Selector {
                 + weights.traffic * traffic_score;
         }
 
+        // ── Prompt-cache stickiness (opt-in, `Group.sticky_model`) ───────────────
+        // If this group has stickiness on and its last-selected model is (a) still fresh, (b)
+        // still in the live candidate pool (rate-limited models were already filtered out in
+        // Pass 1), and (c) still has comfortable fast headroom, nudge its score so consecutive
+        // calls clump on it and keep its prompt cache warm. The bonus is small enough that a
+        // genuinely better-scored (or drained) alternative still wins — see `STICKY_BONUS`.
+        if let Some(gid) = sticky_group {
+            let fresh = self.sticky_last.get(&gid).and_then(|e| {
+                let (mid, when) = *e.value();
+                (when.elapsed().as_secs() < STICKY_TTL_SECS).then_some(mid)
+            });
+            if let Some(sticky_mid) = fresh {
+                if let Some(c) = candidates
+                    .iter_mut()
+                    .find(|c| c.model.id == sticky_mid && c.fast_headroom > STICKY_MIN_HEADROOM)
+                {
+                    c.score += STICKY_BONUS;
+                    debug!(model = %c.model.slug, "sticky prompt-cache bonus applied");
+                }
+            }
+        }
+
         // Sort by (score DESC, rule_priority ASC) so priority is the tiebreaker.
         candidates.sort_by(|a, b| {
             b.score
@@ -939,6 +987,13 @@ impl Selector {
                 w.pop_front();
             }
             w.push_back(now);
+        }
+
+        // Remember the winner for this sticky group so the next call can prefer it (cache warmth).
+        // Recorded at selection time — mirrors `brand_traffic` — so if `/complete` then fails on
+        // this model and re-selects, the replacement becomes the new sticky target automatically.
+        if let Some(gid) = sticky_group {
+            self.sticky_last.insert(gid, (winner.model.id, now));
         }
 
         let estimated_input_cost_usd = winner.model.price_input_per_1m.map(|p| {

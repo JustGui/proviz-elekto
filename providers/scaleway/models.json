@@ -12,7 +12,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "devstral-2-123b-instruct-2512",
@@ -26,7 +28,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.0
+    "price_output_per_1m": 2.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "gemma-3-27b-it",
@@ -41,7 +45,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.25,
-    "price_output_per_1m": 0.5
+    "price_output_per_1m": 0.5,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "gemma-4-26b-a4b-it",
@@ -57,7 +63,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "none",
     "price_input_per_1m": 0.25,
-    "price_output_per_1m": 0.5
+    "price_output_per_1m": 0.5,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "gpt-oss-120b",
@@ -73,7 +81,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.15,
-    "price_output_per_1m": 0.6
+    "price_output_per_1m": 0.6,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "holo2-30b-a3b",
@@ -87,7 +97,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.3,
-    "price_output_per_1m": 0.7
+    "price_output_per_1m": 0.7,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "llama-3.3-70b-instruct",
@@ -102,7 +114,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.9,
-    "price_output_per_1m": 0.9
+    "price_output_per_1m": 0.9,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "mistral-medium-3.5-128b",
@@ -117,7 +131,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "none",
     "price_input_per_1m": 1.5,
-    "price_output_per_1m": 7.5
+    "price_output_per_1m": 7.5,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "mistral-small-3.2-24b-instruct-2506",
@@ -132,7 +148,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.15,
-    "price_output_per_1m": 0.35
+    "price_output_per_1m": 0.35,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "pixtral-12b-2409",
@@ -146,7 +164,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.2,
-    "price_output_per_1m": 0.2
+    "price_output_per_1m": 0.2,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3-235b-a22b-instruct-2507",
@@ -161,7 +181,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.75,
-    "price_output_per_1m": 2.25
+    "price_output_per_1m": 2.25,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3-coder-30b-a3b-instruct",
@@ -176,7 +198,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.2,
-    "price_output_per_1m": 0.8
+    "price_output_per_1m": 0.8,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3-embedding-8b",
@@ -191,7 +215,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3.5-397b-a17b",
@@ -207,7 +233,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "none",
     "price_input_per_1m": 0.6,
-    "price_output_per_1m": 3.6
+    "price_output_per_1m": 3.6,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3.6-35b-a3b",
@@ -223,7 +251,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "none",
     "price_input_per_1m": 0.25,
-    "price_output_per_1m": 1.5
+    "price_output_per_1m": 1.5,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "voxtral-small-24b-2507",
@@ -237,7 +267,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.15,
-    "price_output_per_1m": 0.35
+    "price_output_per_1m": 0.35,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "whisper-large-v3",
@@ -254,7 +286,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.003,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "deepseek-v4-flash-0731",
@@ -272,7 +306,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "none",
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 0.8
+    "price_output_per_1m": 0.8,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "glm-5.2",
@@ -288,8 +324,10 @@
     "rpd_limit": null,
     "tpm_limit": null,
     "tpd_limit": null,
-    "reasoning_effort_value": "none", 
+    "reasoning_effort_value": "none",
     "price_input_per_1m": 1.8,
-    "price_output_per_1m": 5.5
+    "price_output_per_1m": 5.5,
+    "trains_on_data": false,
+    "retains_data": false
   }
 ]

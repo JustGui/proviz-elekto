@@ -12,7 +12,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.11,
-    "price_output_per_1m": 0.11
+    "price_output_per_1m": 0.11,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "meta-llama-3_3-70b-instruct",
@@ -27,7 +29,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.74,
-    "price_output_per_1m": 0.74
+    "price_output_per_1m": 0.74,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "mistral-7b-instruct-v0.3",
@@ -41,7 +45,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.11,
-    "price_output_per_1m": 0.11
+    "price_output_per_1m": 0.11,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "mistral-nemo-instruct-2407",
@@ -55,7 +61,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.14,
-    "price_output_per_1m": 0.14
+    "price_output_per_1m": 0.14,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3.6-27b",
@@ -71,7 +79,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.7
+    "price_output_per_1m": 2.7,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3guard-gen-0.6b",
@@ -85,7 +95,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3guard-gen-8b",
@@ -99,7 +111,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "gpt-oss-20b",
@@ -115,7 +129,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.05,
-    "price_output_per_1m": 0.18
+    "price_output_per_1m": 0.18,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "gpt-oss-120b",
@@ -131,7 +147,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.09,
-    "price_output_per_1m": 0.47
+    "price_output_per_1m": 0.47,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3.6-27b",
@@ -146,7 +164,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.4,
-    "price_output_per_1m": 2.7
+    "price_output_per_1m": 2.7,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3.5-397b-a17b",
@@ -162,7 +182,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.6,
-    "price_output_per_1m": 3.6
+    "price_output_per_1m": 3.6,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "Qwen3.5-9B",
@@ -177,7 +199,9 @@
     "tpd_limit": null,
     "reasoning_effort_value": "low",
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.15
+    "price_output_per_1m": 0.15,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3-embedding-8b",
@@ -192,7 +216,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.1,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen3-coder-30b-a3b-instruct",
@@ -207,7 +233,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.06,
-    "price_output_per_1m": 0.22
+    "price_output_per_1m": 0.22,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "whisper-large-v3",
@@ -224,7 +252,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 4.083e-05,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "whisper-large-v3-turbo",
@@ -241,7 +271,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 1.278e-05,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "qwen2.5-vl-72b-instruct",
@@ -256,7 +288,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.91,
-    "price_output_per_1m": 0.91
+    "price_output_per_1m": 0.91,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "bge-multilingual-gemma2",
@@ -271,7 +305,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.01,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "bge-m3",
@@ -285,7 +321,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.01,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "stable-diffusion-xl-base-v10",
@@ -299,7 +337,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "nvr-tts-it-it",
@@ -313,7 +353,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "nvr-tts-en-us",
@@ -327,7 +369,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "nvr-tts-de-de",
@@ -341,7 +385,9 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   },
   {
     "slug": "nvr-tts-es-es",
@@ -355,6 +401,8 @@
     "tpm_limit": null,
     "tpd_limit": null,
     "price_input_per_1m": 0.0,
-    "price_output_per_1m": 0.0
+    "price_output_per_1m": 0.0,
+    "trains_on_data": false,
+    "retains_data": false
   }
 ]

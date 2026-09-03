@@ -11,7 +11,9 @@
     "tpm_limit": 6000,
     "tpd_limit": 500000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "canopylabs/orpheus-arabic-saudi",
@@ -25,7 +27,9 @@
     "tpm_limit": 1200,
     "tpd_limit": 3600,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "canopylabs/orpheus-v1-english",
@@ -39,7 +43,9 @@
     "tpm_limit": 1200,
     "tpd_limit": 3600,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "groq/compound",
@@ -52,7 +58,9 @@
     "rpd_limit": 250,
     "tpm_limit": 70000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "groq/compound-mini",
@@ -65,7 +73,9 @@
     "rpd_limit": 250,
     "tpm_limit": 70000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "llama-3.3-70b-versatile",
@@ -81,7 +91,9 @@
     "tpd_limit": 100000,
     "quality_score": 0.92,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -96,7 +108,9 @@
     "tpm_limit": 30000,
     "tpd_limit": 500000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "meta-llama/llama-prompt-guard-2-22m",
@@ -110,7 +124,9 @@
     "tpm_limit": 15000,
     "tpd_limit": 500000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "meta-llama/llama-prompt-guard-2-86m",
@@ -124,7 +140,9 @@
     "tpm_limit": 15000,
     "tpd_limit": 500000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "openai/gpt-oss-120b",
@@ -139,7 +157,9 @@
     "tpm_limit": 8000,
     "tpd_limit": 200000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "openai/gpt-oss-20b",
@@ -154,7 +174,9 @@
     "tpm_limit": 8000,
     "tpd_limit": 200000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "openai/gpt-oss-safeguard-20b",
@@ -168,7 +190,9 @@
     "tpm_limit": 8000,
     "tpd_limit": 200000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "qwen/qwen3-32b",
@@ -182,7 +206,9 @@
     "tpm_limit": 6000,
     "tpd_limit": 500000,
     "price_input_per_1m": 0,
-    "price_output_per_1m": 0
+    "price_output_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "whisper-large-v3",
@@ -199,7 +225,9 @@
     "diarization": true,
     "streaming": false,
     "http_batch": true,
-    "word_timestamps": true
+    "word_timestamps": true,
+    "trains_on_data": false,
+    "retains_data": true
   },
   {
     "slug": "whisper-large-v3-turbo",
@@ -216,6 +244,8 @@
     "diarization": true,
     "streaming": false,
     "http_batch": true,
-    "word_timestamps": true
+    "word_timestamps": true,
+    "trains_on_data": false,
+    "retains_data": true
   }
 ]

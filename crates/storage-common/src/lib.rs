@@ -32,7 +32,7 @@ pub const Q_RULES: &str =
      FROM pz_selection_rules";
 
 pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at,\
-     cost_weight_override,latency_weight_override,quality_weight_override \
+     cost_weight_override,latency_weight_override,quality_weight_override,sticky_model \
      FROM pz_groups";
 
 pub const Q_GROUP_MEMBERS: &str = "SELECT id,group_id,model_id,priority,is_enabled \
@@ -173,6 +173,7 @@ pub fn group_from_row(row: &impl RowReader) -> Group {
         cost_weight_override: row.opt_f64(6).map(|v| v as f32),
         latency_weight_override: row.opt_f64(7).map(|v| v as f32),
         quality_weight_override: row.opt_f64(8).map(|v| v as f32),
+        sticky_model: row.opt_bool(9).unwrap_or(false),
     }
 }
 

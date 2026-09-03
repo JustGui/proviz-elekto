@@ -57,6 +57,8 @@ pub trait CatalogStorage: Send + Sync {
         latency_weight: Option<f32>,
         quality_weight: Option<f32>,
     ) -> StorageResult<()>;
+    /// Toggle a group's prompt-cache stickiness (see `Group.sticky_model`).
+    fn set_group_sticky(&self, group_id: Uuid, sticky: bool) -> StorageResult<()>;
 
     // Per-step measured model quality
     fn load_all_step_quality(&self) -> StorageResult<Vec<ModelStepQuality>>;
