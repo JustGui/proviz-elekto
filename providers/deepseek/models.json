@@ -1,0 +1,36 @@
+[
+  {
+    "slug": "deepseek-v4-flash",
+    "display_name": "DeepSeek V4 Flash",
+    "max_context_tokens": 1000000,
+    "max_output_tokens": 384000,
+    "supports_function_calling": true,
+    "supports_json_mode": true,
+    "reasoning_effort_value": "none",
+    "price_input_per_1m": 0.44,
+    "price_cached_input_per_1m": 0.014,
+    "price_output_per_1m": 1.32,
+    "quality_score": 0.8,
+    "category": "text",
+    "trains_on_data": true,
+    "retains_data": true,
+    "notes": "First-party DeepSeek API. Prices are PEAK rates (01:00-04:00 + 06:00-10:00 UTC Mon-Fri); off-peak is 50% cheaper - the catalog carries the higher value so cost is never under-estimated. Automatic prompt caching (usage.prompt_cache_hit_tokens, parsed by /complete). reasoning_effort='none' disables the default chain-of-thought (verified live). DeepSeek uses API data to improve its models -> worker-only, excluded from require_no_training steps (e.g. the detector). Nous Portal resells the same model ~3-4x cheaper and flat-priced - this brand is RPM-failover redundancy."
+  },
+  {
+    "slug": "deepseek-v4-pro",
+    "display_name": "DeepSeek V4 Pro",
+    "max_context_tokens": 1000000,
+    "max_output_tokens": 384000,
+    "supports_function_calling": true,
+    "supports_json_mode": true,
+    "reasoning_effort_value": "none",
+    "price_input_per_1m": 1.32,
+    "price_cached_input_per_1m": 0.044,
+    "price_output_per_1m": 3.96,
+    "quality_score": 0.86,
+    "category": "text",
+    "trains_on_data": true,
+    "retains_data": true,
+    "notes": "First-party DeepSeek API. PEAK prices (see deepseek-v4-flash note). reasoning_effort='none' disables thinking (verified live)."
+  }
+]
