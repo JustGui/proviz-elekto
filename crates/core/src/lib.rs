@@ -5,6 +5,7 @@ pub mod fx;
 pub mod models;
 pub mod nousportal_sync;
 pub mod openrouter_sync;
+pub mod orcarouter_sync;
 pub mod rate_state;
 pub mod requesty_sync;
 pub mod selector;

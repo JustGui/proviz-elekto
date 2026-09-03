@@ -205,6 +205,16 @@ impl CompleteRequest {
         if matches!(brand_slug, "openrouter" | "nousportal") && reasoning_effort_value.is_none() {
             obj.insert("reasoning".into(), json!({ "enabled": false }));
         }
+        // OrcaRouter has no "reasoning off" switch — it only understands OpenAI-shape
+        // `reasoning_effort` (`low`/`medium`/`high`, plus `minimal`/`max` on some models), and
+        // the unified `reasoning: {enabled: false}` above is silently ignored (verified live).
+        // Several OrcaRouter models default reasoning ON and would otherwise spend the whole
+        // `max_tokens` budget on a hidden trace, so request the lowest effort when a candidate
+        // doesn't configure a graded one. `minimal` is a no-op on dedicated reasoners
+        // (deepseek-reasoner, o1) but accepted and harmless there.
+        if brand_slug == "orcarouter" && reasoning_effort_value.is_none() {
+            obj.insert("reasoning_effort".into(), json!("minimal"));
+        }
         if let Some(ref tools) = self.tools {
             obj.insert("tools".into(), json!(tools));
         }
@@ -336,7 +346,16 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
         );
 
         let call_started = Instant::now();
-        match call_provider(&state.http, &url, &api_key, &payload, timeout).await {
+        match call_provider(
+            &state.http,
+            &url,
+            &api_key,
+            &payload,
+            timeout,
+            &candidate.brand_slug,
+        )
+        .await
+        {
             Ok(parsed) => {
                 let response_time_ms = Some(call_started.elapsed().as_millis() as u32);
                 let cost = report(
@@ -537,18 +556,23 @@ async fn call_provider(
     api_key: &str,
     payload: &Value,
     timeout: Duration,
+    brand_slug: &str,
 ) -> Result<ParsedCompletion, ProviderError> {
-    let resp = http
+    let mut builder = http
         .post(url)
         .bearer_auth(api_key)
         .timeout(timeout)
-        .json(payload)
-        .send()
-        .await
-        .map_err(|e| ProviderError {
-            is_rate_limit: false,
-            message: e.to_string(),
-        })?;
+        .json(payload);
+    // OrcaRouter only puts the real, request-specific `usage.cost_usd` on the response when
+    // asked to — opt in per request with this header (accepts `true`/`1`, case-insensitive).
+    // Every other provider ignores an unknown header, so this is safe to gate on brand alone.
+    if brand_slug == "orcarouter" {
+        builder = builder.header("X-OrcaRouter-Include-Cost", "true");
+    }
+    let resp = builder.send().await.map_err(|e| ProviderError {
+        is_rate_limit: false,
+        message: e.to_string(),
+    })?;
 
     let status = resp.status();
     // Capture rate-limit headers before consuming the body.
@@ -603,8 +627,24 @@ async fn call_provider(
         .min(prompt_tokens);
     // OpenRouter (and any other aggregator that routes to a variable-priced upstream) returns the
     // real, request-specific cost in `usage.cost` — the catalog's static price can't capture which
-    // sub-provider actually served this call, so prefer this when present.
-    let provider_cost_usd = usage["cost"].as_f64();
+    // sub-provider actually served this call, so prefer this when present. OrcaRouter reports the
+    // same figure as `usage.cost_usd` (gated on the `X-OrcaRouter-Include-Cost` request header we
+    // send for that brand) and, on top of that, tiers pricing by prompt length — so its real cost
+    // can differ from the base-tier catalog price even for a fixed model.
+    //
+    // Nous Portal is the exception: its `usage.cost` is rounded to one significant figure and
+    // floors at `5e-05`, returning the *same* value for a 200-token call and a 7000-token call
+    // (verified live) — useless as a per-request figure. Nous is flat-rate (one price per model
+    // in its `/models` catalog, no upstream routing variance), so the catalog computation in
+    // `Selector::report_success` — which already discounts `cached_tokens` at
+    // `price_cached_input_per_1m` — is exact. Drop the response figure and fall through to it.
+    let provider_cost_usd = if brand_slug == "nousportal" {
+        None
+    } else {
+        usage["cost"]
+            .as_f64()
+            .or_else(|| usage["cost_usd"].as_f64())
+    };
 
     Ok(ParsedCompletion {
         text,
@@ -779,6 +819,37 @@ mod payload_tests {
         let req = base_request();
         let payload = req.payload("some-model", "groq", None);
         assert!(payload.get("reasoning").is_none());
+    }
+
+    /// OrcaRouter has no `reasoning: {enabled: false}` — it gets the OpenAI-shape
+    /// `reasoning_effort: "minimal"` instead, and never the unified `reasoning` object.
+    #[test]
+    fn orcarouter_without_reasoning_effort_requests_minimal() {
+        let req = base_request();
+        let payload = req.payload("qwen/qwen3.7-flash", "orcarouter", None);
+        assert_eq!(payload["reasoning_effort"], json!("minimal"));
+        assert!(payload.get("reasoning").is_none());
+    }
+
+    /// A curated graded `reasoning_effort_value` on an OrcaRouter candidate is preserved.
+    #[test]
+    fn orcarouter_with_explicit_reasoning_effort_is_not_overridden() {
+        let req = base_request();
+        let payload = req.payload("some/graded-model", "orcarouter", Some("high"));
+        assert_eq!(payload["reasoning_effort"], json!("high"));
+    }
+
+    /// The OpenRouter-only `provider` block must not leak onto OrcaRouter (no such field there —
+    /// its routing/fallback mechanism is `extra_body.models`).
+    #[test]
+    fn orcarouter_gets_no_provider_block() {
+        let req = CompleteRequest {
+            require_no_training: true,
+            cost_weight: Some(0.9),
+            ..base_request()
+        };
+        let payload = req.payload("some-model", "orcarouter", None);
+        assert!(payload.get("provider").is_none());
     }
 
     /// Nous Portal shares OpenRouter's request schema — its DeepSeek models default reasoning ON,

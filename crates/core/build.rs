@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// Provider directories whose `models.json` is machine-generated, not hand-edited.
-const AUTO_SYNCED_PROVIDERS: &[&str] = &["openrouter", "requesty", "nousportal"];
+const AUTO_SYNCED_PROVIDERS: &[&str] = &["openrouter", "requesty", "nousportal", "orcarouter"];
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");

@@ -419,6 +419,9 @@ struct CatalogModelEntry {
     category: Option<String>,
     price_input_per_1m: Option<f64>,
     price_output_per_1m: Option<f64>,
+    /// Per-million price for prompt-cache-hit input tokens (see `Model.price_cached_input_per_1m`).
+    /// `None` when the provider doesn't price cached input separately.
+    price_cached_input_per_1m: Option<f64>,
     is_enabled: bool,
     supported_languages: Option<Vec<String>>,
 }
@@ -463,6 +466,7 @@ async fn handle_catalog_models(
                     category: m.category.clone(),
                     price_input_per_1m: m.price_input_per_1m,
                     price_output_per_1m: m.price_output_per_1m,
+                    price_cached_input_per_1m: m.price_cached_input_per_1m,
                     is_enabled: m.is_enabled,
                     supported_languages: m.supported_languages.clone(),
                 })

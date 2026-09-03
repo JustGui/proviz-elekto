@@ -322,7 +322,11 @@ def _extract_provider_cost(response: Any) -> Optional[float]:
         except (TypeError, ValueError):
             return None
 
+    # `usage.cost` — OpenRouter. `usage.cost_usd` — OrcaRouter (returned only when the
+    # `X-OrcaRouter-Include-Cost: true` request header is sent; see call_litellm below).
     cost = _as_float(getattr(usage, "cost", None))
+    if cost is None:
+        cost = _as_float(getattr(usage, "cost_usd", None))
     if cost is not None:
         return cost
 
@@ -331,7 +335,7 @@ def _extract_provider_cost(response: Any) -> Optional[float]:
     # attribute.
     extra = getattr(usage, "model_extra", None)
     if isinstance(extra, dict):
-        cost = _as_float(extra.get("cost"))
+        cost = _as_float(extra.get("cost")) or _as_float(extra.get("cost_usd"))
         if cost is not None:
             return cost
         details = extra.get("cost_details")
@@ -429,16 +433,28 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # resolves (from ${INFOMANIAK_PRODUCT_ID}) into candidate.base_url. Split-flow callers using
 # call_litellm* get the resolved URL echoed back on the candidate; the dependency-free
 # complete() path needs none of this since the server makes the call itself.
-_OPENAI_COMPAT_BRANDS = {"infomaniak"}
+#
+# OrcaRouter is OpenAI-compatible (base_url https://api.orcarouter.ai/v1) but litellm has no
+# first-class provider for it, so it's routed as openai/<slug> with an explicit api_base too.
+_OPENAI_COMPAT_BRANDS = {"infomaniak", "orcarouter"}
 
 
 def _litellm_target(candidate: "ModelCandidate") -> tuple[str, dict]:
-    """Return (model_id, extra_kwargs) for litellm.completion() for this candidate."""
+    """Return (model_id, extra_kwargs) for litellm.completion() for this candidate.
+
+    For OrcaRouter the extras also mirror what the server's /complete path does for that brand:
+    the `X-OrcaRouter-Include-Cost` header (so `usage.cost_usd` comes back — see
+    _extract_provider_cost) and a `reasoning_effort="minimal"` default (OrcaRouter has no
+    reasoning-off switch; a caller-supplied reasoning_effort still overrides this downstream).
+    """
     prefix = (candidate.brand_slug or "").split("-")[0]
     if prefix in _OPENAI_COMPAT_BRANDS:
-        extra = {}
+        extra: dict = {}
         if candidate.base_url:
             extra["api_base"] = candidate.base_url
+        if prefix == "orcarouter":
+            extra["extra_headers"] = {"X-OrcaRouter-Include-Cost": "true"}
+            extra["reasoning_effort"] = "minimal"
         return f"openai/{candidate.model_slug}", extra
     return f"{candidate.brand_slug}/{candidate.model_slug}", {}
 
