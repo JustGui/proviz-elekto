@@ -61,6 +61,7 @@ fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         price_synced_at: None,
         trains_on_data: None,
         retains_data: None,
+        price_cached_input_per_1m: None,
     }
 }
 
@@ -393,7 +394,7 @@ fn report_success_clears_limit() {
         None,
         None,
     );
-    sel.report_success(mid, None, 0, None, None, None, None, None, None, None);
+    sel.report_success(mid, None, 0, None, None, None, None, None, None, None, None);
     assert!(sel.select(&base_req()).is_ok());
 }
 
@@ -561,12 +562,14 @@ fn scoring_prefers_live_reported_low_latency() {
         None,
         None,
         None,
+        None,
         Some(20_000),
     );
     sel.report_success(
         fast.id,
         None,
         0,
+        None,
         None,
         None,
         None,
@@ -961,4 +964,79 @@ fn pin_model_selects_only_the_named_model_bypassing_step_rules() {
             "expected no match for pin {miss:?}"
         );
     }
+}
+
+#[test]
+fn report_success_discounts_cached_input_tokens() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    // input $1/M, output $2/M, cached input $0.10/M.
+    let model = Model {
+        price_input_per_1m: Some(1.0),
+        price_output_per_1m: Some(2.0),
+        price_cached_input_per_1m: Some(0.10),
+        ..make_model(brand.id, "cache-model", 32_000)
+    };
+    let mid = model.id;
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&model).unwrap();
+    db.insert_rule(&make_rule("chat", mid, 0)).unwrap();
+    let sel = selector(db);
+    sel.reload().unwrap();
+
+    // 1000 prompt tokens, 800 cache hits, 100 completion:
+    // (200*1.0 + 800*0.10 + 100*2.0) / 1e6 = (200 + 80 + 200) / 1e6 = 4.8e-4
+    let cost = sel
+        .report_success(
+            mid,
+            None,
+            1000,
+            None,
+            Some(1000),
+            Some(100),
+            Some(800),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cost computed");
+    assert!((cost - 4.8e-4).abs() < 1e-12, "got {cost}");
+
+    // No cache hits → full input rate: (1000*1.0 + 100*2.0)/1e6 = 1.2e-3
+    let cost = sel
+        .report_success(
+            mid,
+            None,
+            1000,
+            None,
+            Some(1000),
+            Some(100),
+            Some(0),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("cost computed");
+    assert!((cost - 1.2e-3).abs() < 1e-12, "got {cost}");
+
+    // A provider-reported real cost still wins outright over the cached-aware estimate.
+    let cost = sel
+        .report_success(
+            mid,
+            None,
+            1000,
+            None,
+            Some(1000),
+            Some(100),
+            Some(800),
+            None,
+            None,
+            Some(0.42),
+            None,
+        )
+        .expect("cost");
+    assert!((cost - 0.42).abs() < 1e-12, "got {cost}");
 }

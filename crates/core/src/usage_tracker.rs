@@ -558,6 +558,7 @@ mod tests {
             price_synced_at: None,
             trains_on_data: None,
             retains_data: None,
+            price_cached_input_per_1m: None,
         }
     }
 

@@ -981,6 +981,7 @@ impl Selector {
             estimated_tokens,
             price_input_per_1m: winner.model.price_input_per_1m,
             price_output_per_1m: winner.model.price_output_per_1m,
+            price_cached_input_per_1m: winner.model.price_cached_input_per_1m,
             batch_price_multiplier: winner.model.batch_price_multiplier,
             chat_path: winner
                 .brand
@@ -1048,6 +1049,7 @@ impl Selector {
         actual_tokens: Option<u64>,
         prompt_tokens: Option<u64>,
         completion_tokens: Option<u64>,
+        cached_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
         provider_cost_usd: Option<f64>,
@@ -1093,10 +1095,22 @@ impl Selector {
                 .get(&m.brand_id)
                 .map(|b| b.price_currency.as_str())
                 .unwrap_or("USD");
+            // Split prompt tokens into cache-hit vs full-price when the provider reported a hit
+            // count AND the model has a distinct cached rate. `cached` is clamped to the prompt
+            // total so a provider over-report can't produce a negative full-price count.
             let in_cost = m
                 .price_input_per_1m
                 .zip(prompt_tokens)
-                .map(|(p, t)| self.fx.to_usd(p, currency) * t as f64 / 1_000_000.0)
+                .map(|(p, total)| {
+                    let full_rate = self.fx.to_usd(p, currency);
+                    let cached = cached_tokens.unwrap_or(0).min(total);
+                    let uncached = total - cached;
+                    let cached_rate = m
+                        .price_cached_input_per_1m
+                        .map(|cp| self.fx.to_usd(cp, currency))
+                        .unwrap_or(full_rate);
+                    (full_rate * uncached as f64 + cached_rate * cached as f64) / 1_000_000.0
+                })
                 .unwrap_or(0.0);
             let out_cost = m
                 .price_output_per_1m
