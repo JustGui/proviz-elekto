@@ -99,6 +99,20 @@ impl SqliteStorage {
                     .map_err(|e| StorageError::Database(e.to_string()))?;
             }
         }
+        let sticky_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_groups') WHERE name='sticky_model'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !sticky_exists {
+            conn.execute_batch(
+                "ALTER TABLE pz_groups ADD COLUMN sticky_model INTEGER NOT NULL DEFAULT 0;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -684,8 +698,8 @@ impl CatalogStorage for SqliteStorage {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at,
-               cost_weight_override,latency_weight_override,quality_weight_override)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+               cost_weight_override,latency_weight_override,quality_weight_override,sticky_model)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, description=excluded.description, is_active=excluded.is_active",
             params![
@@ -698,6 +712,7 @@ impl CatalogStorage for SqliteStorage {
                 group.cost_weight_override.map(|v| v as f64),
                 group.latency_weight_override.map(|v| v as f64),
                 group.quality_weight_override.map(|v| v as f64),
+                group.sticky_model,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -741,6 +756,16 @@ impl CatalogStorage for SqliteStorage {
                 quality_weight.map(|v| v as f64),
                 group_id.to_string(),
             ],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_group_sticky(&self, group_id: Uuid, sticky: bool) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pz_groups SET sticky_model=?1 WHERE id=?2",
+            params![sticky, group_id.to_string()],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -1037,7 +1062,8 @@ CREATE TABLE IF NOT EXISTS pz_groups (
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     cost_weight_override    REAL,
     latency_weight_override REAL,
-    quality_weight_override REAL
+    quality_weight_override REAL,
+    sticky_model            INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_step_quality (

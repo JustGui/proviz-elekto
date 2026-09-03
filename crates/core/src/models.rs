@@ -275,6 +275,15 @@ pub struct Group {
     pub latency_weight_override: Option<f32>,
     #[serde(default)]
     pub quality_weight_override: Option<f32>,
+    /// When `true`, the selector gives a small, bounded Pass-2 score bonus to the model that
+    /// served this group's most recent selection (in-memory, ~5 min TTL) — as long as that model
+    /// still has comfortable fast headroom and isn't rate-limited. Keeps consecutive calls for a
+    /// stable task (e.g. the detector's ~10K-token system prompt) landing on the same provider so
+    /// its prompt cache stays warm, **without** pinning: the bonus is too small to keep a drained
+    /// or 429'd model winning, so heatroom rotation under load is unaffected. `false` (default) =
+    /// today's behaviour exactly. Only meaningful for group-based selection.
+    #[serde(default)]
+    pub sticky_model: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

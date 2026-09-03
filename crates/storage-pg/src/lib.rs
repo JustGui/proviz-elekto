@@ -119,7 +119,8 @@ impl PostgresStorage {
             .batch_execute(
                 "ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS cost_weight_override DOUBLE PRECISION;\
                  ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS latency_weight_override DOUBLE PRECISION;\
-                 ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS quality_weight_override DOUBLE PRECISION;",
+                 ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS quality_weight_override DOUBLE PRECISION;\
+                 ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS sticky_model BOOLEAN NOT NULL DEFAULT FALSE;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -545,8 +546,8 @@ impl CatalogStorage for PostgresStorage {
         client
             .execute(
                 "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at,
-                   cost_weight_override,latency_weight_override,quality_weight_override)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                   cost_weight_override,latency_weight_override,quality_weight_override,sticky_model)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                  ON CONFLICT (slug) DO UPDATE SET
                    name=EXCLUDED.name, description=EXCLUDED.description,
                    is_active=EXCLUDED.is_active",
@@ -560,6 +561,7 @@ impl CatalogStorage for PostgresStorage {
                     &cost,
                     &latency,
                     &quality,
+                    &group.sticky_model,
                 ],
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -601,6 +603,17 @@ impl CatalogStorage for PostgresStorage {
                 "UPDATE pz_groups SET cost_weight_override=$1, latency_weight_override=$2,
                    quality_weight_override=$3 WHERE id=$4",
                 &[&cost, &latency, &quality, &group_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn set_group_sticky(&self, group_id: Uuid, sticky: bool) -> StorageResult<()> {
+        let mut client = self.connected_client()?;
+        client
+            .execute(
+                "UPDATE pz_groups SET sticky_model=$1 WHERE id=$2",
+                &[&sticky, &group_id],
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -872,7 +885,8 @@ CREATE TABLE IF NOT EXISTS pz_groups (
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     cost_weight_override    DOUBLE PRECISION,
     latency_weight_override DOUBLE PRECISION,
-    quality_weight_override DOUBLE PRECISION
+    quality_weight_override DOUBLE PRECISION,
+    sticky_model            BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_step_quality (
