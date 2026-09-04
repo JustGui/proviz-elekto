@@ -185,6 +185,29 @@ enum ProvidersCmd {
         #[arg(long, default_value = "https://api.orcarouter.ai/v1")]
         base_url: String,
     },
+    /// Fetch TokenHub's model roster and write providers/tokenhub/models.json (then upsert into
+    /// the DB unless --dry-run). TokenHub's GET /v1/models (auth'd with TOKENHUB_API_KEY) returns
+    /// only model ids, so each model's pricing/context/capabilities is scraped from its
+    /// server-rendered detail page. By default only newly-seen models are scraped and known
+    /// models are carried forward; pass --refresh to re-scrape everything (e.g. to pick up price
+    /// changes).
+    SyncTokenhub {
+        /// Root directory containing provider subdirectories
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        /// Fetch and print the mapped models.json to stdout without writing to disk or the DB
+        #[arg(long)]
+        dry_run: bool,
+        /// Re-scrape every model, not just newly-seen ones (picks up price/capability changes)
+        #[arg(long)]
+        refresh: bool,
+        /// Max models to scrape this run. The one-time manual seed wants everything; the server
+        /// task defaults to 30.
+        #[arg(long, default_value = "500")]
+        enrich_max: usize,
+        #[arg(long, default_value = "https://us-api.tokenhub.com/v1")]
+        base_url: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1251,6 +1274,53 @@ fn main() {
                         ),
                         Err(e) => {
                             eprintln!("orcarouter sync failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            ProvidersCmd::SyncTokenhub {
+                dir,
+                dry_run,
+                refresh,
+                enrich_max,
+                base_url,
+            } => {
+                if dry_run {
+                    match proviz_elekto_core::tokenhub_sync::fetch_preview(&base_url, enrich_max) {
+                        Ok(entries) => {
+                            println!("{}", serde_json::to_string_pretty(&entries).unwrap());
+                            eprintln!(
+                                "\n{} models mapped (dry run — nothing written)",
+                                entries.len()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("tokenhub dry-run fetch failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    match proviz_elekto_core::tokenhub_sync::sync(
+                        storage.as_ref(),
+                        &dir,
+                        &base_url,
+                        enrich_max,
+                        refresh,
+                    ) {
+                        Ok(s) if s.skipped_suspicious => {
+                            eprintln!(
+                                "tokenhub sync: only {} models returned, skipping (nothing written)",
+                                s.fetched
+                            );
+                            std::process::exit(1);
+                        }
+                        Ok(s) => println!(
+                            "tokenhub sync: {} fetched, {} brands added, {} models added, {} updated, {} disabled, {} scraped",
+                            s.fetched, s.brands_added, s.models_added, s.models_updated, s.models_disabled, s.enriched
+                        ),
+                        Err(e) => {
+                            eprintln!("tokenhub sync failed: {e}");
                             std::process::exit(1);
                         }
                     }

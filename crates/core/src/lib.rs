@@ -10,4 +10,5 @@ pub mod rate_state;
 pub mod requesty_sync;
 pub mod selector;
 pub mod storage;
+pub mod tokenhub_sync;
 pub mod usage_tracker;
