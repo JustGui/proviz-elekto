@@ -215,6 +215,16 @@ impl CompleteRequest {
         if brand_slug == "orcarouter" && reasoning_effort_value.is_none() {
             obj.insert("reasoning_effort".into(), json!("minimal"));
         }
+        // DeepSeek's first-party API: `deepseek-v4-flash`/`-pro` reason by default.
+        // `reasoning_effort: "none"` (from the catalog `reasoning_effort_value`) disables it on
+        // simple prompts but NOT reliably on a large task prompt (rtfc detector benchmark:
+        // ~24/43 length-capped, empty content). `thinking: {type: "disabled"}` is DeepSeek's hard
+        // switch and holds. Sent alongside whatever `reasoning_effort` the catalog set, since the
+        // two are independent knobs. Nous Portal / OpenRouter re-hosts of these models use the
+        // `reasoning: {enabled: false}` gate above instead and don't need this.
+        if brand_slug == "deepseek" {
+            obj.insert("thinking".into(), json!({ "type": "disabled" }));
+        }
         if let Some(ref tools) = self.tools {
             obj.insert("tools".into(), json!(tools));
         }
@@ -868,6 +878,23 @@ mod payload_tests {
         let payload = req.payload("some/graded-model", "nousportal", Some("low"));
         assert_eq!(payload["reasoning_effort"], json!("low"));
         assert!(payload.get("reasoning").is_none());
+    }
+
+    /// DeepSeek first-party: `thinking: {type: "disabled"}` is sent unconditionally (its
+    /// `reasoning_effort: "none"` alone isn't a reliable hard-disable on large prompts).
+    #[test]
+    fn deepseek_brand_gets_thinking_disabled() {
+        let req = base_request();
+        let payload = req.payload("deepseek-v4-flash", "deepseek", Some("none"));
+        assert_eq!(payload["thinking"], json!({ "type": "disabled" }));
+        assert_eq!(payload["reasoning_effort"], json!("none"));
+    }
+
+    #[test]
+    fn non_deepseek_brand_gets_no_thinking_field() {
+        let req = base_request();
+        let payload = req.payload("some-model", "groq", None);
+        assert!(payload.get("thinking").is_none());
     }
 
     /// The OpenRouter-only `provider.sort` / ZDR block must NOT leak onto Nous Portal — sending an

@@ -436,7 +436,10 @@ def _estimate_tokens(messages: list[dict]) -> int:
 #
 # OrcaRouter is OpenAI-compatible (base_url https://api.orcarouter.ai/v1) but litellm has no
 # first-class provider for it, so it's routed as openai/<slug> with an explicit api_base too.
-_OPENAI_COMPAT_BRANDS = {"infomaniak", "orcarouter"}
+# TokenHub (base_url https://us-api.tokenhub.com/v1) is the same situation — plain
+# OpenAI-compatible, no first-class litellm provider, no special headers/params needed (its
+# real per-request cost comes back as usage.cost, already handled by _extract_provider_cost).
+_OPENAI_COMPAT_BRANDS = {"infomaniak", "orcarouter", "tokenhub"}
 
 
 def _litellm_target(candidate: "ModelCandidate") -> tuple[str, dict]:
