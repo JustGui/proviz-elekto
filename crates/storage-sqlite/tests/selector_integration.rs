@@ -955,6 +955,74 @@ fn sticky_model_prefers_last_pick_but_yields_on_rate_limit() {
     assert_eq!(sel.select(&req).unwrap().model_slug, "model-b");
 }
 
+/// In a sticky group the `cost` score component uses the cache-blended effective input price:
+/// a model with a cheap cached rate beats an equally-list-priced model that has no cache.
+#[test]
+fn sticky_group_cost_score_favours_a_cheap_cached_rate() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = SqliteStorage::open_in_memory().unwrap();
+    let brand = make_brand("acme", 0);
+    // Same list input price; "cached" has a 10x-cheaper cache rate, "nocache" has none.
+    let cached = Model {
+        price_input_per_1m: Some(1.0),
+        price_cached_input_per_1m: Some(0.1),
+        price_output_per_1m: Some(1.0),
+        quality_score: Some(0.80),
+        ..make_model(brand.id, "cached", 32_000)
+    };
+    let nocache = Model {
+        price_input_per_1m: Some(1.0),
+        price_cached_input_per_1m: None,
+        price_output_per_1m: Some(1.0),
+        quality_score: Some(0.80),
+        ..make_model(brand.id, "nocache", 32_000)
+    };
+    db.insert_brand(&brand).unwrap();
+    db.insert_model(&cached).unwrap();
+    db.insert_model(&nocache).unwrap();
+    let group = proviz_elekto_core::models::Group {
+        id: Uuid::new_v4(),
+        slug: "worker".to_string(),
+        name: "worker".to_string(),
+        description: None,
+        is_active: true,
+        created_at: Utc::now(),
+        // Lean hard on the cost component so it decides between two otherwise-equal models.
+        cost_weight_override: Some(0.6),
+        latency_weight_override: None,
+        quality_weight_override: None,
+        sticky_model: true,
+    };
+    db.insert_group(&group).unwrap();
+    for mid in [nocache.id, cached.id] {
+        db.insert_group_member(&proviz_elekto_core::models::GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id: mid,
+            priority: 0,
+            is_enabled: true,
+        })
+        .unwrap();
+    }
+    let sel = selector(db);
+    let req = SelectRequest {
+        group_id: Some(group.id),
+        ..base_req()
+    };
+    // First pick is a tie broken by rule order; but repeated selection converges on "cached"
+    // because its effective (cache-blended) input cost is ~4x lower.
+    let mut cached_wins = 0;
+    for _ in 0..5 {
+        if sel.select(&req).unwrap().model_slug == "cached" {
+            cached_wins += 1;
+        }
+    }
+    assert!(
+        cached_wins >= 4,
+        "expected the cheap-cache model to dominate, won {cached_wins}/5"
+    );
+}
+
 /// A measured per-step quality score outranks the model's global `quality_score` for the
 /// step it was recorded against, and has no effect on a different step (falls back to the
 /// global column there instead).
