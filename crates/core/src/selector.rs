@@ -772,10 +772,27 @@ impl Selector {
 
         // Prices are per-brand and may be in different currencies (see `Brand.price_currency`
         // / `crate::fx`); normalise every one to USD before they're compared or reported.
+        //
+        // For a **sticky** group the effective per-token input cost is not the list price: the
+        // group's whole point is that consecutive calls reuse the same prompt prefix, so after
+        // the first call most input tokens are prompt-cache hits billed at
+        // `price_cached_input_per_1m`. Score the `cost` component on that reality — a
+        // 0.25·list + 0.75·cached blend (≈ one cold call then warm) — so a model with a cheap
+        // cache rate (e.g. Nous DeepSeek: $0.066/M list, $0.013/M cached → ~$0.026/M effective)
+        // is favoured over one with no cache at a similar list price. Non-sticky groups and
+        // models with no cached rate are unchanged (blend collapses to the list price).
+        let sticky = sticky_group.is_some();
         let price_input_usd = |c: &Candidate| -> Option<f64> {
-            c.model
-                .price_input_per_1m
-                .map(|p| self.fx.to_usd(p, &c.brand.price_currency))
+            c.model.price_input_per_1m.map(|list| {
+                let list_usd = self.fx.to_usd(list, &c.brand.price_currency);
+                match (sticky, c.model.price_cached_input_per_1m) {
+                    (true, Some(cached)) => {
+                        let cached_usd = self.fx.to_usd(cached, &c.brand.price_currency);
+                        0.25 * list_usd + 0.75 * cached_usd
+                    }
+                    _ => list_usd,
+                }
+            })
         };
 
         let prices: Vec<f64> = candidates.iter().filter_map(&price_input_usd).collect();
