@@ -130,6 +130,13 @@ pub struct CompleteResponse {
     #[serde(default)]
     pub cached_tokens: u64,
     pub cost_usd: Option<f64>,
+    /// Why the provider stopped generating, normalised: `"stop"` (answer complete),
+    /// `"length"` (hit the output limit - the text is TRUNCATED), `"tool_calls"`,
+    /// `"content_filter"`, or the provider's own raw value. `null` when the provider did not
+    /// say. The only reliable truncation signal when a provider silently caps output below the
+    /// `max_tokens` the caller asked for.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 impl CompleteRequest {
@@ -412,6 +419,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                         completion_tokens: parsed.completion_tokens,
                         cached_tokens: parsed.cached_tokens,
                         cost_usd,
+                        finish_reason: parsed.finish_reason,
                     }),
                 )
                     .into_response();
@@ -553,6 +561,7 @@ struct ParsedCompletion {
     /// `usage.cost`), when it returns one. `None` for providers that don't (most of them —
     /// they have one fixed price, so the catalog price is already exact).
     provider_cost_usd: Option<f64>,
+    finish_reason: Option<String>,
 }
 
 struct ProviderError {
@@ -618,6 +627,7 @@ async fn call_provider(
     })?;
 
     let message = &body["choices"][0]["message"];
+    let finish_reason = normalize_finish_reason(body["choices"][0]["finish_reason"].as_str());
     let text = message["content"].as_str().unwrap_or_default().to_string();
     let tool_calls = match &message["tool_calls"] {
         Value::Null => None,
@@ -665,6 +675,23 @@ async fn call_provider(
         remaining_requests,
         remaining_tokens,
         provider_cost_usd,
+        finish_reason,
+    })
+}
+
+/// One vocabulary for every OpenAI-compatible provider. Most send `"length"` on a truncated
+/// answer; some send `"max_tokens"` (Anthropic-style) or `"model_length"` (Mistral when the
+/// context window, not `max_tokens`, cut it). Callers only need to recognise `"length"`.
+fn normalize_finish_reason(raw: Option<&str>) -> Option<String> {
+    let r = raw?.trim();
+    if r.is_empty() {
+        return None;
+    }
+    Some(match r.to_ascii_lowercase().as_str() {
+        "length" | "max_tokens" | "model_length" | "max_output_tokens" => "length".into(),
+        "stop" | "end_turn" | "eos" | "stop_sequence" => "stop".into(),
+        "tool_calls" | "function_call" | "tool_use" => "tool_calls".into(),
+        other => other.to_string(),
     })
 }
 
@@ -1029,5 +1056,27 @@ mod payload_tests {
             Some("https://api.infomaniak.com/2/ai/acct-XXXX/openai/v1/chat/completions")
         );
         std::env::remove_var("PROVIZ_TEST_IM_PRODUCT");
+    }
+}
+
+#[cfg(test)]
+mod finish_reason_tests {
+    use super::normalize_finish_reason as n;
+
+    #[test]
+    fn truncation_spellings_all_become_length() {
+        for raw in ["length", "LENGTH", "max_tokens", "model_length", "max_output_tokens"] {
+            assert_eq!(n(Some(raw)).as_deref(), Some("length"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn complete_answers_become_stop_and_unknowns_pass_through() {
+        assert_eq!(n(Some("stop")).as_deref(), Some("stop"));
+        assert_eq!(n(Some("end_turn")).as_deref(), Some("stop"));
+        assert_eq!(n(Some("tool_use")).as_deref(), Some("tool_calls"));
+        assert_eq!(n(Some("content_filter")).as_deref(), Some("content_filter"));
+        assert_eq!(n(Some("  ")), None);
+        assert_eq!(n(None), None);
     }
 }
