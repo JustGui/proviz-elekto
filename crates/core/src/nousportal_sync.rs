@@ -131,6 +131,7 @@ pub fn sync(
 ) -> Result<NousPortalSyncSummary, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
@@ -194,6 +195,7 @@ pub fn sync(
 pub fn fetch_preview(base_url: &str) -> Result<Vec<serde_json::Value>, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
@@ -262,5 +264,18 @@ mod tests {
         let out = map_entry(&m, true, Utc::now());
         assert!(out["price_cached_input_per_1m"].is_null());
         assert_eq!(out["trains_on_data"], true);
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    /// Real network call - run by hand: `cargo test -p proviz-elekto-core -- --ignored nous_live`.
+    /// Without a User-Agent the endpoint answers 403 and this fails.
+    #[test]
+    #[ignore]
+    fn nous_live_models_endpoint_accepts_the_sync_client() {
+        let models =
+            super::fetch_preview("https://inference-api.nousresearch.com/v1").expect("fetch");
+        assert!(models.len() > 100, "got {} models", models.len());
     }
 }
