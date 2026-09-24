@@ -90,6 +90,7 @@ pub fn sync(
 ) -> Result<RequestySyncSummary, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
@@ -153,6 +154,7 @@ pub fn sync(
 pub fn fetch_preview(base_url: &str) -> Result<Vec<serde_json::Value>, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
