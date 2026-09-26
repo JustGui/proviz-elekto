@@ -119,6 +119,9 @@ class CompleteResult:
     # 0 when the provider doesn't cache or the prefix wasn't warm. Lets a caller tell whether its
     # prompt prefix is actually being cached across calls.
     cached_tokens: int = 0
+    # Why the provider stopped, normalised by the server: "stop", "length" (output TRUNCATED at
+    # the limit), "tool_calls", ... None when the provider did not say.
+    finish_reason: Optional[str] = None
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -899,6 +902,7 @@ class ProvizElekto:
             cost_usd=r.get("cost_usd"),
             tool_calls=r.get("tool_calls"),
             cached_tokens=r.get("cached_tokens", 0) or 0,
+            finish_reason=r.get("finish_reason"),
         )
         _logger.debug(
             "complete: model=%s/%s prompt=%d completion=%d cost_usd=%s",
