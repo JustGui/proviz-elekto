@@ -338,6 +338,7 @@ fn build_entries(
 ) -> (Vec<serde_json::Value>, usize) {
     let synced_at = Utc::now().to_rfc3339();
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(12))
         .user_agent("proviz-elekto-sync")
         .build()
@@ -384,6 +385,7 @@ fn fetch_roster(base_url: &str) -> Result<Vec<RosterEntry>, String> {
         .ok_or_else(|| format!("{API_KEY_ENV} not set — cannot fetch TokenHub roster"))?;
     let url = format!("{}/models", base_url.trim_end_matches('/'));
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;

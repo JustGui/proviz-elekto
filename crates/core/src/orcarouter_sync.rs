@@ -460,6 +460,7 @@ fn build_entries(
     let synced_at = Utc::now();
     let synced_at_str = synced_at.to_rfc3339();
     let page_client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(12))
         .user_agent("proviz-elekto-sync")
         .build()
@@ -501,6 +502,7 @@ pub fn sync(
 ) -> Result<OrcaRouterSyncSummary, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;
@@ -563,6 +565,7 @@ pub fn sync(
 pub fn fetch_preview(base_url: &str, enrich_max: usize) -> Result<Vec<serde_json::Value>, String> {
     let url = format!("{base_url}/models");
     let client = reqwest::blocking::Client::builder()
+        .user_agent(crate::SYNC_USER_AGENT)
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("failed to build HTTP client: {e}"))?;

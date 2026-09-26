@@ -474,7 +474,13 @@ async fn main() {
         tokio::task::spawn_blocking(move || sel.refresh_fx());
     }
 
-    let http = reqwest::Client::new();
+    // A User-Agent on every provider call: Nous Portal's Cloudflare edge answers 403 (an HTML
+    // challenge page) to a request without one, and reqwest sends none by default - so no
+    // Nous completion had ever succeeded. Same constant the catalog syncs send.
+    let http = reqwest::Client::builder()
+        .user_agent(proviz_elekto_core::SYNC_USER_AGENT)
+        .build()
+        .expect("reqwest client");
 
     let batch_queue = Arc::new(batch::BatchQueue::new(
         args.batch_window_secs,
