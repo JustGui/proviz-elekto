@@ -1065,7 +1065,13 @@ mod finish_reason_tests {
 
     #[test]
     fn truncation_spellings_all_become_length() {
-        for raw in ["length", "LENGTH", "max_tokens", "model_length", "max_output_tokens"] {
+        for raw in [
+            "length",
+            "LENGTH",
+            "max_tokens",
+            "model_length",
+            "max_output_tokens",
+        ] {
             assert_eq!(n(Some(raw)).as_deref(), Some("length"), "{raw}");
         }
     }
