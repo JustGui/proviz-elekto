@@ -205,7 +205,10 @@ Apache-2.0
 
 Jev is available through `POST /complete` with `categories: ["decision"]` and a
 `response_format` JSON schema containing a flat object of required enum and boolean
-properties. Set `TYPESAFE_API_KEY` on the server. Jev does not generate free text,
+properties. Set `TYPESAFE_API_KEY` in the server's deployment environment. RTFC's
+Compose files forward this key to `proviz`; its Kubernetes renderer builds the
+`env-proviz` Secret from that configuration. Keep the real key in the deployment's
+`.env`, never in committed configuration or on RTFC workers. Jev does not generate free text,
 queries, summaries or tool calls; it is excluded from ordinary chat selection.
 The gateway translates finite properties into native TypeSafe Choice/Noul questions
 and returns JSON in `text`, plus native `decision_probabilities`. Boolean decisions
@@ -215,6 +218,10 @@ On an existing deployment, seed the new provider with `proviz seed --dir ./provi
 against the intended catalog, then reload it with `proviz reload` (or restart the server).
 No group is required for RTFC's default Ricochet routing: it explicitly selects the
 `decision` category on the `ricochet_decide` step. An optional navigation group must
-contain `typesafe/jev-latest`. Keep the final summary on a text-generating model.
+contain `typesafe/jev-latest`. In Ricochet, Jev selects observed page/link IDs and
+whether to search again or stop. Query generation and the final verdict/summary
+remain separate text-generating calls; navigation confidence is not verdict confidence.
+Verify the adapter with `cargo test -p proviz-server`; its HTTP regression uses a
+synthetic TypeSafe endpoint and checks routing, usage and ordinary-chat isolation.
 See [the TypeSafe API](https://docs.typesafe.ai/api) and
 [model limits/pricing](https://docs.typesafe.ai/models).
