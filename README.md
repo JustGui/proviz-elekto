@@ -201,7 +201,7 @@ except Exception:
 
 Apache-2.0
 
-### TypeSafe Jev decisions
+### Jev decisions across providers
 
 Jev is available through `POST /complete` with `categories: ["decision"]` and a
 `response_format` JSON schema containing a flat object of required enum and boolean
@@ -216,12 +216,26 @@ use a 0.5 threshold. Choice properties support at most 255 scalar alternatives.
 
 On an existing deployment, seed the new provider with `proviz seed --dir ./providers`
 against the intended catalog, then reload it with `proviz reload` (or restart the server).
-No group is required for RTFC's default Ricochet routing: it explicitly selects the
-`decision` category on the `ricochet_decide` step. An optional navigation group must
-contain `typesafe/jev-latest`. In Ricochet, Jev selects observed page/link IDs and
+RTFC defaults Ricochet navigation to the `jev` group with the explicit
+`decision` category on the `ricochet_decide` step. Populate the group with
+native Jev models: TypeSafe `jev-latest`, OrcaRouter
+`typesafe/jev-1.13` and OpenRouter `typesafe/jev-1.13`. Use a `jev` group to keep
+selection inside that pool; normal quota-headroom scoring and 429 cooldown/fallback
+apply per provider/account. Configure account-specific RPM/RPS limits in the
+catalog. Missing API keys are skipped. This does not guarantee independent
+upstream capacity when routers share TypeSafe infrastructure.
+
+OrcaRouter uses `/v1/systemone`; OpenRouter uses `/api/alpha/decisions`.
+The gateway preserves the native decision schema and probabilities on all three
+routes. Catalog loads and syncs classify these as `decision`, excluding them from
+ordinary chat. Requesty's Jev catalog entry is not enabled for this pool because
+its native decision endpoint has not been verified. RTFC supplies an idempotent
+`tools/seed_proviz_group_jev.sh` for its PostgreSQL deployment. In Ricochet, Jev selects observed page/link IDs and
 whether to search again or stop. Query generation and the final verdict/summary
 remain separate text-generating calls; navigation confidence is not verdict confidence.
 Verify the adapter with `cargo test -p proviz-server`; its HTTP regression uses a
 synthetic TypeSafe endpoint and checks routing, usage and ordinary-chat isolation.
 See [the TypeSafe API](https://docs.typesafe.ai/api) and
-[model limits/pricing](https://docs.typesafe.ai/models).
+[model limits/pricing](https://docs.typesafe.ai/models),
+[OrcaRouter’s native System One API](https://www.orcarouter.ai/blog/jev-system-one),
+and [OpenRouter’s Decisions API](https://openrouter.ai/blog/tutorials/how-to-use-jev/).
