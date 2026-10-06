@@ -122,6 +122,7 @@ class CompleteResult:
     # Why the provider stopped, normalised by the server: "stop", "length" (output TRUNCATED at
     # the limit), "tool_calls", ... None when the provider did not say.
     finish_reason: Optional[str] = None
+    decision_probabilities: Optional[dict] = None
 
 
 def _classify_error(exc: Exception) -> tuple[str, str]:
@@ -903,6 +904,7 @@ class ProvizElekto:
             tool_calls=r.get("tool_calls"),
             cached_tokens=r.get("cached_tokens", 0) or 0,
             finish_reason=r.get("finish_reason"),
+            decision_probabilities=r.get("decision_probabilities"),
         )
         _logger.debug(
             "complete: model=%s/%s prompt=%d completion=%d cost_usd=%s",

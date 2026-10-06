@@ -1,0 +1,17 @@
+[
+  {
+    "slug": "jev-latest",
+    "display_name": "Jev (latest stable)",
+    "category": "decision",
+    "max_context_tokens": 32000,
+    "supports_function_calling": false,
+    "supports_json_mode": true,
+    "price_input_per_1m": 0.042,
+    "price_output_per_1m": 0.0,
+    "quality_score": 0.7,
+    "avg_latency_ms": 300,
+    "rps_limit": 80,
+    "tpm_limit": 6000000,
+    "notes": "Finite enum/boolean decisions only via /complete JSON-schema adapter. 255 choices/question. Conservative 32k context for state plus longest question; aggregate provider limit 64k. Account limits: 100k tokens/s and 80 requests/s. Pricing: https://docs.typesafe.ai/models. Privacy status unspecified."
+  }
+]
