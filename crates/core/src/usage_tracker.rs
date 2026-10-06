@@ -48,6 +48,33 @@ struct ModelWindows {
 /// while still damping a single outlier spike.
 const LATENCY_EWMA_ALPHA: f64 = 0.2;
 
+/// Subtract `amount` without allowing the counter to underflow.
+///
+/// `Atomic*::try_update` is not stable on every supported Rust version, and
+/// `fetch_update` is deprecated on newer compilers. A CAS loop provides the
+/// same lock-free saturating update on both.
+fn saturating_fetch_sub_u32(counter: &AtomicU32, amount: u32) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(amount);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+fn saturating_fetch_sub_u64(counter: &AtomicU64, amount: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(amount);
+        match counter.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
 struct ModelUsage {
     in_flight_requests: AtomicU32,
     in_flight_tokens: AtomicU64,
@@ -128,18 +155,8 @@ impl UsageTracker {
         actual_tokens: Option<u64>,
     ) {
         let usage = self.get_or_default((model_id, brand_key_id));
-        usage
-            .in_flight_requests
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(1))
-            })
-            .ok();
-        usage
-            .in_flight_tokens
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(estimated_tokens))
-            })
-            .ok();
+        saturating_fetch_sub_u32(&usage.in_flight_requests, 1);
+        saturating_fetch_sub_u64(&usage.in_flight_tokens, estimated_tokens);
 
         let token_count = actual_tokens.unwrap_or(estimated_tokens);
         let now = Instant::now();
