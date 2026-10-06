@@ -130,13 +130,13 @@ impl UsageTracker {
         let usage = self.get_or_default((model_id, brand_key_id));
         usage
             .in_flight_requests
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             })
             .ok();
         usage
             .in_flight_tokens
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(estimated_tokens))
             })
             .ok();
