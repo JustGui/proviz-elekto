@@ -20,6 +20,9 @@ use uuid::Uuid;
 
 use crate::{apply_report, select_with_wait, AppState};
 
+#[path = "systemone.rs"]
+mod systemone;
+
 /// Default per-call provider HTTP timeout (seconds). Mirrors the Python client default (~120s).
 const DEFAULT_TIMEOUT_SECS: u64 = 120;
 /// Maximum number of distinct models to try before giving up with 502.
@@ -137,6 +140,9 @@ pub struct CompleteResponse {
     /// `max_tokens` the caller asked for.
     #[serde(default)]
     pub finish_reason: Option<String>,
+    /// Native calibrated probabilities for decision-only providers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_probabilities: Option<Value>,
 }
 
 impl CompleteRequest {
@@ -350,11 +356,38 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             }
         };
 
-        let payload = req.payload(
-            &candidate.model_slug,
-            &candidate.brand_slug,
-            candidate.reasoning_effort_value.as_deref(),
-        );
+        let payload = if candidate.brand_slug.split('-').next() == Some("typesafe") {
+            match systemone::payload(&req, &candidate.model_slug) {
+                Ok(p) => p,
+                Err(e) => {
+                    report(
+                        &state,
+                        &candidate,
+                        ReportOutcome::Error,
+                        RateLimitErrorType::Other,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(json!({"error":e.message})),
+                    )
+                        .into_response();
+                }
+            }
+        } else {
+            req.payload(
+                &candidate.model_slug,
+                &candidate.brand_slug,
+                candidate.reasoning_effort_value.as_deref(),
+            )
+        };
         debug!(
             attempt,
             model = %candidate.model_slug,
@@ -420,6 +453,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                         cached_tokens: parsed.cached_tokens,
                         cost_usd,
                         finish_reason: parsed.finish_reason,
+                        decision_probabilities: parsed.decision_probabilities,
                     }),
                 )
                     .into_response();
@@ -562,8 +596,10 @@ struct ParsedCompletion {
     /// they have one fixed price, so the catalog price is already exact).
     provider_cost_usd: Option<f64>,
     finish_reason: Option<String>,
+    decision_probabilities: Option<Value>,
 }
 
+#[derive(Debug)]
 struct ProviderError {
     message: String,
     is_rate_limit: bool,
@@ -613,6 +649,7 @@ async fn call_provider(
         // same way, instead of correctly backing the whole key off for cooldown_secs() and
         // moving straight to a different brand.
         let is_rate_limit = status.as_u16() == 429
+            || (brand_slug.split('-').next() == Some("typesafe") && status.as_u16() == 529)
             || body.contains("rate_limit_exceeded")
             || body.contains("tokens per minute");
         return Err(ProviderError {
@@ -626,6 +663,12 @@ async fn call_provider(
         message: format!("invalid JSON response: {e}"),
     })?;
 
+    if brand_slug.split('-').next() == Some("typesafe") {
+        let mut parsed = systemone::parse(&body, payload)?;
+        parsed.remaining_requests = remaining_requests;
+        parsed.remaining_tokens = remaining_tokens;
+        return Ok(parsed);
+    }
     let message = &body["choices"][0]["message"];
     let finish_reason = normalize_finish_reason(body["choices"][0]["finish_reason"].as_str());
     let text = message["content"].as_str().unwrap_or_default().to_string();
@@ -676,6 +719,7 @@ async fn call_provider(
         remaining_tokens,
         provider_cost_usd,
         finish_reason,
+        decision_probabilities: None,
     })
 }
 

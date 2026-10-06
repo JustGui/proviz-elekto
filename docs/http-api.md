@@ -161,3 +161,25 @@ Hot-reload catalog from DB without restart.
 ```json
 { "status": "ok", "models_loaded": 12, "rules_loaded": 28 }
 ```
+
+## Finite decisions with TypeSafe Jev
+
+`POST /complete` accepts `categories: ["decision"]` and a flat required-object
+`response_format.json_schema.schema` with boolean/enum properties. The TypeSafe
+adapter translates these to Noul/Choice questions, combines the chat messages into
+state, and returns typed JSON as `text`. `decision_probabilities` carries the native
+answers and calibration data; it is omitted for chat providers. Unsupported free
+text or tool schemas return 422. Ordinary chat calls cannot select decision models.
+
+```json
+{ "step": "ricochet_decide", "categories": ["decision"], "requires_json_mode": true,
+  "messages": [{"role":"system","content":"Choose whether to follow the cited report."},
+               {"role":"user","content":"The article cites an official report."}],
+  "response_format": {"type":"json_schema","json_schema":{"name":"next_step", "strict":true,
+    "schema":{"type":"object","additionalProperties":false,
+      "properties":{"next_step":{"type":"string","enum":["FOLLOW","STOP"]}},
+      "required":["next_step"]}}}}
+```
+
+Set `TYPESAFE_API_KEY`, seed `providers/typesafe` into the existing catalog and reload.
+Jev's choices must be supplied by the caller. It cannot synthesize final prose.

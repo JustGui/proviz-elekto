@@ -1,0 +1,10 @@
+{
+  "slug": "typesafe",
+  "name": "TypeSafe AI",
+  "api_key_env": "TYPESAFE_API_KEY",
+  "price_currency": "USD",
+  "base_url": "https://api.typesafe.ai/v1",
+  "endpoints": {
+    "chat": "/systemone"
+  }
+}

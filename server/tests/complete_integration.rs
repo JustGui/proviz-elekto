@@ -59,17 +59,25 @@ async fn spawn_mock_provider() -> String {
 }
 
 fn seed_catalog(base_url: String) -> Arc<Selector> {
+    seed_typed_catalog(base_url, "mockbrand", None)
+}
+
+fn seed_typed_catalog(base_url: String, slug: &str, category: Option<&str>) -> Arc<Selector> {
     let storage = SqliteStorage::open_in_memory().expect("in-memory db");
     let brand = Brand {
         id: Uuid::new_v4(),
-        slug: "mockbrand".into(),
+        slug: slug.into(),
         name: "Mock Brand".into(),
         base_url: Some(base_url),
         is_active: true,
         priority: 0,
         created_at: Utc::now(),
         traffic_weight: 1.0,
-        endpoints: None,
+        endpoints: if slug == "typesafe" {
+            Some(json!({"chat":"/systemone"}))
+        } else {
+            None
+        },
         price_currency: "USD".into(),
     };
     let model = Model {
@@ -94,7 +102,7 @@ fn seed_catalog(base_url: String) -> Arc<Selector> {
         avg_latency_ms: None,
         is_enabled: true,
         notes: None,
-        category: None,
+        category: category.map(str::to_string),
         created_at: Utc::now(),
         batch_price_multiplier: None,
         diarization: None,
@@ -486,4 +494,93 @@ async fn complete_ignores_nousportal_degenerate_usage_cost() {
         (cost - expected).abs() < 1e-12,
         "expected catalog cost {expected}, got {cost} (degenerate usage.cost not dropped?)"
     );
+}
+
+#[tokio::test]
+async fn complete_routes_jev_finite_decisions_and_excludes_it_from_chat() {
+    use proviz_elekto_core::models::BrandApiKey;
+    const KEY: &str = "PROVIZ_TEST_JEV_KEY";
+    std::env::set_var(KEY, "synthetic-key");
+    async fn mock_jev(Json(req): Json<Value>) -> Json<Value> {
+        assert_eq!(req["model"], "mock-7b");
+        assert!(req.get("messages").is_none());
+        assert_eq!(req["questions"]["next_step"]["type"], "choice");
+        assert_eq!(
+            req["questions"]["next_step"]["criteria"]["option_0"]["value"],
+            "OPEN:7"
+        );
+        Json(json!({"model":"jev-fixture","answers":{
+            "next_step":{"type":"choice","choice":"option_0","confidence":0.9,"probabilities":{"option_0":0.9,"option_1":0.1}},
+            "enough_evidence":{"type":"noul","noul":0.1}},
+            "usage":{"input_tokens":100,"output_tokens":6}}))
+    }
+    let app = Router::new().route("/v1/systemone", post(mock_jev));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let selector = seed_typed_catalog(format!("http://{addr}/v1"), "typesafe", Some("decision"));
+    let storage = selector.storage();
+    let brand = storage.load_brands().unwrap().into_iter().next().unwrap();
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: KEY.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let client = reqwest::Client::new();
+    let req = json!({"step":"ricochet_decide","categories":["decision"],"requires_json_mode":true,
+        "messages":[{"role":"system","content":"Follow the best citation."},{"role":"user","content":"A synthetic page."}],
+        "response_format":{"type":"json_schema","json_schema":{"name":"decision","strict":true,"schema":{
+            "type":"object","additionalProperties":false,"properties":{
+                "next_step":{"type":"string","enum":["OPEN:7","STOP"]},"enough_evidence":{"type":"boolean"}},
+            "required":["next_step","enough_evidence"]}}}});
+    for _ in 0..2 {
+        let resp = client
+            .post(format!("{url}/complete"))
+            .json(&req)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), reqwest::StatusCode::OK);
+        let body: Value = resp.json().await.unwrap();
+        let decision: Value = serde_json::from_str(body["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            decision,
+            json!({"next_step":"OPEN:7","enough_evidence":false})
+        );
+        assert_eq!(body["prompt_tokens"], 100);
+        assert_eq!(body["completion_tokens"], 6);
+        assert!(
+            body["decision_probabilities"]["next_step"]["confidence"]
+                .as_f64()
+                .unwrap()
+                > 0.8
+        );
+        assert!(body["cost_usd"].as_f64().unwrap() > 0.0);
+    }
+    let chat = client
+        .post(format!("{url}/complete"))
+        .json(&json!({"step":"chat","messages":[{"role":"user","content":"Summarize"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(chat.status(), reqwest::StatusCode::OK);
+    let mut invalid = req;
+    invalid["response_format"]["json_schema"]["schema"]["properties"]["next_step"] =
+        json!({"type":"string"});
+    let resp = client
+        .post(format!("{url}/complete"))
+        .json(&invalid)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 }

@@ -200,3 +200,21 @@ except Exception:
 ## License
 
 Apache-2.0
+
+### TypeSafe Jev decisions
+
+Jev is available through `POST /complete` with `categories: ["decision"]` and a
+`response_format` JSON schema containing a flat object of required enum and boolean
+properties. Set `TYPESAFE_API_KEY` on the server. Jev does not generate free text,
+queries, summaries or tool calls; it is excluded from ordinary chat selection.
+The gateway translates finite properties into native TypeSafe Choice/Noul questions
+and returns JSON in `text`, plus native `decision_probabilities`. Boolean decisions
+use a 0.5 threshold. Choice properties support at most 255 scalar alternatives.
+
+On an existing deployment, seed the new provider with `proviz seed --dir ./providers`
+against the intended catalog, then reload it with `proviz reload` (or restart the server).
+No group is required for RTFC's default Ricochet routing: it explicitly selects the
+`decision` category on the `ricochet_decide` step. An optional navigation group must
+contain `typesafe/jev-latest`. Keep the final summary on a text-generating model.
+See [the TypeSafe API](https://docs.typesafe.ai/api) and
+[model limits/pricing](https://docs.typesafe.ai/models).
