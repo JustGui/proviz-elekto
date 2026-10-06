@@ -302,11 +302,19 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Err(e) => return select_error_to_response(e),
         };
 
-        let url = match resolve_chat_url(
+        let native_decision = proviz_elekto_core::decision_models::uses_systemone(
             &candidate.brand_slug,
-            &candidate.base_url,
-            &candidate.chat_path,
-        ) {
+            &candidate.model_slug,
+        );
+        let url = match if native_decision {
+            systemone::url(&candidate.brand_slug, &candidate.base_url)
+        } else {
+            resolve_chat_url(
+                &candidate.brand_slug,
+                &candidate.base_url,
+                &candidate.chat_path,
+            )
+        } {
             Some(u) => u,
             None => {
                 warn!(brand = %candidate.brand_slug, "no base_url and no default endpoint known");
@@ -356,7 +364,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             }
         };
 
-        let payload = if candidate.brand_slug.split('-').next() == Some("typesafe") {
+        let payload = if native_decision {
             match systemone::payload(&req, &candidate.model_slug) {
                 Ok(p) => p,
                 Err(e) => {
@@ -663,7 +671,10 @@ async fn call_provider(
         message: format!("invalid JSON response: {e}"),
     })?;
 
-    if brand_slug.split('-').next() == Some("typesafe") {
+    if proviz_elekto_core::decision_models::uses_systemone(
+        brand_slug,
+        payload["model"].as_str().unwrap_or_default(),
+    ) {
         let mut parsed = systemone::parse(&body, payload)?;
         parsed.remaining_requests = remaining_requests;
         parsed.remaining_tokens = remaining_tokens;

@@ -322,21 +322,28 @@ pub fn load_from_dir(
                 .max_context_tokens
                 .or_else(|| canonical.and_then(|c| c.max_context_tokens))
                 .unwrap_or(0);
-            let supports_function_calling = def
-                .supports_function_calling
-                .or_else(|| canonical.and_then(|c| c.supports_function_calling))
-                .unwrap_or(false);
-            let supports_json_mode = def
-                .supports_json_mode
-                .or_else(|| canonical.and_then(|c| c.supports_json_mode))
-                .unwrap_or(false);
+            let native_decision =
+                crate::decision_models::uses_systemone(&brand_def.slug, &def.slug);
+            let supports_function_calling = !native_decision
+                && def
+                    .supports_function_calling
+                    .or_else(|| canonical.and_then(|c| c.supports_function_calling))
+                    .unwrap_or(false);
+            let supports_json_mode = native_decision
+                || def
+                    .supports_json_mode
+                    .or_else(|| canonical.and_then(|c| c.supports_json_mode))
+                    .unwrap_or(false);
             let quality_score = def
                 .quality_score
                 .or_else(|| canonical.and_then(|c| c.quality_score));
-            let category = def
-                .category
-                .clone()
-                .or_else(|| canonical.and_then(|c| c.category.clone()));
+            let category = if native_decision {
+                Some("decision".to_string())
+            } else {
+                def.category
+                    .clone()
+                    .or_else(|| canonical.and_then(|c| c.category.clone()))
+            };
             let display_name = def
                 .display_name
                 .clone()

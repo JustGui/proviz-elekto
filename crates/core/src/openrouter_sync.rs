@@ -73,23 +73,21 @@ fn price_per_1m(raw: &Option<String>) -> Option<f64> {
         .map(|per_token| per_token * 1_000_000.0)
 }
 
-/// Maps one OpenRouter `/models` entry into the on-disk `models.json` shape consumed by
-/// `builtin_providers::ModelDef`. Every entry OpenRouter lists is a chat-completion model
-/// (verified: `architecture.modality` always ends in `->text`/`->text+image`/etc. — OpenRouter's
-/// `/models` endpoint doesn't surface embeddings/image-gen/audio-only endpoints), so category is
-/// uniformly "text" — no filtering needed to include every model.
+/// Maps a catalog entry into the on-disk model definition. Native Jev decisions
+/// use the decision category; generative Jev Router and other chat models remain text.
 fn map_entry(m: &OpenRouterModel, synced_at: chrono::DateTime<Utc>) -> serde_json::Value {
     let pricing = m.pricing.as_ref();
+    let decision = crate::decision_models::is_jev(&m.id);
     json!({
         "slug": m.id,
         "display_name": m.name,
         "max_context_tokens": m.context_length,
         "max_output_tokens": m.top_provider.as_ref().and_then(|p| p.max_completion_tokens),
-        "supports_function_calling": m.supported_parameters.iter().any(|p| p == "tools"),
-        "supports_json_mode": m.supported_parameters.iter().any(|p| p == "response_format"),
+        "supports_function_calling": !decision && m.supported_parameters.iter().any(|p| p == "tools"),
+        "supports_json_mode": decision || m.supported_parameters.iter().any(|p| p == "response_format"),
         "price_input_per_1m": pricing.and_then(|p| price_per_1m(&p.prompt)),
         "price_output_per_1m": pricing.and_then(|p| price_per_1m(&p.completion)),
-        "category": "text",
+        "category": if decision { "decision" } else { "text" },
         // OpenRouter returns "" (not null) for closed-weight models with no HF repo (~139 of
         // them, e.g. OpenAI's own models) — treat that the same as no id.
         "canonical_model": m.hugging_face_id.as_deref().filter(|s| !s.is_empty()),

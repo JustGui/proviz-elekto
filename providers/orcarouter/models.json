@@ -2447,9 +2447,9 @@
     "trains_on_data": true
   },
   {
-    "category": "text",
+    "category": "decision",
     "display_name": "TypeSafe: Jev 1.13",
-    "max_context_tokens": 65536,
+    "max_context_tokens": 32000,
     "max_output_tokens": null,
     "price_cached_input_per_1m": null,
     "price_input_per_1m": 0.041999999999999996,
@@ -2457,7 +2457,7 @@
     "price_synced_at": "2026-09-24T20:27:23.190464+00:00",
     "retains_data": true,
     "slug": "typesafe/jev-1.13",
-    "supports_function_calling": true,
+    "supports_function_calling": false,
     "supports_json_mode": true,
     "trains_on_data": true
   },

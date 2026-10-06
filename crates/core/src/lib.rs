@@ -1,4 +1,5 @@
 pub mod builtin_providers;
+pub mod decision_models;
 pub mod env_expand;
 pub mod error;
 pub mod fx;

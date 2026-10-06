@@ -3,6 +3,23 @@
 use super::{ChatMessage, CompleteRequest, ParsedCompletion, ProviderError};
 use serde_json::{json, Map, Value};
 
+// Respect configured/mock base URLs rather than hard-coding a vendor host.
+pub(super) fn url(brand: &str, base_url: &Option<String>) -> Option<String> {
+    let base = proviz_elekto_core::env_expand::expand_env_placeholders(base_url.as_deref()?);
+    let base = base.trim_end_matches('/');
+    if base.is_empty() {
+        return None;
+    }
+    if brand.split('-').next() == Some("openrouter") {
+        Some(format!(
+            "{}/alpha/decisions",
+            base.strip_suffix("/v1").unwrap_or(base)
+        ))
+    } else {
+        Some(format!("{base}/systemone"))
+    }
+}
+
 fn error(message: &str) -> ProviderError {
     ProviderError {
         message: message.into(),
