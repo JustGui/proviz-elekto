@@ -140,6 +140,9 @@ const NON_CHAT_ID_MARKERS: &[&str] = &[
 ///   - `None` — skip (meta-routers, `-free` tier, image / video / audio / per-call models)
 fn classify(m: &OrcaModel) -> Option<&'static str> {
     let id = m.id.to_ascii_lowercase();
+    if crate::decision_models::is_jev(&id) {
+        return Some("decision");
+    }
     // OrcaRouter's own meta-routers (orcarouter/auto, orcarouter/fusion*, orcarouter/free) have
     // no fixed pricing and pick a model themselves — proviz does its own selection.
     if id.starts_with("orcarouter/") {
@@ -486,6 +489,10 @@ fn build_entries(
         if is_missing_size(entry.get("max_context_tokens")) {
             entry["max_context_tokens"] = json!(FALLBACK_CONTEXT_TOKENS);
         }
+        if category == "decision" {
+            entry["supports_function_calling"] = json!(false);
+            entry["supports_json_mode"] = json!(true);
+        }
         entries.push(entry);
     }
     (entries, enriched)
@@ -584,6 +591,16 @@ pub fn fetch_preview(base_url: &str, enrich_max: usize) -> Result<Vec<serde_json
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn jev_remains_decision_only_after_catalog_refresh() {
+        let m: OrcaModel = serde_json::from_value(json!({"id":"typesafe/jev-1.13", "name":"Jev", "context_length":32000,
+            "supported_parameters":["tools","response_format"], "pricing":{"prompt":"0.000000042","completion":"0"}})).unwrap();
+        let entry = build_entries(&[m], &Default::default(), 0).0.remove(0);
+        assert_eq!(entry["category"], "decision");
+        assert_eq!(entry["supports_function_calling"], false);
+        assert_eq!(entry["supports_json_mode"], true);
+    }
     use super::*;
 
     fn model(json: serde_json::Value) -> OrcaModel {

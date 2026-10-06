@@ -5952,5 +5952,17 @@
     "slug": "openai/gpt-4",
     "supports_function_calling": true,
     "supports_json_mode": true
+  },
+  {
+    "slug": "typesafe/jev-1.13",
+    "display_name": "TypeSafe: Jev 1.13",
+    "category": "decision",
+    "max_context_tokens": 32000,
+    "supports_function_calling": false,
+    "supports_json_mode": true,
+    "price_input_per_1m": 0.042,
+    "price_output_per_1m": 0.0,
+    "quality_score": 0.7,
+    "notes": "Native Decisions API /api/alpha/decisions; finite enum/boolean questions only. Set account-specific rate limits in the catalog."
   }
 ]

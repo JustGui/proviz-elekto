@@ -584,3 +584,114 @@ async fn complete_routes_jev_finite_decisions_and_excludes_it_from_chat() {
         .unwrap();
     assert_eq!(resp.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn jev_group_falls_back_across_native_router_endpoints_on_429() {
+    use axum::http::StatusCode;
+    use proviz_elekto_core::models::{BrandApiKey, Group, GroupMember};
+    const KEY: &str = "PROVIZ_TEST_JEV_GROUP_KEY";
+    std::env::set_var(KEY, "synthetic-key");
+    static THROTTLED_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    async fn throttled(Json(req): Json<Value>) -> (StatusCode, Json<Value>) {
+        THROTTLED_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        assert!(req["questions"].is_object());
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({"error":"rate limited"})),
+        )
+    }
+    async fn decision(Json(req): Json<Value>) -> Json<Value> {
+        assert_eq!(req["model"], "typesafe/jev-1.13");
+        assert!(req.get("messages").is_none());
+        Json(
+            json!({"answers":{"next_step":{"type":"choice","choice":"option_0","confidence":0.9}},
+            "usage":{"input_tokens":100,"output_tokens":0}}),
+        )
+    }
+    let app = Router::new()
+        .route("/v1/systemone", post(throttled))
+        .route("/api/alpha/decisions", post(decision));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let selector = seed_typed_catalog(format!("http://{addr}/v1"), "orcarouter", Some("decision"));
+    let storage = selector.storage();
+    let mut brand = storage.load_brands().unwrap().remove(0);
+    let mut model = storage.load_models().unwrap().remove(0);
+    model.slug = "typesafe/jev-1.13".into();
+    model.supports_function_calling = false;
+    storage.insert_model(&model).unwrap();
+    let group = Group {
+        id: Uuid::new_v4(),
+        slug: "jev".into(),
+        name: "Jev".into(),
+        description: None,
+        is_active: true,
+        created_at: Utc::now(),
+        cost_weight_override: None,
+        latency_weight_override: None,
+        quality_weight_override: None,
+        sticky_model: false,
+    };
+    storage.insert_group(&group).unwrap();
+    for priority in 0..2 {
+        if priority == 1 {
+            brand.id = Uuid::new_v4();
+            brand.slug = "openrouter".into();
+            brand.base_url = Some(format!("http://{addr}/api/v1"));
+            model.id = Uuid::new_v4();
+            model.brand_id = brand.id;
+        }
+        storage.insert_brand(&brand).unwrap();
+        storage.insert_model(&model).unwrap();
+        storage
+            .insert_brand_api_key(&BrandApiKey {
+                id: Uuid::new_v4(),
+                brand_id: brand.id,
+                api_key_env: KEY.into(),
+                priority: 0,
+                is_active: true,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        storage
+            .insert_group_member(&GroupMember {
+                id: Uuid::new_v4(),
+                group_id: group.id,
+                model_id: model.id,
+                priority,
+                is_enabled: true,
+            })
+            .unwrap();
+    }
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector.clone()).await;
+    let request = json!({"step":"ricochet_decide","group_name":"jev","categories":["decision"],
+        "requires_json_mode":true,"messages":[{"role":"user","content":"Synthetic evidence"}],
+        "response_format":{"type":"json_schema","json_schema":{"schema":{"type":"object",
+            "properties":{"next_step":{"type":"string","enum":["STOP"]}},"required":["next_step"]}}}});
+    // Verify the first member was actually attempted and entered cooldown, then reused calls
+    // avoid it while preserving the same schema/probabilities on the OpenRouter route.
+    for _ in 0..2 {
+        let response = reqwest::Client::new()
+            .post(format!("{url}/complete"))
+            .json(&request)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["brand"], "openrouter");
+        assert_eq!(
+            serde_json::from_str::<Value>(body["text"].as_str().unwrap()).unwrap(),
+            json!({"next_step":"STOP"})
+        );
+        assert_eq!(
+            body["decision_probabilities"]["next_step"]["confidence"],
+            0.9
+        );
+    }
+    assert_eq!(THROTTLED_CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
