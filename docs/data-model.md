@@ -88,3 +88,16 @@ Shared intrinsic properties for a model family, keyed by a manually-curated `can
 | `model_id` | UUID | FK → `pz_models` (cascades on delete) |
 | `priority` | int16 | Tiebreaker within group — lower = preferred (alongside brand priority) |
 | `is_enabled` | bool | Disable a member without removing it |
+
+## Speed policy and persisted latency (0.24.0)
+
+`pz_groups` adds nullable `max_latency_ms INTEGER` and `max_latency_ratio REAL`
+(`DOUBLE PRECISION` on PostgreSQL). `pz_models` adds nullable `max_in_flight INTEGER`.
+`set_group_latency` and `set_model_cap` update these fields without replacing rows or
+removing group membership. Existing databases migrate these columns idempotently.
+
+`pz_latency_history(bucket TEXT PRIMARY KEY, samples TEXT NOT NULL)` stores up to 128
+recent token-count/timing samples as serialized `LatencyHistory` per model/key. No
+prompt or generated text is stored. The predictor weights recent samples more heavily
+and ignores samples older than seven days. API key secrets are never stored in history;
+only the catalog key UUID identifies the account.

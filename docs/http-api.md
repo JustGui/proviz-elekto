@@ -183,3 +183,21 @@ text or tool schemas return 422. Ordinary chat calls cannot select decision mode
 
 Set `TYPESAFE_API_KEY`, seed `providers/typesafe` into the existing catalog and reload.
 Jev's choices must be supplied by the caller. It cannot synthesize final prose.
+
+## Speed policy (0.24.0)
+
+`/select` adds optional `max_latency_ms`, `max_latency_ratio`,
+`estimated_output_tokens`, and `pin_wait` (default false). `/complete` accepts the
+same ceilings and pinned-wait option and derives expected output from `max_tokens`.
+Request ceilings override their matching group setting. `pin_wait` requires
+`max_wait_ms`; waiting retries selection once. See README for fallback semantics.
+
+`/report` adds optional `retry_after_ms` and `quota_scope_brand` (default false).
+Set brand scope only for known account/organisation quota failures. Echo the selected
+key and token estimate on every outcome; successful reports with prompt/completion
+counts and `response_time_ms` update persisted size-aware latency history.
+
+`GET /metrics/models` returns `{window_secs: 300, models: [...]}`. Each model/key row
+contains `model_id`, `model`, `brand_key_id`, `in_flight`, `rate_429` (fraction of
+successful/429 outcomes over the last five minutes), `learned_rpm`, and
+`latency_p50_ms`/`latency_p95_ms` (retained successful samples, null without data).

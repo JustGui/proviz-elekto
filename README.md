@@ -68,6 +68,69 @@ The batch path pools requests from all workers into a single Mistral job — the
 - **Any language** - HTTP API, not a library binding
 - **Pluggable storage** - SQLite (default) or PostgreSQL
 
+## Selecting for speed
+
+Enable ceilings on RTFC's latency-sensitive groups after benchmarking their models:
+
+```bash
+proviz group set-latency --slug worker --max-latency-ratio 2 --max-latency-ms 5000
+proviz model set-cap --slug dedicated-model --max-in-flight 4
+# Reload the running gateway after CLI catalog edits:
+curl -X POST http://localhost:63130/catalog/reload
+```
+
+`max_latency_ms` and `max_latency_ratio` are nullable group settings. Requests to
+`/select` or `/complete` can override either. Both ceilings must pass when both are
+set. The ratio compares against the fastest structurally eligible member, including
+members temporarily busy, rate-limited or excluded during a provider retry. This
+keeps overflow on fast alternatives. Unknown latency is excluded when a measured
+alternative passes. If no available candidate passes, the router picks the fastest
+available candidate and emits a warning; it never bypasses a concurrency cap or
+cooldown. Sticky bonuses and traffic balancing operate only inside the surviving
+pool. Groups without ceilings retain their scoring behavior.
+
+For groups/requests with a ceiling, prediction uses recent successful calls for each `(model, API key)`: nonnegative
+fixed overhead + input processing time per 1,000 tokens + output generation time.
+`/complete` uses `estimated_tokens` and `max_tokens`; split-flow callers should send
+`estimated_output_tokens`. Omitted output budgets use the observed mean. Initial
+predictions fall back to catalog `avg_latency_ms`. Up to 128 token-count/elapsed-time
+samples are persisted in `pz_latency_history`, weighted with a one-day half-life and 0.8 decay per subsequent call,
+and ignored after seven days. These are call timings, not measured streaming TTFT.
+Failures and instant quota rejections do not enter this regression.
+
+`Model.max_in_flight` caps concurrent calls **per model and API key**, atomically.
+A capped model with both input/output token prices explicitly `0` is treated as
+prepaid capacity and preferred within the latency-admissible pool. Serverless
+members serve overflow. Caps can also be set in `providers/<brand>/models.json` or
+model imports; catalog refresh preserves an existing cap when JSON omits it. Omit `--max-in-flight` on `set-cap` to clear it; `set-latency --clear`
+clears both group ceilings. Split-flow callers must report every selected call
+(including errors), echoing `brand_key_id` and `estimated_tokens`. Server-managed
+calls release slots on success, failure and cancellation. Caps are per gateway
+process; multiple replicas do not share reservations.
+
+For unknown declared rate limits, a 429 starts a learned RPM ceiling based on
+observed traffic, halves it on subsequent rejections, and grows it by at most one
+request per successful minute. Learned exhaustion spills to another candidate.
+Provider-reported ceilings and declared limits take precedence. Learning/cooldowns
+are local to the running gateway. Known `INSUFFICIENT QUOTA` errors block sibling
+models on the same brand/key (the whole brand for legacy single-key brands).
+`Retry-After` supports seconds and HTTP dates; split-flow reports can send
+`retry_after_ms` and `quota_scope_brand`.
+
+Use `RUST_LOG=proviz_elekto_core=debug` for candidate score components and exclusion
+reasons. `GET /metrics/models` (Python: `pz.model_metrics()`) returns per-model/key
+in-flight counts, a five-minute 429 fraction, learned RPM, and p50/p95 elapsed times
+from retained successful samples. Percentiles describe completed calls, not
+size-normalized predictions.
+
+Pinned benchmark calls fail fast by default, even with `max_wait_ms`. Enable
+`pin_wait: true` plus `max_wait_ms` to wait once when the retry hint fits the budget.
+
+```python
+result = pz.complete("attempt_1", messages, group_name="worker",
+                     max_tokens=500, max_latency_ratio=2.0)
+```
+
 ## Installation
 
 ProvizElekto consists of a Rust server and various clients.
