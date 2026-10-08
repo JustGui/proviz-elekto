@@ -57,6 +57,7 @@ impl SqliteStorage {
         s.migrate_group_weights()?;
         s.migrate_price_currency()?;
         s.migrate_cached_input_price()?;
+        s.migrate_speed_policy()?;
         Ok(s)
     }
 
@@ -324,6 +325,28 @@ impl SqliteStorage {
     /// Adds `price_cached_input_per_1m` (per-million price for prompt-cache-hit input tokens) to
     /// `pz_models`. Nullable — `NULL` means the provider doesn't price cached input separately, so
     /// cost falls back to `price_input_per_1m` for every prompt token exactly as before.
+    fn migrate_speed_policy(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        for (table, column, ty) in [
+            ("pz_models", "max_in_flight", "INTEGER"),
+            ("pz_groups", "max_latency_ms", "INTEGER"),
+            ("pz_groups", "max_latency_ratio", "REAL"),
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    &format!("SELECT count(*) FROM pragma_table_info('{table}') WHERE name=?1"),
+                    [column],
+                    |r| r.get(0),
+                )
+                .map_err(|e| StorageError::Database(e.to_string()))?;
+            if exists == 0 {
+                conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"))
+                    .map_err(|e| StorageError::Database(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
     fn migrate_cached_input_price(&self) -> Result<(), StorageError> {
         let conn = self.conn.lock().unwrap();
         let exists: bool = conn
@@ -502,6 +525,18 @@ impl CatalogStorage for SqliteStorage {
         Ok(())
     }
 
+    fn set_model_cap(&self, model_id: Uuid, cap: Option<u32>) -> StorageResult<()> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE pz_models SET max_in_flight=?1 WHERE id=?2",
+                params![cap.map(i64::from), model_id.to_string()],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn insert_model(&self, model: &Model) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -512,8 +547,8 @@ impl CatalogStorage for SqliteStorage {
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
               reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,
-              price_cached_input_per_1m)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35)",
+              price_cached_input_per_1m,max_in_flight)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31,?32,?33,?34,?35,?36)",
             params![
                 model.id.to_string(),
                 model.brand_id.to_string(),
@@ -553,6 +588,7 @@ impl CatalogStorage for SqliteStorage {
                 model.trains_on_data.map(|v| v as i64),
                 model.retains_data.map(|v| v as i64),
                 model.price_cached_input_per_1m,
+                model.max_in_flight.map(i64::from),
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -694,12 +730,53 @@ impl CatalogStorage for SqliteStorage {
             .map_err(|e| StorageError::Database(e.to_string()))
     }
 
+    fn load_latency_samples(
+        &self,
+    ) -> StorageResult<Vec<proviz_elekto_core::latency::LatencyHistory>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT samples FROM pz_latency_history")
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.map(|r| {
+            let text = r.map_err(|e| StorageError::Database(e.to_string()))?;
+            serde_json::from_str(&text).map_err(|e| StorageError::Database(e.to_string()))
+        })
+        .collect()
+    }
+    fn save_latency_samples(
+        &self,
+        history: &proviz_elekto_core::latency::LatencyHistory,
+    ) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        let text =
+            serde_json::to_string(history).map_err(|e| StorageError::Database(e.to_string()))?;
+        conn.execute("INSERT INTO pz_latency_history (bucket,samples) VALUES (?1,?2) ON CONFLICT(bucket) DO UPDATE SET samples=excluded.samples", params![history.bucket(), text]).map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+    fn set_group_latency(
+        &self,
+        group_id: Uuid,
+        max_ms: Option<u32>,
+        ratio: Option<f64>,
+    ) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE pz_groups SET max_latency_ms=?1,max_latency_ratio=?2 WHERE id=?3",
+            params![max_ms.map(i64::from), ratio, group_id.to_string()],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn insert_group(&self, group: &Group) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at,
-               cost_weight_override,latency_weight_override,quality_weight_override,sticky_model)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+               cost_weight_override,latency_weight_override,quality_weight_override,sticky_model,max_latency_ms,max_latency_ratio)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(slug) DO UPDATE SET
                name=excluded.name, description=excluded.description, is_active=excluded.is_active",
             params![
@@ -713,6 +790,8 @@ impl CatalogStorage for SqliteStorage {
                 group.latency_weight_override.map(|v| v as f64),
                 group.quality_weight_override.map(|v| v as f64),
                 group.sticky_model,
+                group.max_latency_ms.map(i64::from),
+                group.max_latency_ratio,
             ],
         )
         .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -971,6 +1050,7 @@ impl CatalogStorage for SqliteStorage {
 }
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS pz_latency_history (bucket TEXT PRIMARY KEY, samples TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pz_brands (
     id             TEXT PRIMARY KEY,
     slug           TEXT UNIQUE NOT NULL,
@@ -1026,7 +1106,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     price_synced_at           TEXT,
     trains_on_data            INTEGER,
     retains_data              INTEGER,
-    price_cached_input_per_1m REAL
+    price_cached_input_per_1m REAL,
+    max_in_flight INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (
@@ -1063,7 +1144,9 @@ CREATE TABLE IF NOT EXISTS pz_groups (
     cost_weight_override    REAL,
     latency_weight_override REAL,
     quality_weight_override REAL,
-    sticky_model            INTEGER NOT NULL DEFAULT 0
+    sticky_model            INTEGER NOT NULL DEFAULT 0,
+    max_latency_ms INTEGER,
+    max_latency_ratio REAL
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_step_quality (
@@ -1142,6 +1225,7 @@ mod tests {
 
     fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
         Model {
+            max_in_flight: None,
             id: Uuid::new_v4(),
             brand_id,
             slug: slug.to_string(),

@@ -50,6 +50,7 @@ impl PostgresStorage {
         s.migrate_group_weights()?;
         s.migrate_price_currency()?;
         s.migrate_cached_input_price()?;
+        s.migrate_speed_policy()?;
         proviz_elekto_core::builtin_providers::seed_if_empty(&s, providers_dir)
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(s)
@@ -218,6 +219,11 @@ impl PostgresStorage {
     /// Adds `price_cached_input_per_1m` (per-million price for prompt-cache-hit input tokens) to
     /// `pz_models`. Nullable — `NULL` means the provider doesn't price cached input separately,
     /// so cost falls back to `price_input_per_1m` for every prompt token exactly as before.
+    fn migrate_speed_policy(&self) -> Result<(), StorageError> {
+        self.connected_client()?.batch_execute("ALTER TABLE pz_models ADD COLUMN IF NOT EXISTS max_in_flight INTEGER; ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS max_latency_ms INTEGER; ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS max_latency_ratio DOUBLE PRECISION;").map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn migrate_cached_input_price(&self) -> Result<(), StorageError> {
         let mut client = self.connected_client()?;
         client
@@ -345,6 +351,16 @@ impl CatalogStorage for PostgresStorage {
         Ok(())
     }
 
+    fn set_model_cap(&self, model_id: Uuid, cap: Option<u32>) -> StorageResult<()> {
+        self.connected_client()?
+            .execute(
+                "UPDATE pz_models SET max_in_flight=$1 WHERE id=$2",
+                &[&cap.map(|v| v as i32), &model_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn insert_model(&self, model: &Model) -> StorageResult<()> {
         let mut client = self.connected_client()?;
         client.execute(
@@ -355,8 +371,8 @@ impl CatalogStorage for PostgresStorage {
               is_enabled,notes,category,created_at,batch_price_multiplier,
               diarization,streaming,http_batch,word_timestamps, base_url, supported_languages,
               reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,
-              price_cached_input_per_1m)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35)
+              price_cached_input_per_1m,max_in_flight)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36)
              ON CONFLICT (id) DO UPDATE SET
                slug=EXCLUDED.slug, display_name=EXCLUDED.display_name,
                max_context_tokens=EXCLUDED.max_context_tokens,
@@ -376,7 +392,8 @@ impl CatalogStorage for PostgresStorage {
                price_synced_at=EXCLUDED.price_synced_at,
                trains_on_data=EXCLUDED.trains_on_data,
                retains_data=EXCLUDED.retains_data,
-               price_cached_input_per_1m=EXCLUDED.price_cached_input_per_1m",
+               price_cached_input_per_1m=EXCLUDED.price_cached_input_per_1m,
+               max_in_flight=EXCLUDED.max_in_flight",
             &[
                 &model.id, &model.brand_id, &model.slug, &model.display_name,
                 &(model.max_context_tokens as i32),
@@ -404,6 +421,7 @@ impl CatalogStorage for PostgresStorage {
                 &model.trains_on_data,
                 &model.retains_data,
                 &model.price_cached_input_per_1m,
+                &model.max_in_flight.map(|v| v as i32),
             ],
         ).map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -538,6 +556,44 @@ impl CatalogStorage for PostgresStorage {
             .collect())
     }
 
+    fn load_latency_samples(
+        &self,
+    ) -> StorageResult<Vec<proviz_elekto_core::latency::LatencyHistory>> {
+        let rows = self
+            .connected_client()?
+            .query("SELECT samples FROM pz_latency_history", &[])
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        rows.into_iter()
+            .map(|r| {
+                serde_json::from_str(&r.get::<_, String>(0))
+                    .map_err(|e| StorageError::Database(e.to_string()))
+            })
+            .collect()
+    }
+    fn save_latency_samples(
+        &self,
+        history: &proviz_elekto_core::latency::LatencyHistory,
+    ) -> StorageResult<()> {
+        let text =
+            serde_json::to_string(history).map_err(|e| StorageError::Database(e.to_string()))?;
+        self.connected_client()?.execute("INSERT INTO pz_latency_history (bucket,samples) VALUES ($1,$2) ON CONFLICT(bucket) DO UPDATE SET samples=EXCLUDED.samples", &[&history.bucket(), &text]).map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+    fn set_group_latency(
+        &self,
+        group_id: Uuid,
+        max_ms: Option<u32>,
+        ratio: Option<f64>,
+    ) -> StorageResult<()> {
+        self.connected_client()?
+            .execute(
+                "UPDATE pz_groups SET max_latency_ms=$1,max_latency_ratio=$2 WHERE id=$3",
+                &[&max_ms.map(|v| v as i32), &ratio, &group_id],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
     fn insert_group(&self, group: &Group) -> StorageResult<()> {
         let mut client = self.connected_client()?;
         let cost = group.cost_weight_override.map(|v| v as f64);
@@ -546,8 +602,8 @@ impl CatalogStorage for PostgresStorage {
         client
             .execute(
                 "INSERT INTO pz_groups (id,slug,name,description,is_active,created_at,
-                   cost_weight_override,latency_weight_override,quality_weight_override,sticky_model)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                   cost_weight_override,latency_weight_override,quality_weight_override,sticky_model,max_latency_ms,max_latency_ratio)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                  ON CONFLICT (slug) DO UPDATE SET
                    name=EXCLUDED.name, description=EXCLUDED.description,
                    is_active=EXCLUDED.is_active",
@@ -562,6 +618,8 @@ impl CatalogStorage for PostgresStorage {
                     &latency,
                     &quality,
                     &group.sticky_model,
+                    &group.max_latency_ms.map(|v| v as i32),
+                    &group.max_latency_ratio,
                 ],
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
@@ -794,6 +852,7 @@ impl CatalogStorage for PostgresStorage {
 }
 
 const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS pz_latency_history (bucket TEXT PRIMARY KEY, samples TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS pz_brands (
     id             UUID             PRIMARY KEY DEFAULT gen_random_uuid(),
     slug           VARCHAR(50)      UNIQUE NOT NULL,
@@ -849,7 +908,8 @@ CREATE TABLE IF NOT EXISTS pz_models (
     price_synced_at           TIMESTAMPTZ,
     trains_on_data            BOOLEAN,
     retains_data              BOOLEAN,
-    price_cached_input_per_1m DOUBLE PRECISION
+    price_cached_input_per_1m DOUBLE PRECISION,
+    max_in_flight INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_catalog (
@@ -886,7 +946,9 @@ CREATE TABLE IF NOT EXISTS pz_groups (
     cost_weight_override    DOUBLE PRECISION,
     latency_weight_override DOUBLE PRECISION,
     quality_weight_override DOUBLE PRECISION,
-    sticky_model            BOOLEAN NOT NULL DEFAULT FALSE
+    sticky_model            BOOLEAN NOT NULL DEFAULT FALSE,
+    max_latency_ms INTEGER,
+    max_latency_ratio DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS pz_model_step_quality (
