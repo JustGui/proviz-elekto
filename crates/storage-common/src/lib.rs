@@ -19,7 +19,7 @@ pub const Q_MODELS: &str =
      avg_latency_ms,is_enabled,notes,category,created_at,batch_price_multiplier,\
      diarization,streaming,http_batch,word_timestamps,base_url,supported_languages,\
      reasoning_effort_value,canonical_key,price_synced_at,trains_on_data,retains_data,\
-     price_cached_input_per_1m \
+     price_cached_input_per_1m,max_in_flight \
      FROM pz_models";
 
 pub const Q_MODEL_CATALOG: &str =
@@ -32,7 +32,7 @@ pub const Q_RULES: &str =
      FROM pz_selection_rules";
 
 pub const Q_GROUPS: &str = "SELECT id,slug,name,description,is_active,created_at,\
-     cost_weight_override,latency_weight_override,quality_weight_override,sticky_model \
+     cost_weight_override,latency_weight_override,quality_weight_override,sticky_model,max_latency_ms,max_latency_ratio \
      FROM pz_groups";
 
 pub const Q_GROUP_MEMBERS: &str = "SELECT id,group_id,model_id,priority,is_enabled \
@@ -132,6 +132,7 @@ pub fn model_from_row(row: &impl RowReader) -> Model {
         trains_on_data: row.opt_bool(32),
         retains_data: row.opt_bool(33),
         price_cached_input_per_1m: row.opt_f64(34),
+        max_in_flight: row.opt_i32(35).map(|v| v as u32),
     }
 }
 
@@ -174,6 +175,8 @@ pub fn group_from_row(row: &impl RowReader) -> Group {
         latency_weight_override: row.opt_f64(7).map(|v| v as f32),
         quality_weight_override: row.opt_f64(8).map(|v| v as f32),
         sticky_model: row.opt_bool(9).unwrap_or(false),
+        max_latency_ms: row.opt_i32(10).map(|v| v as u32),
+        max_latency_ratio: row.opt_f64(11),
     }
 }
 

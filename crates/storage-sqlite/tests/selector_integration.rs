@@ -27,6 +27,7 @@ fn make_brand(slug: &str, priority: i16) -> Brand {
 
 fn make_model(brand_id: Uuid, slug: &str, ctx: u32) -> Model {
     Model {
+        max_in_flight: None,
         id: Uuid::new_v4(),
         brand_id,
         slug: slug.to_string(),
@@ -94,6 +95,10 @@ fn make_world() -> (SqliteStorage, Uuid, Uuid, Uuid) {
 
 fn base_req() -> SelectRequest {
     SelectRequest {
+        estimated_output_tokens: None,
+        max_latency_ms: None,
+        max_latency_ratio: None,
+        pin_wait: false,
         step: "chat".to_string(),
         estimated_tokens: 1_000,
         requires_fn_call: false,
@@ -830,6 +835,8 @@ fn group_weight_override_applies_and_request_takes_precedence() {
     db.insert_model(&pricey_high_quality).unwrap();
 
     let group = proviz_elekto_core::models::Group {
+        max_latency_ms: None,
+        max_latency_ratio: None,
         id: Uuid::new_v4(),
         slug: "detector".to_string(),
         name: "detector".to_string(),
@@ -891,6 +898,8 @@ fn sticky_model_prefers_last_pick_but_yields_on_rate_limit() {
     db.insert_model(&b).unwrap();
 
     let group = proviz_elekto_core::models::Group {
+        max_latency_ms: None,
+        max_latency_ratio: None,
         id: Uuid::new_v4(),
         slug: "detector".to_string(),
         name: "detector".to_string(),
@@ -981,6 +990,8 @@ fn sticky_group_cost_score_favours_a_cheap_cached_rate() {
     db.insert_model(&cached).unwrap();
     db.insert_model(&nocache).unwrap();
     let group = proviz_elekto_core::models::Group {
+        max_latency_ms: None,
+        max_latency_ratio: None,
         id: Uuid::new_v4(),
         slug: "worker".to_string(),
         name: "worker".to_string(),
@@ -1187,4 +1198,394 @@ fn report_success_discounts_cached_input_tokens() {
         )
         .expect("cost");
     assert!((cost - 0.42).abs() < 1e-12, "got {cost}");
+}
+
+// Speed-sensitive pools keep their baseline even when their fastest member is busy.
+fn speed_world() -> (Arc<SqliteStorage>, Selector, Vec<Model>, Uuid) {
+    use proviz_elekto_core::{
+        models::{Group, GroupMember},
+        storage::CatalogStorage,
+    };
+    let db = Arc::new(SqliteStorage::open_in_memory().unwrap());
+    let group = Group {
+        id: Uuid::new_v4(),
+        slug: "realtime".into(),
+        name: "Realtime".into(),
+        description: None,
+        is_active: true,
+        created_at: Utc::now(),
+        cost_weight_override: Some(1.0),
+        latency_weight_override: Some(0.0),
+        quality_weight_override: None,
+        sticky_model: true,
+        max_latency_ms: None,
+        max_latency_ratio: Some(2.0),
+    };
+    db.insert_group(&group).unwrap();
+    let mut models = Vec::new();
+    for (i, ms) in [2000, 3000, 20000].into_iter().enumerate() {
+        let brand = make_brand(&format!("provider{i}"), i as i16);
+        let mut model = make_model(brand.id, &format!("model{i}"), 32000);
+        model.avg_latency_ms = Some(ms);
+        model.max_in_flight = Some(1);
+        if i == 0 || i == 2 {
+            model.price_input_per_1m = Some(0.0);
+            model.price_output_per_1m = Some(0.0);
+        }
+        db.insert_brand(&brand).unwrap();
+        db.insert_model(&model).unwrap();
+        db.insert_group_member(&GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id: model.id,
+            priority: i as i16,
+            is_enabled: true,
+        })
+        .unwrap();
+        models.push(model);
+    }
+    let sel = Selector::new(db.clone());
+    (db, sel, models, group.id)
+}
+#[test]
+fn speed_ceiling_simulation_caps_and_rate_limits_spill_to_fast_alternative() {
+    let (_, sel, models, gid) = speed_world();
+    let req = SelectRequest {
+        group_id: Some(gid),
+        ..base_req()
+    };
+    for _ in 0..100 {
+        let primary = sel.select(&req).unwrap();
+        assert_eq!(primary.model_id, models[0].id);
+        let overflow = sel.select(&req).unwrap();
+        assert_eq!(overflow.model_id, models[1].id);
+        sel.cancel_reservation(&primary);
+        sel.cancel_reservation(&overflow);
+    }
+    let primary = sel.select(&req).unwrap();
+    sel.report_rate_limit(
+        primary.model_id,
+        None,
+        RateLimitErrorType::Rpm,
+        primary.estimated_tokens,
+        None,
+        None,
+        None,
+        None,
+    );
+    for _ in 0..20 {
+        let c = sel.select(&req).unwrap();
+        assert_eq!(c.model_id, models[1].id);
+        sel.cancel_reservation(&c);
+    }
+}
+#[test]
+fn latency_fallback_uses_fastest_available_and_never_breaks_cap() {
+    let (_, sel, models, gid) = speed_world();
+    let req = SelectRequest {
+        group_id: Some(gid),
+        max_latency_ms: Some(1),
+        ..base_req()
+    };
+    let a = sel.select(&req).unwrap();
+    assert_eq!(a.model_id, models[0].id);
+    let b = sel.select(&req).unwrap();
+    assert_eq!(b.model_id, models[1].id);
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_id, models[2].id);
+    assert!(matches!(
+        sel.select(&req),
+        Err(ProvizError::AllModelsExhausted { .. })
+    ));
+}
+#[test]
+fn size_prediction_survives_selector_restart_and_ranks_long_output() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let db = Arc::new(SqliteStorage::open_in_memory().unwrap());
+    let brand = make_brand("size", 0);
+    db.insert_brand(&brand).unwrap();
+    let mut models = Vec::new();
+    for (slug, avg) in [("short-fast", 400), ("decode-fast", 1000)] {
+        let mut m = make_model(brand.id, slug, 32000);
+        m.avg_latency_ms = Some(avg);
+        db.insert_model(&m).unwrap();
+        db.insert_rule(&make_rule("chat", m.id, 0)).unwrap();
+        models.push(m);
+    }
+    let sel = Selector::new(db.clone());
+    for (i, m) in models.iter().enumerate() {
+        for out in [10, 100, 500, 1000] {
+            for input in [1000, 8000] {
+                let ms = if i == 0 {
+                    100 + input / 50 + out * 30
+                } else {
+                    1000 + input / 50 + out * 2
+                };
+                sel.report_success(
+                    m.id,
+                    None,
+                    input,
+                    None,
+                    Some(input),
+                    Some(out),
+                    None,
+                    None,
+                    None,
+                    None,
+                    Some(ms as u32),
+                );
+            }
+        }
+    }
+    assert_eq!(db.load_latency_samples().unwrap().len(), 2);
+    drop(sel);
+    let restarted = Selector::new(db);
+    let req = SelectRequest {
+        estimated_tokens: 8000,
+        estimated_output_tokens: Some(1000),
+        max_latency_ratio: Some(2.0),
+        ..base_req()
+    };
+    assert_eq!(restarted.select(&req).unwrap().model_id, models[1].id);
+    let metrics = restarted.model_metrics();
+    assert!(metrics["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["latency_p95_ms"].is_number()));
+}
+#[test]
+fn concurrent_selections_cannot_overbook_a_dedicated_endpoint() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let (db, _, mid, _) = make_world();
+    let mut m = db.load_model(mid).unwrap().unwrap();
+    m.max_in_flight = Some(2);
+    db.insert_model(&m).unwrap();
+    let sel = Arc::new(selector(db));
+    let barrier = Arc::new(std::sync::Barrier::new(32));
+    let workers: Vec<_> = (0..32)
+        .map(|_| {
+            let sel = sel.clone();
+            let b = barrier.clone();
+            std::thread::spawn(move || {
+                b.wait();
+                sel.select(&base_req()).ok()
+            })
+        })
+        .collect();
+    let winners: Vec<_> = workers
+        .into_iter()
+        .filter_map(|w| w.join().unwrap())
+        .collect();
+    assert_eq!(winners.len(), 2);
+    assert_eq!(sel.model_metrics()["models"][0]["in_flight"], 2);
+    for c in winners {
+        sel.cancel_reservation(&c);
+    }
+    assert_eq!(sel.model_metrics()["models"][0]["in_flight"], 0);
+}
+#[test]
+fn unknown_limits_learn_after_429_and_brand_quota_blocks_legacy_siblings() {
+    let (_, sel, models, gid) = speed_world();
+    let req = SelectRequest {
+        group_id: Some(gid),
+        ..base_req()
+    };
+    let accepted = sel.select(&req).unwrap();
+    sel.report_success(
+        accepted.model_id,
+        None,
+        accepted.estimated_tokens,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    let a = sel.select(&req).unwrap();
+    sel.report_rate_limit(
+        a.model_id,
+        None,
+        RateLimitErrorType::Rpm,
+        a.estimated_tokens,
+        None,
+        None,
+        None,
+        None,
+    );
+    sel.report_quota_details(a.model_id, None, Some(1), false);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    assert_eq!(sel.select(&req).unwrap().model_id, models[1].id);
+    let row = sel.model_metrics()["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["model_id"] == models[0].id.to_string())
+        .unwrap()
+        .clone();
+    assert_eq!(row["learned_rpm"], 1.0);
+    assert_eq!(row["rate_429"], 0.5);
+    let (db, _, mid, _) = make_world();
+    use proviz_elekto_core::storage::CatalogStorage;
+    let first = db.load_model(mid).unwrap().unwrap();
+    let sibling = make_model(first.brand_id, "sibling", 32000);
+    db.insert_model(&sibling).unwrap();
+    db.insert_rule(&make_rule("chat", sibling.id, 1)).unwrap();
+    let sel = selector(db);
+    let a = sel.select(&base_req()).unwrap();
+    sel.report_rate_limit(
+        a.model_id,
+        None,
+        RateLimitErrorType::Rpm,
+        a.estimated_tokens,
+        None,
+        None,
+        None,
+        None,
+    );
+    sel.report_quota_details(a.model_id, None, Some(40), true);
+    assert!(
+        matches!(sel.select(&base_req()),Err(ProvizError::AllModelsExhausted{retry_after_ms,..}) if retry_after_ms>0 && retry_after_ms<=40)
+    );
+}
+
+#[test]
+fn sqlite_latency_history_and_policy_survive_disk_reopen_and_migration() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let path = std::env::temp_dir().join(format!("proviz-speed-{}.db", Uuid::new_v4()));
+    let (db, sel, models, gid) = speed_world();
+    // A separate disk catalog reproduces a restart, not merely a new selector in memory.
+    {
+        let disk = SqliteStorage::open(path.to_str().unwrap()).unwrap();
+        for b in db.load_brands().unwrap() {
+            disk.insert_brand(&b).unwrap();
+        }
+        for m in &models {
+            disk.insert_model(m).unwrap();
+        }
+        let group = db.load_groups().unwrap().remove(0);
+        disk.insert_group(&group).unwrap();
+        disk.set_group_latency(gid, Some(5000), Some(2.0)).unwrap();
+        let history = proviz_elekto_core::latency::LatencyHistory {
+            model_id: models[0].id,
+            key_id: None,
+            samples: vec![proviz_elekto_core::latency::LatencySample {
+                at: Utc::now().timestamp(),
+                input: 8000,
+                output: 200,
+                elapsed_ms: 2500,
+            }],
+        };
+        disk.save_latency_samples(&history).unwrap();
+    }
+    {
+        let disk = SqliteStorage::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            disk.load_model(models[0].id)
+                .unwrap()
+                .unwrap()
+                .max_in_flight,
+            Some(1)
+        );
+        assert_eq!(disk.load_groups().unwrap()[0].max_latency_ms, Some(5000));
+        assert_eq!(
+            disk.load_latency_samples().unwrap()[0].samples[0].elapsed_ms,
+            2500
+        );
+    }
+    // Remove just the new columns to emulate an existing 0.23 catalog, then reopen twice.
+    {
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch("ALTER TABLE pz_models DROP COLUMN max_in_flight; ALTER TABLE pz_groups DROP COLUMN max_latency_ms; ALTER TABLE pz_groups DROP COLUMN max_latency_ratio;").unwrap();
+    }
+    for _ in 0..2 {
+        let disk = SqliteStorage::open(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            disk.load_model(models[0].id)
+                .unwrap()
+                .unwrap()
+                .max_in_flight,
+            None
+        );
+        assert_eq!(disk.load_groups().unwrap()[0].max_latency_ratio, None);
+    }
+    drop(sel);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn new_pinned_benchmarks_recover_priority_without_erasing_provider_history() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let (db, sel, models, gid) = speed_world();
+    for _ in 0..40 {
+        sel.report_success(
+            models[0].id,
+            None,
+            1000,
+            None,
+            Some(1000),
+            Some(100),
+            None,
+            None,
+            None,
+            None,
+            Some(20000),
+        );
+    }
+    let req = SelectRequest {
+        group_id: Some(gid),
+        estimated_output_tokens: Some(100),
+        ..base_req()
+    };
+    let c = sel.select(&req).unwrap();
+    assert_eq!(c.model_id, models[1].id);
+    sel.cancel_reservation(&c);
+    // Benchmark bypasses group membership/speed policy and adds measurements, never resets it.
+    let pin = SelectRequest {
+        pin_model: Some(format!("provider0/{}", models[0].slug)),
+        ..base_req()
+    };
+    for _ in 0..20 {
+        let c = sel.select(&pin).unwrap();
+        sel.report_success(
+            c.model_id,
+            None,
+            c.estimated_tokens,
+            None,
+            Some(1000),
+            Some(100),
+            None,
+            None,
+            None,
+            None,
+            Some(2000),
+        );
+    }
+    let history = db
+        .load_latency_samples()
+        .unwrap()
+        .into_iter()
+        .find(|h| h.model_id == models[0].id)
+        .unwrap();
+    assert_eq!(history.samples.len(), 60);
+    assert!(history.predict(1000, Some(100)).unwrap() < 2500.0);
+    drop(sel);
+    let restarted = Selector::new(db);
+    assert_eq!(restarted.select(&req).unwrap().model_id, models[0].id);
+}
+
+#[test]
+fn changing_a_model_cap_preserves_group_membership() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let (db, _, models, _) = speed_world();
+    db.set_model_cap(models[0].id, Some(4)).unwrap();
+    assert_eq!(
+        db.load_model(models[0].id).unwrap().unwrap().max_in_flight,
+        Some(4)
+    );
+    assert_eq!(db.load_all_group_members().unwrap().len(), 3);
 }

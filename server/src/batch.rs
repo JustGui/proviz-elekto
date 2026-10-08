@@ -534,6 +534,10 @@ pub async fn handle_batch_submit(
     };
 
     let select_req = SelectRequest {
+        estimated_output_tokens: None,
+        max_latency_ms: None,
+        max_latency_ratio: None,
+        pin_wait: false,
         step: req.step,
         estimated_tokens: req.estimated_tokens,
         requires_fn_call: req.requires_fn_call,

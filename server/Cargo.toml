@@ -10,6 +10,7 @@ name = "proviz-server"
 path = "src/main.rs"
 
 [dependencies]
+chrono.workspace = true
 proviz-elekto-core = { path = "../crates/core" }
 proviz-elekto-storage-sqlite = { path = "../crates/storage-sqlite" }
 proviz-elekto-storage-pg = { path = "../crates/storage-pg" }

@@ -22,6 +22,8 @@ pub(super) fn url(brand: &str, base_url: &Option<String>) -> Option<String> {
 
 fn error(message: &str) -> ProviderError {
     ProviderError {
+        retry_after_ms: None,
+        quota_scope_brand: false,
         message: message.into(),
         is_rate_limit: false,
     }

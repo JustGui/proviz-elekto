@@ -85,6 +85,12 @@ pub struct CompleteRequest {
     /// (bypassing group/step rules). `None` = normal selection.
     #[serde(default)]
     pub pin_model: Option<String>,
+    #[serde(default)]
+    pub pin_wait: bool,
+    #[serde(default)]
+    pub max_latency_ms: Option<u32>,
+    #[serde(default)]
+    pub max_latency_ratio: Option<f64>,
 
     // ── completion fields ───────────────────────────────────────────────────
     pub messages: Vec<ChatMessage>,
@@ -166,6 +172,10 @@ impl CompleteRequest {
             latency_weight: self.latency_weight,
             quality_weight: self.quality_weight,
             pin_model: self.pin_model.clone(),
+            pin_wait: self.pin_wait,
+            max_latency_ms: self.max_latency_ms,
+            max_latency_ratio: self.max_latency_ratio,
+            estimated_output_tokens: self.max_tokens,
         }
     }
 
@@ -288,6 +298,18 @@ impl CompleteRequest {
     }
 }
 
+struct CompletionReservation {
+    selector: Arc<proviz_elekto_core::selector::Selector>,
+    candidate: Option<ModelCandidate>,
+}
+impl Drop for CompletionReservation {
+    fn drop(&mut self) {
+        if let Some(candidate) = &self.candidate {
+            self.selector.cancel_reservation(candidate);
+        }
+    }
+}
+
 /// Drive selection → provider call → report. On provider failure, the failed model is excluded
 /// and the next-best candidate is selected, up to `MAX_PROVIDER_ATTEMPTS`.
 pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::response::Response {
@@ -302,6 +324,10 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Err(e) => return select_error_to_response(e),
         };
 
+        let mut reservation = CompletionReservation {
+            selector: state.selector.clone(),
+            candidate: Some(candidate.clone()),
+        };
         let native_decision = proviz_elekto_core::decision_models::uses_systemone(
             &candidate.brand_slug,
             &candidate.model_slug,
@@ -319,6 +345,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             None => {
                 warn!(brand = %candidate.brand_slug, "no base_url and no default endpoint known");
                 // Unusable model: release the reservation and skip it on the next attempt.
+                reservation.candidate.take();
                 report(
                     &state,
                     &candidate,
@@ -344,6 +371,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Ok(k) if !k.is_empty() => k,
             _ => {
                 warn!(env = %api_key_env, "API key env var not set or empty");
+                reservation.candidate.take();
                 report(
                     &state,
                     &candidate,
@@ -368,6 +396,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             match systemone::payload(&req, &candidate.model_slug) {
                 Ok(p) => p,
                 Err(e) => {
+                    reservation.candidate.take();
                     report(
                         &state,
                         &candidate,
@@ -416,6 +445,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
         {
             Ok(parsed) => {
                 let response_time_ms = Some(call_started.elapsed().as_millis() as u32);
+                reservation.candidate.take();
                 let cost = report(
                     &state,
                     &candidate,
@@ -469,6 +499,8 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Err(ProviderError {
                 message,
                 is_rate_limit,
+                retry_after_ms,
+                quota_scope_brand,
             }) => {
                 warn!(
                     model = %candidate.model_slug,
@@ -491,6 +523,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 } else {
                     Some(call_started.elapsed().as_millis() as u32)
                 };
+                reservation.candidate.take();
                 report(
                     &state,
                     &candidate,
@@ -505,7 +538,24 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     response_time_ms,
                 )
                 .await;
-                exclude_ids.push(candidate.model_id);
+                if is_rate_limit {
+                    let sel = state.selector.clone();
+                    let model = candidate.model_id;
+                    let key = candidate.brand_key_id;
+                    tokio::task::spawn_blocking(move || {
+                        sel.report_quota_details(model, key, retry_after_ms, quota_scope_brand)
+                    })
+                    .await
+                    .expect("quota report panicked");
+                }
+                let retry_pin = is_rate_limit
+                    && req.pin_model.is_some()
+                    && req.pin_wait
+                    && retry_after_ms
+                        .is_some_and(|ms| req.max_wait_ms.is_some_and(|budget| ms <= budget));
+                if !retry_pin {
+                    exclude_ids.push(candidate.model_id);
+                }
                 last_error = message;
             }
         }
@@ -607,8 +657,20 @@ struct ParsedCompletion {
     decision_probabilities: Option<Value>,
 }
 
+fn parse_retry_after(value: &str) -> Option<u64> {
+    if let Ok(seconds) = value.parse::<f64>() {
+        return (seconds.is_finite() && seconds >= 0.0)
+            .then_some((seconds * 1000.0).ceil().min(86_400_000.0) as u64);
+    }
+    chrono::DateTime::parse_from_rfc2822(value)
+        .ok()
+        .map(|date| (date.timestamp_millis() - chrono::Utc::now().timestamp_millis()).max(1) as u64)
+}
+
 #[derive(Debug)]
 struct ProviderError {
+    retry_after_ms: Option<u64>,
+    quota_scope_brand: bool,
     message: String,
     is_rate_limit: bool,
 }
@@ -633,11 +695,19 @@ async fn call_provider(
         builder = builder.header("X-OrcaRouter-Include-Cost", "true");
     }
     let resp = builder.send().await.map_err(|e| ProviderError {
+        retry_after_ms: None,
+        quota_scope_brand: false,
         is_rate_limit: false,
         message: e.to_string(),
     })?;
 
     let status = resp.status();
+    let retry_after_ms = resp
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_retry_after);
+
     // Capture rate-limit headers before consuming the body.
     let (remaining_requests, remaining_tokens) = extract_remaining(resp.headers());
 
@@ -656,17 +726,24 @@ async fn call_provider(
         // /complete retry budget on candidates that were predictably going to fail the exact
         // same way, instead of correctly backing the whole key off for cooldown_secs() and
         // moving straight to a different brand.
-        let is_rate_limit = status.as_u16() == 429
+        let quota_scope_brand = body.to_ascii_uppercase().contains("INSUFFICIENT QUOTA")
+            || body.to_ascii_lowercase().contains("insufficient_quota");
+        let is_rate_limit = quota_scope_brand
+            || status.as_u16() == 429
             || (brand_slug.split('-').next() == Some("typesafe") && status.as_u16() == 529)
             || body.contains("rate_limit_exceeded")
             || body.contains("tokens per minute");
         return Err(ProviderError {
+            retry_after_ms,
+            quota_scope_brand,
             is_rate_limit,
             message: format!("HTTP {status}: {body}"),
         });
     }
 
     let body: Value = resp.json().await.map_err(|e| ProviderError {
+        retry_after_ms: None,
+        quota_scope_brand: false,
         is_rate_limit: false,
         message: format!("invalid JSON response: {e}"),
     })?;
@@ -802,6 +879,8 @@ async fn report(
     response_time_ms: Option<u32>,
 ) -> Option<f64> {
     let report_req = ReportRequest {
+        quota_scope_brand: false,
+        retry_after_ms: None,
         model_id: candidate.model_id,
         outcome,
         error_type: Some(error_type),
@@ -856,6 +935,9 @@ mod payload_tests {
 
     fn base_request() -> CompleteRequest {
         CompleteRequest {
+            max_latency_ms: None,
+            max_latency_ratio: None,
+            pin_wait: false,
             step: "detector".into(),
             estimated_tokens: 1000,
             requires_fn_call: false,

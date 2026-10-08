@@ -125,6 +125,24 @@ class CompleteResult:
     decision_probabilities: Optional[dict] = None
 
 
+def _error_retry_after_ms(exc: Exception) -> Optional[int]:
+    from email.utils import parsedate_to_datetime
+    headers = _collect_response_headers(getattr(exc, "response", exc))
+    value = headers.get("retry-after")
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            seconds = parsedate_to_datetime(value).timestamp() - time.time()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    if not (-float("inf") < seconds < float("inf")):
+        return None
+    return max(1, min(86_400_000, int(max(0, seconds) * 1000) + 1))
+
+
 def _classify_error(exc: Exception) -> tuple[str, str]:
     status = getattr(exc, "status_code", None)
     cls = type(exc).__name__
@@ -133,6 +151,8 @@ def _classify_error(exc: Exception) -> tuple[str, str]:
 
     is_rate_limit = (
         status == 429
+        or "insufficient quota" in msg
+        or "insufficient_quota" in msg
         or "ratelimit" in cls_lower
         or "rate_limit" in cls_lower
         # some providers surface 429 via response body without setting status_code
@@ -709,6 +729,10 @@ class ProvizElekto:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
+    def model_metrics(self) -> dict:
+        """Per-model/key latency p50/p95, recent 429 fraction and in-flight count."""
+        return self._get("/metrics/models")
+
     def select(
         self,
         step: str,
@@ -728,6 +752,11 @@ class ProvizElekto:
         cost_weight: Optional[float] = None,
         latency_weight: Optional[float] = None,
         quality_weight: Optional[float] = None,
+        max_latency_ms: Optional[int] = None,
+        max_latency_ratio: Optional[float] = None,
+        pin_model: Optional[str] = None,
+        pin_wait: bool = False,
+        estimated_output_tokens: Optional[int] = None,
     ) -> ModelCandidate:
         """
         require_no_training: only select models the source explicitly confirms don't train on
@@ -766,6 +795,12 @@ class ProvizElekto:
             payload["latency_weight"] = latency_weight
         if quality_weight is not None:
             payload["quality_weight"] = quality_weight
+        for name, value in [("max_latency_ms", max_latency_ms), ("max_latency_ratio", max_latency_ratio), ("pin_model", pin_model)]:
+            if value is not None:
+                payload[name] = value
+        payload["pin_wait"] = pin_wait
+        if estimated_output_tokens is not None:
+            payload["estimated_output_tokens"] = estimated_output_tokens
         _logger.debug(
             "select request: step=%s estimated_tokens=%d group_name=%s group_id=%s max_wait_ms=%s",
             step, estimated_tokens, group_name, group_id, max_wait_ms,
@@ -823,6 +858,10 @@ class ProvizElekto:
         cost_weight: Optional[float] = None,
         latency_weight: Optional[float] = None,
         quality_weight: Optional[float] = None,
+        max_latency_ms: Optional[int] = None,
+        max_latency_ratio: Optional[float] = None,
+        pin_model: Optional[str] = None,
+        pin_wait: bool = False,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
 
@@ -885,6 +924,10 @@ class ProvizElekto:
         if quality_weight is not None:
             payload["quality_weight"] = quality_weight
 
+        for name, value in [("max_latency_ms", max_latency_ms), ("max_latency_ratio", max_latency_ratio), ("pin_model", pin_model)]:
+            if value is not None:
+                payload[name] = value
+        payload["pin_wait"] = pin_wait
         # /complete may block server-side for a provider call; relax the client read timeout.
         prev_timeout = self._timeout
         if timeout_secs is not None:
@@ -979,6 +1022,9 @@ class ProvizElekto:
         model_id: str,
         error_type: str = "tpm",
         brand_key_id: Optional[str] = None,
+        estimated_tokens: Optional[int] = None,
+        retry_after_ms: Optional[int] = None,
+        quota_scope_brand: bool = False,
     ) -> None:
         _logger.debug("report: model_id=%s outcome=rate_limit error_type=%s", model_id, error_type)
         payload: dict = {
@@ -990,6 +1036,11 @@ class ProvizElekto:
             payload["brand_key_id"] = brand_key_id
         # No response_time_ms here: a 429 rejection is typically near-instant and doesn't
         # reflect actual generation speed, so it's not a meaningful latency sample.
+        payload["quota_scope_brand"] = quota_scope_brand
+        if retry_after_ms is not None:
+            payload["retry_after_ms"] = retry_after_ms
+        if estimated_tokens is not None:
+            payload["estimated_tokens"] = estimated_tokens
         self._post("/report", payload)
 
     def report_error(
@@ -998,6 +1049,7 @@ class ProvizElekto:
         error_type: str = "other",
         brand_key_id: Optional[str] = None,
         response_time_ms: Optional[int] = None,
+        estimated_tokens: Optional[int] = None,
     ) -> None:
         _logger.debug(
             "report: model_id=%s outcome=error error_type=%s response_time_ms=%s",
@@ -1014,6 +1066,8 @@ class ProvizElekto:
             # A genuine error (including a timeout, where elapsed is close to the timeout
             # ceiling) is a real data point about how slow this provider was to respond.
             payload["response_time_ms"] = response_time_ms
+        if estimated_tokens is not None:
+            payload["estimated_tokens"] = estimated_tokens
         self._post("/report", payload)
 
     def call(
@@ -1034,6 +1088,11 @@ class ProvizElekto:
         cost_weight: Optional[float] = None,
         latency_weight: Optional[float] = None,
         quality_weight: Optional[float] = None,
+        max_latency_ms: Optional[int] = None,
+        max_latency_ratio: Optional[float] = None,
+        estimated_output_tokens: Optional[int] = None,
+        pin_model: Optional[str] = None,
+        pin_wait: bool = False,
     ) -> CallResult:
         """Select a model, call fn(candidate), report the outcome, and retry on failure.
 
@@ -1080,6 +1139,11 @@ class ProvizElekto:
                     cost_weight=cost_weight,
                     latency_weight=latency_weight,
                     quality_weight=quality_weight,
+                    max_latency_ms=max_latency_ms,
+                    max_latency_ratio=max_latency_ratio,
+                    estimated_output_tokens=estimated_output_tokens,
+                    pin_model=pin_model,
+                    pin_wait=pin_wait,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -1161,11 +1225,18 @@ class ProvizElekto:
                     candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
                 )
                 if outcome == "rate_limit":
-                    self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
+                    self.report_rate_limit(
+                        candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        estimated_tokens=estimated_tokens,
+                        retry_after_ms=_error_retry_after_ms(exc),
+                        quota_scope_brand=("insufficient quota" in str(exc).lower()
+                                           or "insufficient_quota" in str(exc).lower()),
+                    )
                 else:
                     elapsed_ms = int((time.monotonic() - call_started) * 1000)
                     self.report_error(
                         candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        estimated_tokens=estimated_tokens,
                         response_time_ms=elapsed_ms,
                     )
                 if error_type == "parse":
@@ -1189,6 +1260,11 @@ class ProvizElekto:
         cost_weight: Optional[float] = None,
         latency_weight: Optional[float] = None,
         quality_weight: Optional[float] = None,
+        max_latency_ms: Optional[int] = None,
+        max_latency_ratio: Optional[float] = None,
+        estimated_output_tokens: Optional[int] = None,
+        pin_model: Optional[str] = None,
+        pin_wait: bool = False,
         **litellm_kwargs: Any,
     ) -> CallResult:
         """call() with built-in LiteLLM integration.
@@ -1243,6 +1319,11 @@ class ProvizElekto:
             cost_weight=cost_weight,
             latency_weight=latency_weight,
             quality_weight=quality_weight,
+            max_latency_ms=max_latency_ms,
+            max_latency_ratio=max_latency_ratio,
+            estimated_output_tokens=estimated_output_tokens if estimated_output_tokens is not None else litellm_kwargs.get("max_tokens"),
+            pin_model=pin_model,
+            pin_wait=pin_wait,
         )
 
     def call_litellm_tool_loop(
@@ -1268,6 +1349,11 @@ class ProvizElekto:
         cost_weight: Optional[float] = None,
         latency_weight: Optional[float] = None,
         quality_weight: Optional[float] = None,
+        max_latency_ms: Optional[int] = None,
+        max_latency_ratio: Optional[float] = None,
+        estimated_output_tokens: Optional[int] = None,
+        pin_model: Optional[str] = None,
+        pin_wait: bool = False,
         **litellm_kwargs: Any,
     ) -> Optional["CallResult"]:
         """select → [litellm.completion → execute tools → append → repeat] → report_success
@@ -1305,6 +1391,7 @@ class ProvizElekto:
             "quality_min", "exclude_ids", "categories", "languages", "group_id", "group_name",
             "use_member_priority", "max_wait_secs", "max_wait_ms",
             "cost_weight", "latency_weight", "quality_weight",
+            "max_latency_ms", "max_latency_ratio", "estimated_output_tokens", "pin_model", "pin_wait",
         })
         litellm_kwargs = {k: v for k, v in litellm_kwargs.items() if k not in _SELECTION_KEYS}
 
@@ -1333,6 +1420,11 @@ class ProvizElekto:
                     cost_weight=cost_weight,
                     latency_weight=latency_weight,
                     quality_weight=quality_weight,
+                    max_latency_ms=max_latency_ms,
+                    max_latency_ratio=max_latency_ratio,
+                    estimated_output_tokens=estimated_output_tokens,
+                    pin_model=pin_model,
+                    pin_wait=pin_wait,
                 )
             except AllModelsExhausted as e:
                 if wait_deadline is not None and e.retry_after_ms > 0:
@@ -1459,6 +1551,7 @@ class ProvizElekto:
                 )
                 self.report_error(
                     candidate.model_id, "other", brand_key_id=candidate.brand_key_id,
+                    estimated_tokens=estimated_tokens,
                     response_time_ms=int((time.monotonic() - loop_started) * 1000),
                 )
                 return None
@@ -1472,10 +1565,17 @@ class ProvizElekto:
                     candidate.brand_slug, candidate.model_slug, outcome, error_type, exc,
                 )
                 if outcome == "rate_limit":
-                    self.report_rate_limit(candidate.model_id, error_type, brand_key_id=candidate.brand_key_id)
+                    self.report_rate_limit(
+                        candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        estimated_tokens=estimated_tokens,
+                        retry_after_ms=_error_retry_after_ms(exc),
+                        quota_scope_brand=("insufficient quota" in str(exc).lower()
+                                           or "insufficient_quota" in str(exc).lower()),
+                    )
                 else:
                     self.report_error(
                         candidate.model_id, error_type, brand_key_id=candidate.brand_key_id,
+                        estimated_tokens=estimated_tokens,
                         response_time_ms=int((time.monotonic() - loop_started) * 1000),
                     )
                 if error_type == "parse":

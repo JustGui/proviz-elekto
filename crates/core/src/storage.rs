@@ -18,6 +18,8 @@ pub trait CatalogStorage: Send + Sync {
     fn load_model(&self, model_id: Uuid) -> StorageResult<Option<Model>>;
     fn load_brand(&self, brand_id: Uuid) -> StorageResult<Option<Brand>>;
 
+    fn set_model_cap(&self, model_id: Uuid, cap: Option<u32>) -> StorageResult<()>;
+
     // Catalog mutations (used by CLI)
     fn insert_brand(&self, brand: &Brand) -> StorageResult<()>;
     fn insert_model(&self, model: &Model) -> StorageResult<()>;
@@ -37,6 +39,15 @@ pub trait CatalogStorage: Send + Sync {
     // Shared model catalog (cross-provider intrinsic properties, keyed by canonical_key)
     fn load_model_catalog(&self) -> StorageResult<Vec<ModelCatalogEntry>>;
     fn insert_model_catalog_entry(&self, entry: &ModelCatalogEntry) -> StorageResult<()>;
+
+    fn load_latency_samples(&self) -> StorageResult<Vec<crate::latency::LatencyHistory>>;
+    fn save_latency_samples(&self, history: &crate::latency::LatencyHistory) -> StorageResult<()>;
+    fn set_group_latency(
+        &self,
+        group_id: Uuid,
+        max_ms: Option<u32>,
+        ratio: Option<f64>,
+    ) -> StorageResult<()>;
 
     // Groups
     fn load_groups(&self) -> StorageResult<Vec<Group>>;

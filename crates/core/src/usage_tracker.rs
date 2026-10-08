@@ -41,6 +41,9 @@ struct ModelWindows {
     /// until at least one sample has arrived. Preferred over the static catalog `Model.avg_latency_ms`
     /// in scoring once present, since it reflects live provider behaviour instead of a curated guess.
     latency_ewma_ms: Option<f64>,
+    learned_rpm: Option<f64>,
+    last_increase: Option<Instant>,
+    outcomes: VecDeque<(Instant, bool)>,
 }
 
 /// Smoothing factor for the response-time EWMA: weight given to each new sample.
@@ -142,6 +145,101 @@ impl UsageTracker {
         usage
             .in_flight_tokens
             .fetch_add(estimated_tokens, Ordering::Relaxed);
+    }
+
+    /// Atomically enforce a cap, including races between simultaneous select calls.
+    pub fn try_reserve(
+        &self,
+        model: Uuid,
+        key: Option<Uuid>,
+        tokens: u64,
+        cap: Option<u32>,
+    ) -> bool {
+        let usage = self.get_or_default((model, key));
+        let mut count = usage.in_flight_requests.load(Ordering::Relaxed);
+        loop {
+            if cap.is_some_and(|cap| count >= cap) {
+                return false;
+            }
+            match usage.in_flight_requests.compare_exchange_weak(
+                count,
+                count.saturating_add(1),
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    usage.in_flight_tokens.fetch_add(tokens, Ordering::Relaxed);
+                    return true;
+                }
+                Err(actual) => count = actual,
+            }
+        }
+    }
+    pub fn in_flight(&self, model: Uuid, key: Option<Uuid>) -> u32 {
+        self.get_or_default((model, key))
+            .in_flight_requests
+            .load(Ordering::Relaxed)
+    }
+    /// Learn only after an unknown-limit account has rejected traffic. Start from observed
+    /// throughput, halve on 429; grow at most one request/minute per successful minute.
+    pub fn record_outcome(
+        &self,
+        model: Uuid,
+        key: Option<Uuid>,
+        rate_limit: bool,
+        unknown_limits: bool,
+    ) {
+        let usage = self.get_or_default((model, key));
+        let mut w = usage.windows.lock().unwrap();
+        let now = Instant::now();
+        w.outcomes
+            .retain(|(t, _)| now.duration_since(*t).as_secs() < 300);
+        w.outcomes.push_back((now, rate_limit));
+        if rate_limit && unknown_limits {
+            drain_before(&mut w.rpm, now, 60);
+            let observed = window_sum(&w.rpm).max(2) as f64;
+            w.learned_rpm = Some((w.learned_rpm.unwrap_or(observed) / 2.0).max(1.0));
+            w.last_increase = Some(now);
+        } else if !rate_limit
+            && w.learned_rpm.is_some()
+            && w.last_increase
+                .is_none_or(|t| now.duration_since(t).as_secs() >= 60)
+        {
+            w.learned_rpm = w.learned_rpm.map(|v| (v + 1.0).min(10000.0));
+            w.last_increase = Some(now);
+        }
+    }
+    pub fn metrics(&self, model: Uuid, key: Option<Uuid>) -> (u32, f64, Option<f64>) {
+        let usage = self.get_or_default((model, key));
+        let mut w = usage.windows.lock().unwrap();
+        let now = Instant::now();
+        w.outcomes
+            .retain(|(t, _)| now.duration_since(*t).as_secs() < 300);
+        let rate =
+            w.outcomes.iter().filter(|(_, rl)| *rl).count() as f64 / w.outcomes.len().max(1) as f64;
+        (
+            usage.in_flight_requests.load(Ordering::Relaxed),
+            rate,
+            w.learned_rpm,
+        )
+    }
+    pub fn learned_exhausted(&self, model: Uuid, key: Option<Uuid>) -> bool {
+        let usage = self.get_or_default((model, key));
+        let mut w = usage.windows.lock().unwrap();
+        drain_before(&mut w.rpm, Instant::now(), 60);
+        if w.provider_limit_requests.is_some() || w.provider_limit_tokens.is_some() {
+            return false;
+        }
+        w.learned_rpm.is_some_and(|limit| {
+            window_sum(&w.rpm) + usage.in_flight_requests.load(Ordering::Relaxed) as u64
+                >= limit.floor() as u64
+        })
+    }
+
+    pub fn cancel_reservation(&self, model: Uuid, key: Option<Uuid>, tokens: u64) {
+        let usage = self.get_or_default((model, key));
+        saturating_fetch_sub_u32(&usage.in_flight_requests, 1);
+        saturating_fetch_sub_u64(&usage.in_flight_tokens, tokens);
     }
 
     /// Release a reservation and push actual usage into the sliding windows.
@@ -335,7 +433,10 @@ impl UsageTracker {
         let tpm_sum = window_sum(&w.tpm);
 
         // Prefer the provider-reported per-key ceiling over the model's DB limit.
-        let rpm_limit = w.provider_limit_requests.or(model.rpm_limit);
+        let rpm_limit = w
+            .provider_limit_requests
+            .or(model.rpm_limit)
+            .or(w.learned_rpm.map(|v| v as u32));
         let tpm_limit = w.provider_limit_tokens.or(model.tpm_limit);
 
         let effective_rpm =
@@ -450,7 +551,10 @@ impl UsageTracker {
         // remain than our window suggests, trust the provider. In-flight (not yet acknowledged
         // by the provider) is always added on top. The ceiling itself prefers the provider-reported
         // per-key limit over the model's DB limit.
-        let rpm_limit = w.provider_limit_requests.or(model.rpm_limit);
+        let rpm_limit = w
+            .provider_limit_requests
+            .or(model.rpm_limit)
+            .or(w.learned_rpm.map(|v| v as u32));
         let tpm_limit = w.provider_limit_tokens.or(model.tpm_limit);
 
         let effective_rpm =
@@ -560,6 +664,7 @@ mod tests {
             trains_on_data: None,
             retains_data: None,
             price_cached_input_per_1m: None,
+            max_in_flight: None,
         }
     }
 

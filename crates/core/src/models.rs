@@ -73,6 +73,9 @@ pub struct Model {
     pub rps_limit: Option<f64>,
     pub quality_score: Option<f64>,
     pub avg_latency_ms: Option<u32>,
+    /// Hard concurrent-call cap per (model, API key). None preserves legacy behavior.
+    #[serde(default)]
+    pub max_in_flight: Option<u32>,
     pub is_enabled: bool,
     pub notes: Option<String>,
     /// Coarse capability tag: "text", "code", "embedding", "vision", "audio", "moderation"
@@ -284,6 +287,10 @@ pub struct Group {
     /// today's behaviour exactly. Only meaningful for group-based selection.
     #[serde(default)]
     pub sticky_model: bool,
+    #[serde(default)]
+    pub max_latency_ms: Option<u32>,
+    #[serde(default)]
+    pub max_latency_ratio: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -374,6 +381,16 @@ pub struct SelectRequest {
     /// still waits/retries then 409s. `None` (default) = normal selection.
     #[serde(default)]
     pub pin_model: Option<String>,
+    /// Pinned calls fail fast unless this flag AND max_wait_ms are set.
+    #[serde(default)]
+    pub pin_wait: bool,
+    #[serde(default)]
+    pub max_latency_ms: Option<u32>,
+    #[serde(default)]
+    pub max_latency_ratio: Option<f64>,
+    /// Expected output budget for size-aware prediction; /complete uses max_tokens.
+    #[serde(default)]
+    pub estimated_output_tokens: Option<u32>,
 }
 
 fn default_true() -> bool {
@@ -451,6 +468,11 @@ pub struct ModelCandidate {
 /// Input to /report
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportRequest {
+    #[serde(default)]
+    pub retry_after_ms: Option<u64>,
+    /// Organisation/account quota failure; blocks all sibling models on this brand/key.
+    #[serde(default)]
+    pub quota_scope_brand: bool,
     pub model_id: Uuid,
     pub outcome: ReportOutcome,
     #[serde(default)]

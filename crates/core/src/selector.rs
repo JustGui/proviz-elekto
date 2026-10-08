@@ -72,6 +72,7 @@ fn effective_quality(cache: &CatalogCache, model: &Model, step: &str) -> Option<
 
 /// Pass-2 scoring weights after applying any request/group override and renormalizing to sum
 /// to 1.0. See `resolve_weights`.
+#[derive(Debug)]
 struct ResolvedWeights {
     fast_hr: f32,
     slow_hr: f32,
@@ -137,6 +138,9 @@ pub struct Selector {
     /// group has `sticky_model` set and the entry is fresher than `STICKY_TTL_SECS`. In-memory
     /// only, like `brand_traffic`; empty for every non-sticky group.
     sticky_last: DashMap<Uuid, (Uuid, Instant)>,
+    latency_tracker: crate::latency::LatencyTracker,
+    brand_rate_state: RateLimitState,
+    quota_key_state: RateLimitState,
     /// Currency -> USD conversion factors for normalising non-USD brand prices. Seeded with a
     /// builtin table, overlaid with any persisted `pz_fx_rates` rows at construction, and
     /// refreshed lazily (see `select()` / `refresh_fx`).
@@ -151,7 +155,11 @@ impl Selector {
         if let Ok(rows) = storage.load_fx_rates() {
             fx.overlay_rows(&rows);
         }
+        let latency_tracker = crate::latency::LatencyTracker::new(storage.clone());
         Self {
+            latency_tracker,
+            brand_rate_state: RateLimitState::new(),
+            quota_key_state: RateLimitState::new(),
             storage,
             cache: RwLock::new(None),
             rate_state: RateLimitState::new(),
@@ -362,6 +370,7 @@ impl Selector {
         // `Some(group_id)` when this is a group-based selection AND the group opted into prompt-cache
         // stickiness — drives the `STICKY_BONUS` in Pass 2 and the `sticky_last` record afterwards.
         let mut sticky_group: Option<Uuid> = None;
+        let mut group_latency = (None, None);
         let rules: &[SelectionRule] = if req.pin_model.is_some() {
             // Benchmark pin: ignore group + step rules, consider every enabled model — the
             // Pass-1 `pin_model` filter below narrows to the single matching slug. Same shape
@@ -412,6 +421,7 @@ impl Selector {
                 group.latency_weight_override,
                 group.quality_weight_override,
             );
+            group_latency = (group.max_latency_ms, group.max_latency_ratio);
             if group.sticky_model {
                 sticky_group = Some(group_id);
             }
@@ -481,6 +491,26 @@ impl Selector {
 
         let exclude_set: std::collections::HashSet<&Uuid> = req.exclude_ids.iter().collect();
         let estimated_tokens = req.estimated_tokens as u64;
+        let max_ms = req.max_latency_ms.or(group_latency.0).filter(|v| *v > 0);
+        let ratio = req
+            .max_latency_ratio
+            .or(group_latency.1)
+            .filter(|v| v.is_finite() && *v >= 1.0);
+        let speed_policy = max_ms.is_some() || ratio.is_some();
+        let predict = |model: &Model, key: Option<Uuid>| {
+            if speed_policy {
+                self.latency_tracker
+                    .predict(model.id, key, estimated_tokens, req.estimated_output_tokens)
+                    .or_else(|| model.avg_latency_ms.map(f64::from))
+            } else {
+                self.usage_tracker
+                    .avg_latency_ms(model.id, key)
+                    .or_else(|| model.avg_latency_ms.map(f64::from))
+            }
+        };
+        let mut fastest_baseline = f64::INFINITY;
+        let mut capacity_blocked = Vec::new();
+        let mut blocked_brands = Vec::new();
 
         // ── Pass 1: hard filters — only truly unavailable models are excluded ─────
         //
@@ -502,6 +532,7 @@ impl Selector {
             /// Headroom and the in-flight reservation are tracked against this specific key.
             brand_key_id: Option<Uuid>,
             api_key_env: Option<String>,
+            predicted_ms: Option<f64>,
         }
 
         let mut tried = 0;
@@ -511,6 +542,7 @@ impl Selector {
 
         for rule in rules {
             if !rule.is_enabled {
+                debug!(model_id=%rule.model_id, "skipped: rule disabled");
                 continue;
             }
 
@@ -523,6 +555,7 @@ impl Selector {
             };
 
             if !model.is_enabled {
+                debug!(model=%model.slug, "skipped: model disabled");
                 continue;
             }
 
@@ -535,6 +568,7 @@ impl Selector {
             };
 
             if !brand.is_active {
+                debug!(model=%model.slug, brand=%brand.slug, "skipped: brand inactive");
                 continue;
             }
 
@@ -645,7 +679,24 @@ impl Selector {
                 continue;
             }
 
+            // Compute the speed baseline before transient exclusions, including caller retry
+            // exclusions. Busy/rate-limited fast models must not promote a 20-second fallback.
+            let baseline = cache
+                .brand_keys
+                .get(&brand.id)
+                .and_then(|keys| {
+                    keys.iter()
+                        .filter(|k| k.is_active)
+                        .filter_map(|k| predict(model, Some(k.id)))
+                        .min_by(f64::total_cmp)
+                })
+                .or_else(|| predict(model, None));
+            if let Some(ms) = baseline {
+                fastest_baseline = fastest_baseline.min(ms);
+            }
+
             if exclude_set.contains(&model.id) {
+                debug!(model=%model.slug, "skipped: request exclusion");
                 tried += 1;
                 continue;
             }
@@ -662,11 +713,18 @@ impl Selector {
                 Some(keys) => {
                     let active: Vec<&BrandApiKey> = keys.iter().filter(|k| k.is_active).collect();
                     !active.is_empty()
-                        && active.iter().all(|k| self.key_rate_state.is_limited(&k.id))
+                        && active.iter().all(|k| {
+                            self.key_rate_state.is_limited(&k.id)
+                                || self.quota_key_state.is_limited(&k.id)
+                        })
                 }
                 None => false,
             };
-            let model_blocked = self.rate_state.is_limited(&model.id);
+            let brand_blocked = self.brand_rate_state.is_limited(&brand.id);
+            if brand_blocked {
+                blocked_brands.push(brand.id);
+            }
+            let model_blocked = self.rate_state.is_limited(&model.id) || brand_blocked;
 
             if key_blocked || model_blocked {
                 debug!(model = %model.slug, key_blocked, model_blocked, "skipped: rate limited (reactive)");
@@ -692,11 +750,32 @@ impl Selector {
             let (brand_key_id, api_key_env) = match brand_key_pool {
                 Some(keys) => keys
                     .iter()
-                    .find(|k| k.is_active && !self.key_rate_state.is_limited(&k.id))
+                    .find(|k| {
+                        k.is_active
+                            && !self.key_rate_state.is_limited(&k.id)
+                            && !self.quota_key_state.is_limited(&k.id)
+                            && !model.max_in_flight.is_some_and(|cap| {
+                                self.usage_tracker.in_flight(model.id, Some(k.id)) >= cap
+                            })
+                            && !self.usage_tracker.learned_exhausted(model.id, Some(k.id))
+                    })
                     .map(|k| (Some(k.id), Some(k.api_key_env.clone())))
                     .unwrap_or((None, None)),
                 None => (None, None),
             };
+
+            if brand_key_pool.is_some_and(|keys| keys.iter().any(|k| k.is_active))
+                && brand_key_id.is_none()
+                || model
+                    .max_in_flight
+                    .is_some_and(|cap| self.usage_tracker.in_flight(model.id, brand_key_id) >= cap)
+                || self.usage_tracker.learned_exhausted(model.id, brand_key_id)
+            {
+                debug!(model=%model.slug, key=?brand_key_id, "skipped: concurrency cap or learned quota");
+                capacity_blocked.push((model.id, brand_key_id));
+                tried += 1;
+                continue;
+            }
 
             let fast_headroom =
                 self.usage_tracker
@@ -728,6 +807,7 @@ impl Selector {
                 },
                 brand_key_id,
                 api_key_env,
+                predicted_ms: predict(model, brand_key_id),
             });
         }
 
@@ -740,7 +820,23 @@ impl Selector {
                 .key_rate_state
                 .min_remaining_ms_for(&blocked_key_ids)
                 .unwrap_or(u64::MAX);
-            let retry_after_ms = model_ms.min(key_ms);
+            let brand_ms = self
+                .brand_rate_state
+                .min_remaining_ms_for(&blocked_brands)
+                .unwrap_or(u64::MAX);
+            let capacity_ms = self
+                .usage_tracker
+                .earliest_drain_ms_for(&capacity_blocked)
+                .unwrap_or(u64::MAX);
+            let quota_ms = self
+                .quota_key_state
+                .min_remaining_ms_for(&blocked_key_ids)
+                .unwrap_or(u64::MAX);
+            let retry_after_ms = model_ms
+                .min(key_ms)
+                .min(quota_ms)
+                .min(brand_ms)
+                .min(capacity_ms);
             let retry_after_ms = if retry_after_ms == u64::MAX {
                 0
             } else {
@@ -758,6 +854,27 @@ impl Selector {
                 tried,
                 retry_after_ms,
             });
+        }
+
+        let mut ceiling_fallback = false;
+        if speed_policy {
+            let ceiling = max_ms
+                .map(f64::from)
+                .unwrap_or(f64::INFINITY)
+                .min(ratio.map(|r| r * fastest_baseline).unwrap_or(f64::INFINITY));
+            let passes = |c: &Candidate<'_>| c.predicted_ms.is_some_and(|ms| ms <= ceiling);
+            if candidates.iter().any(passes) {
+                candidates.retain(|c| {
+                    let keep = passes(c);
+                    if !keep { debug!(model=%c.model.slug, predicted_ms=?c.predicted_ms, ceiling, "skipped: latency ceiling (unknown latency also excluded)"); }
+                    keep
+                });
+            } else {
+                // Availability is never relaxed; among reachable candidates pick fastest,
+                // independent of cost, traffic or stickiness. Log the policy escape explicitly.
+                ceiling_fallback = true;
+                warn!(step=%req.step, ceiling, "no available candidate passes latency ceiling; using fastest available");
+            }
         }
 
         // ── Pass 2: score across the pool with min-max normalization ─────────────
@@ -804,11 +921,7 @@ impl Selector {
         // it reflects what this deployment is actually seeing right now (e.g. a slow-routing
         // aggregator like OpenRouter/Requesty), not a hand-curated guess. Computed once here
         // and reused below so the min/max pool and each candidate's score agree.
-        let effective_latency = |c: &Candidate<'_>| -> Option<f64> {
-            self.usage_tracker
-                .avg_latency_ms(c.model.id, c.brand_key_id)
-                .or_else(|| c.model.avg_latency_ms.map(|ms| ms as f64))
-        };
+        let effective_latency = |c: &Candidate<'_>| -> Option<f64> { c.predicted_ms };
 
         let latencies: Vec<f64> = candidates.iter().filter_map(effective_latency).collect();
         let min_latency = latencies.iter().cloned().fold(f64::INFINITY, f64::min);
@@ -952,6 +1065,10 @@ impl Selector {
                 + weights.latency * latency_score
                 + weights.priority * priority_score
                 + weights.traffic * traffic_score;
+            debug!(model=%c.model.slug, brand=%c.brand.slug, key=?c.brand_key_id,
+                predicted_ms=?c.predicted_ms, score=c.score, fast_hr_norm, slow_hr_norm,
+                quality, cost_score, latency_score, priority_score, traffic_score,
+                weights=?weights, "candidate score components");
         }
 
         // ── Prompt-cache stickiness (opt-in, `Group.sticky_model`) ───────────────
@@ -984,11 +1101,36 @@ impl Selector {
                 .then_with(|| a.rule_priority.cmp(&b.rule_priority))
         });
 
-        let winner = &candidates[0];
-
-        // Atomic reservation — on the winner's specific (model, key) bucket.
-        self.usage_tracker
-            .reserve(winner.model.id, winner.brand_key_id, estimated_tokens);
+        if ceiling_fallback {
+            candidates.sort_by(|a, b| {
+                a.predicted_ms
+                    .unwrap_or(f64::INFINITY)
+                    .total_cmp(&b.predicted_ms.unwrap_or(f64::INFINITY))
+            });
+        } else {
+            // A configured zero-token-price endpoint represents prepaid capacity. Prefer it
+            // only within the speed-admissible pool, with serverless handling overflow.
+            candidates.sort_by_key(|c| {
+                !(c.model.max_in_flight.is_some()
+                    && c.model.price_input_per_1m == Some(0.0)
+                    && c.model.price_output_per_1m == Some(0.0))
+            });
+        }
+        let winner = candidates
+            .iter()
+            .find(|c| {
+                self.usage_tracker.try_reserve(
+                    c.model.id,
+                    c.brand_key_id,
+                    estimated_tokens,
+                    c.model.max_in_flight,
+                )
+            })
+            .ok_or_else(|| ProvizError::AllModelsExhausted {
+                step: req.step.clone(),
+                tried: candidates.len(),
+                retry_after_ms: 2000,
+            })?;
 
         // Record this selection in the brand traffic window for future balance scoring.
         {
@@ -1070,6 +1212,74 @@ impl Selector {
         })
     }
 
+    /// Override the default cooldown with provider Retry-After; known quota shapes can
+    /// additionally block a legacy single-key brand, where no BrandApiKey UUID exists.
+    pub fn report_quota_details(
+        &self,
+        model: Uuid,
+        key: Option<Uuid>,
+        retry_ms: Option<u64>,
+        brand_quota: bool,
+    ) {
+        let guard = self.cache.read().unwrap();
+        let Some(cache) = guard.as_ref() else {
+            return;
+        };
+        let Some(m) = cache.models.get(&model) else {
+            return;
+        };
+        let ms = retry_ms.unwrap_or(60_000).max(1);
+        if brand_quota {
+            if let Some(key) = key {
+                self.key_rate_state.mark_for_ms(key, ms);
+                self.quota_key_state.mark_for_ms(key, ms);
+            } else {
+                self.brand_rate_state.mark_for_ms(m.brand_id, ms);
+            }
+        } else if retry_ms.is_some() {
+            if let Some(key) = key {
+                self.key_rate_state.mark_for_ms(key, ms);
+                self.quota_key_state.mark_for_ms(key, ms);
+            } else {
+                self.rate_state.mark_for_ms(model, ms);
+            }
+        }
+    }
+    pub fn cancel_reservation(&self, candidate: &ModelCandidate) {
+        self.usage_tracker.cancel_reservation(
+            candidate.model_id,
+            candidate.brand_key_id,
+            candidate.estimated_tokens,
+        );
+    }
+
+    pub fn model_metrics(&self) -> serde_json::Value {
+        let guard = self.cache.read().unwrap();
+        let mut rows = Vec::new();
+        if let Some(cache) = guard.as_ref() {
+            for model in cache.models.values() {
+                let keys: Vec<Option<Uuid>> = cache
+                    .brand_keys
+                    .get(&model.brand_id)
+                    .map(|keys| {
+                        keys.iter()
+                            .filter(|k| k.is_active)
+                            .map(|k| Some(k.id))
+                            .collect()
+                    })
+                    .unwrap_or_else(|| vec![None]);
+                for key in keys {
+                    let (in_flight, rate_429, learned_rpm) =
+                        self.usage_tracker.metrics(model.id, key);
+                    let (latency_p50_ms, latency_p95_ms) =
+                        self.latency_tracker.metrics(model.id, key);
+                    rows.push(serde_json::json!({"model_id":model.id,"model":model.slug,"brand_key_id":key,"in_flight":in_flight,"rate_429":rate_429,"learned_rpm":learned_rpm,"latency_p50_ms":latency_p50_ms,"latency_p95_ms":latency_p95_ms}));
+                }
+            }
+        }
+        serde_json::json!({"window_secs":300,"models":rows})
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn report_rate_limit(
         &self,
@@ -1080,7 +1290,7 @@ impl Selector {
         actual_tokens: Option<u64>,
         remaining_requests: Option<u32>,
         remaining_tokens: Option<u64>,
-        response_time_ms: Option<u32>,
+        _response_time_ms: Option<u32>,
     ) {
         match brand_key_id {
             // Account-scoped signal (quota/auth) on a key-pooled brand: block the
@@ -1095,18 +1305,32 @@ impl Selector {
                 self.rate_state.mark(model_id, &error_type);
             }
         }
+        let unknown = self
+            .cache
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|c| c.models.get(&model_id))
+            .is_some_and(|m| {
+                m.rpm_limit.is_none() && m.tpm_limit.is_none() && m.rps_limit.is_none()
+            });
         self.usage_tracker
-            .release(model_id, brand_key_id, estimated_tokens, actual_tokens);
+            .record_outcome(model_id, brand_key_id, true, unknown);
+        if unknown && actual_tokens.is_none() {
+            // A rejected call consumed no accepted-request quota. In particular, a short
+            // Retry-After must not turn into a fabricated full-minute token/RPM drain.
+            self.usage_tracker
+                .cancel_reservation(model_id, brand_key_id, estimated_tokens);
+        } else {
+            self.usage_tracker
+                .release(model_id, brand_key_id, estimated_tokens, actual_tokens);
+        }
         self.usage_tracker.anchor_remaining(
             model_id,
             brand_key_id,
             remaining_requests,
             remaining_tokens,
         );
-        if let Some(ms) = response_time_ms {
-            self.usage_tracker
-                .record_latency(model_id, brand_key_id, ms as u64);
-        }
         if let Err(e) = self.storage.log_rate_event(model_id, &error_type) {
             warn!(error = %e, "failed to persist rate limit event");
         }
@@ -1147,6 +1371,15 @@ impl Selector {
         if let Some(ms) = response_time_ms {
             self.usage_tracker
                 .record_latency(model_id, brand_key_id, ms as u64);
+        }
+
+        self.usage_tracker
+            .record_outcome(model_id, brand_key_id, false, false);
+        if let (Some(ms), Some(input), Some(output)) =
+            (response_time_ms, prompt_tokens, completion_tokens)
+        {
+            self.latency_tracker
+                .record(model_id, brand_key_id, input, output, ms);
         }
 
         // A provider-reported real cost (e.g. OpenRouter's `usage.cost`, which reflects whichever
