@@ -32,6 +32,12 @@ impl RateLimitState {
         self.limited.insert(model_id, expiry);
     }
 
+    pub fn mark_for_ms(&self, id: Uuid, ms: u64) {
+        // Clamp malformed provider values to a day to avoid Instant overflow.
+        let expiry = Instant::now() + Duration::from_millis(ms.min(86_400_000));
+        self.limited.insert(id, expiry);
+    }
+
     pub fn is_limited(&self, model_id: &Uuid) -> bool {
         match self.limited.get(model_id) {
             None => false,
@@ -62,7 +68,7 @@ impl RateLimitState {
                 drop(entry);
                 expiry
                     .checked_duration_since(now)
-                    .map(|d| d.as_millis() as u64)
+                    .map(|d| d.as_millis() as u64 + 1)
             })
             .min()
     }

@@ -19,3 +19,4 @@ pub mod usage_tracker;
 /// `/v1/models` returns 200 to any User-Agent, 403 to none) - the hourly Nous sync had been
 /// failing silently, so no new Nous model ever entered the catalog.
 pub const SYNC_USER_AGENT: &str = concat!("proviz-elekto/", env!("CARGO_PKG_VERSION"));
+pub mod latency;

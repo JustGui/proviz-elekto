@@ -47,6 +47,7 @@ struct ModelDef {
     rps_limit: Option<f64>,
     quality_score: Option<f64>,
     avg_latency_ms: Option<u32>,
+    max_in_flight: Option<u32>,
     notes: Option<String>,
     category: Option<String>,
     #[serde(default)]
@@ -366,6 +367,7 @@ pub fn load_from_dir(
                     price_output_per_1m: def.price_output_per_1m,
                     quality_score,
                     avg_latency_ms: def.avg_latency_ms,
+                    max_in_flight: def.max_in_flight.or(existing.max_in_flight),
                     notes: def.notes.clone(),
                     category,
                     batch_price_multiplier: def.batch_price_multiplier,
@@ -436,6 +438,7 @@ pub fn load_from_dir(
                     rps_limit: def.rps_limit,
                     quality_score,
                     avg_latency_ms: def.avg_latency_ms,
+                    max_in_flight: def.max_in_flight,
                     is_enabled: true,
                     notes: def.notes.clone(),
                     category,
