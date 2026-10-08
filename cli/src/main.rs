@@ -293,6 +293,13 @@ enum BrandKeyCmd {
 
 #[derive(Subcommand)]
 enum ModelCmd {
+    /// Set or clear the concurrent-call cap per model/key.
+    SetCap {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        max_in_flight: Option<u32>,
+    },
     Add {
         #[arg(long)]
         brand: String,
@@ -377,6 +384,17 @@ enum RuleCmd {
 
 #[derive(Subcommand)]
 enum GroupCmd {
+    /// Set latency ceilings; omitted flags preserve the current setting.
+    SetLatency {
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        max_latency_ms: Option<u32>,
+        #[arg(long)]
+        max_latency_ratio: Option<f64>,
+        #[arg(long)]
+        clear: bool,
+    },
     /// Create a new group
     Add {
         #[arg(long)]
@@ -672,6 +690,7 @@ fn main() {
                 let brand_rec = find_brand(&storage, &brand);
                 let display = display_name.unwrap_or_else(|| slug.clone());
                 let model = Model {
+                    max_in_flight: None,
                     id: Uuid::new_v4(),
                     brand_id: brand_rec.id,
                     slug: slug.clone(),
@@ -710,6 +729,14 @@ fn main() {
                 };
                 storage.insert_model(&model).unwrap();
                 println!("model '{slug}' added (id={})", model.id);
+            }
+            ModelCmd::SetCap {
+                slug,
+                max_in_flight,
+            } => {
+                let model = find_model(&storage, &slug);
+                storage.set_model_cap(model.id, max_in_flight).unwrap();
+                println!("model cap updated");
             }
             ModelCmd::List => {
                 let models = storage.load_models().unwrap();
@@ -770,6 +797,7 @@ fn main() {
                         .unwrap_or_else(|| panic!("brand '{brand_slug}' not found"));
                     let slug = v["slug"].as_str().unwrap().to_string();
                     let model = Model {
+                        max_in_flight: v["max_in_flight"].as_u64().map(|v| v as u32),
                         id: Uuid::new_v4(),
                         brand_id: brand.id,
                         slug: slug.clone(),
@@ -885,6 +913,8 @@ fn main() {
                 description,
             } => {
                 let group = Group {
+                    max_latency_ms: None,
+                    max_latency_ratio: None,
                     id: Uuid::new_v4(),
                     slug: slug.clone(),
                     name: name.clone(),
@@ -931,6 +961,35 @@ fn main() {
                     "group '{slug}' prompt-cache stickiness {}",
                     if enabled { "ENABLED" } else { "disabled" }
                 );
+            }
+            GroupCmd::SetLatency {
+                slug,
+                max_latency_ms,
+                max_latency_ratio,
+                clear,
+            } => {
+                assert!(
+                    max_latency_ratio.is_none_or(|v| v.is_finite() && v >= 1.0),
+                    "ratio must be >= 1"
+                );
+                assert!(max_latency_ms != Some(0), "latency must be positive");
+                let g = find_group(&storage, &slug);
+                storage
+                    .set_group_latency(
+                        g.id,
+                        if clear {
+                            None
+                        } else {
+                            max_latency_ms.or(g.max_latency_ms)
+                        },
+                        if clear {
+                            None
+                        } else {
+                            max_latency_ratio.or(g.max_latency_ratio)
+                        },
+                    )
+                    .unwrap();
+                println!("group latency policy updated");
             }
             GroupCmd::List => {
                 let groups = storage.load_groups().unwrap();
@@ -1034,6 +1093,10 @@ fn main() {
             let selector = Selector::new(storage);
             selector.reload().unwrap();
             let req = SelectRequest {
+                estimated_output_tokens: None,
+                max_latency_ms: None,
+                max_latency_ratio: None,
+                pin_wait: false,
                 step: step.clone(),
                 estimated_tokens: tokens,
                 requires_fn_call: fn_call,
