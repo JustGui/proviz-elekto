@@ -43,6 +43,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/report", post(handle_report))
         .route("/complete", post(handle_complete))
         .route("/health", get(handle_health))
+        .route("/metrics/models", get(handle_model_metrics))
         .route("/catalog/reload", post(handle_reload))
         .route("/catalog/seed", post(handle_catalog_seed))
         .route("/catalog/refresh", post(handle_catalog_refresh))
@@ -56,6 +57,36 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .layer(tower_http::cors::CorsLayer::permissive())
 }
 
+async fn handle_model_metrics(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(state.selector.model_metrics())
+}
+
+// If a select future is cancelled while spawn_blocking runs, the unclaimed result
+// releases its reservation instead of permanently consuming a dedicated endpoint slot.
+struct PendingSelection {
+    selector: Arc<Selector>,
+    result: Option<Result<ModelCandidate, ProvizError>>,
+}
+impl Drop for PendingSelection {
+    fn drop(&mut self) {
+        if let Some(Ok(candidate)) = &self.result {
+            self.selector.cancel_reservation(candidate);
+        }
+    }
+}
+async fn select_once(
+    selector: Arc<Selector>,
+    req: SelectRequest,
+) -> Result<ModelCandidate, ProvizError> {
+    let mut pending = tokio::task::spawn_blocking(move || {
+        let result = Some(selector.select(&req));
+        PendingSelection { selector, result }
+    })
+    .await
+    .expect("select task panicked");
+    pending.result.take().unwrap()
+}
+
 /// Run a selection with the same `max_wait_ms` sleep-and-retry-once behaviour the `/select`
 /// handler exposes. Shared by `handle_select` and the `/complete` path so both honour the
 /// transient-exhaustion wait budget identically.
@@ -63,15 +94,13 @@ pub(crate) async fn select_with_wait(
     state: &Arc<AppState>,
     req: SelectRequest,
 ) -> Result<ModelCandidate, ProvizError> {
-    let max_wait_ms = req.max_wait_ms;
-
-    let result = {
-        let sel = state.selector.clone();
-        let req2 = req.clone();
-        tokio::task::spawn_blocking(move || sel.select(&req2))
-            .await
-            .expect("select task panicked")
+    let max_wait_ms = if req.pin_model.is_some() && !req.pin_wait {
+        None
+    } else {
+        req.max_wait_ms
     };
+
+    let result = select_once(state.selector.clone(), req.clone()).await;
 
     match result {
         Err(ProvizError::AllModelsExhausted {
@@ -86,10 +115,7 @@ pub(crate) async fn select_with_wait(
                 "all models exhausted — sleeping before retry"
             );
             tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
-            let sel = state.selector.clone();
-            tokio::task::spawn_blocking(move || sel.select(&req))
-                .await
-                .expect("select retry panicked")
+            select_once(state.selector.clone(), req).await
         }
         other => other,
     }
@@ -243,6 +269,14 @@ pub(crate) fn apply_report(sel: &Selector, req: ReportRequest) -> Option<f64> {
             None
         }
     };
+    if matches!(req.outcome, ReportOutcome::RateLimit) {
+        sel.report_quota_details(
+            req.model_id,
+            brand_key_id,
+            req.retry_after_ms,
+            req.quota_scope_brand,
+        );
+    }
     if req.sync_limits {
         sel.sync_provider_limits(
             req.model_id,

@@ -81,6 +81,7 @@ fn seed_typed_catalog(base_url: String, slug: &str, category: Option<&str>) -> A
         price_currency: "USD".into(),
     };
     let model = Model {
+        max_in_flight: None,
         id: Uuid::new_v4(),
         brand_id: brand.id,
         slug: "mock-7b".into(),
@@ -266,6 +267,7 @@ async fn complete_discounts_cached_prompt_tokens_in_cost() {
         price_currency: "USD".into(),
     };
     let model = Model {
+        max_in_flight: None,
         id: Uuid::new_v4(),
         brand_id: brand.id,
         slug: "cache-7b".into(),
@@ -407,6 +409,7 @@ async fn complete_ignores_nousportal_degenerate_usage_cost() {
         price_currency: "USD".into(),
     };
     let model = Model {
+        max_in_flight: None,
         id: Uuid::new_v4(),
         brand_id: brand.id,
         slug: "deepseek/deepseek-v4-flash".into(),
@@ -624,6 +627,8 @@ async fn jev_group_falls_back_across_native_router_endpoints_on_429() {
     model.supports_function_calling = false;
     storage.insert_model(&model).unwrap();
     let group = Group {
+        max_latency_ms: None,
+        max_latency_ratio: None,
         id: Uuid::new_v4(),
         slug: "jev".into(),
         name: "Jev".into(),
@@ -694,4 +699,212 @@ async fn jev_group_falls_back_across_native_router_endpoints_on_429() {
         );
     }
     assert_eq!(THROTTLED_CALLS.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn pinned_wait_is_opt_in_and_metrics_expose_in_flight() {
+    let selector = seed_catalog("http://localhost/v1".into());
+    let model = selector.storage().load_models().unwrap().remove(0);
+    selector.report_quota_details(model.id, None, Some(5000), true);
+    let url = spawn_proviz_server(selector.clone()).await;
+    let http = reqwest::Client::new();
+    let started = Instant::now();
+    let response=http.post(format!("{url}/select")).json(&json!({"step":"chat","estimated_tokens":10,"pin_model":"mockbrand/mock-7b","max_wait_ms":10000})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    assert!(started.elapsed().as_millis() < 4000);
+    // A pinned wait exceeds neither its budget nor the short provider cooldown.
+    selector.report_quota_details(model.id, None, Some(50), true);
+    let response=http.post(format!("{url}/select")).json(&json!({"step":"chat","estimated_tokens":10,"pin_model":"mockbrand/mock-7b","pin_wait":true,"max_wait_ms":1000})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let metrics: Value = http
+        .get(format!("{url}/metrics/models"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(metrics["models"][0]["in_flight"], 1);
+    let candidate: proviz_elekto_core::models::ModelCandidate = response.json().await.unwrap();
+    selector.cancel_reservation(&candidate);
+    // A wait shorter than Retry-After fails without sleeping.
+    selector.report_quota_details(model.id, None, Some(5000), true);
+    let response=http.post(format!("{url}/select")).json(&json!({"step":"chat","estimated_tokens":10,"pin_model":"mockbrand/mock-7b","pin_wait":true,"max_wait_ms":10})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn provider_quota_body_and_retry_after_block_sibling_models() {
+    use proviz_elekto_core::models::BrandApiKey;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let provider = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [("retry-after", "0.2")],
+                    Json(json!({"error":{"message":"INSUFFICIENT QUOTA"}})),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, provider).await.unwrap();
+    });
+    let selector = seed_catalog(format!("http://{addr}/v1"));
+    let storage = selector.storage();
+    let brand = storage.load_brands().unwrap().remove(0);
+    let mut sibling = storage.load_models().unwrap().remove(0);
+    sibling.id = Uuid::new_v4();
+    sibling.slug = "sibling".into();
+    storage.insert_model(&sibling).unwrap();
+    storage
+        .insert_rule(&SelectionRule {
+            id: Uuid::new_v4(),
+            step: "chat".into(),
+            model_id: sibling.id,
+            priority: 1,
+            max_ctx_tokens: None,
+            requires_fn_call: false,
+            is_enabled: true,
+        })
+        .unwrap();
+    std::env::set_var("PROVIZ_TEST_QUOTA_KEY", "test-key");
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: "PROVIZ_TEST_QUOTA_KEY".into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector.clone()).await;
+    let response=reqwest::Client::new().post(format!("{url}/complete")).json(&json!({"step":"chat","estimated_tokens":100,"messages":[{"role":"user","content":"test"}]})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let body: Value = response.json().await.unwrap();
+    assert!(body["retry_after_ms"].as_u64().unwrap() <= 200);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(selector.model_metrics()["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["in_flight"] == 0 && r["latency_p50_ms"].is_null()));
+}
+
+#[tokio::test]
+async fn pinned_complete_retries_a_short_provider_retry_after() {
+    use axum::response::IntoResponse;
+    use proviz_elekto_core::models::BrandApiKey;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let count = count.clone();
+            async move {
+                if count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    (
+                        axum::http::StatusCode::TOO_MANY_REQUESTS,
+                        [("retry-after", "0.05")],
+                        Json(json!({"error":"INSUFFICIENT QUOTA"})),
+                    )
+                        .into_response()
+                } else {
+                    mock_chat_completions().await.into_response()
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let selector = seed_catalog(format!("http://{addr}/v1"));
+    let storage = selector.storage();
+    let brand = storage.load_brands().unwrap().remove(0);
+    std::env::set_var("PROVIZ_TEST_PIN_KEY", "test-key");
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: "PROVIZ_TEST_PIN_KEY".into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector.clone()).await;
+    let response=reqwest::Client::new().post(format!("{url}/complete")).json(&json!({"step":"chat","estimated_tokens":10,"pin_model":"mockbrand/mock-7b","pin_wait":true,"max_wait_ms":1000,"messages":[{"role":"user","content":"test"}]})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(selector.model_metrics()["models"][0]["in_flight"], 0);
+}
+
+#[tokio::test]
+async fn cancelled_completion_releases_its_concurrency_slot() {
+    use proviz_elekto_core::models::BrandApiKey;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let signal = entered.clone();
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let signal = signal.clone();
+            async move {
+                signal.notify_one();
+                std::future::pending::<()>().await;
+                Json(json!({}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let selector = seed_catalog(format!("http://{addr}/v1"));
+    let storage = selector.storage();
+    let model = storage.load_models().unwrap().remove(0);
+    storage.set_model_cap(model.id, Some(1)).unwrap();
+    std::env::set_var("PROVIZ_TEST_CANCEL_KEY", "test-key");
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: model.brand_id,
+            api_key_env: "PROVIZ_TEST_CANCEL_KEY".into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let state = Arc::new(AppState {
+        selector: selector.clone(),
+        batch_queue: Arc::new(batch::BatchQueue::new(60, 100, "http://localhost".into())),
+        started_at: Instant::now(),
+        providers_dir: ".".into(),
+        http: reqwest::Client::new(),
+    });
+    let request = serde_json::from_value(
+        json!({"step":"chat","estimated_tokens":10,"messages":[{"role":"user","content":"test"}]}),
+    )
+    .unwrap();
+    let task = tokio::spawn(proviz_server::complete::run_complete(state, request));
+    tokio::time::timeout(std::time::Duration::from_secs(2), entered.notified())
+        .await
+        .unwrap();
+    assert_eq!(selector.model_metrics()["models"][0]["in_flight"], 1);
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    assert_eq!(selector.model_metrics()["models"][0]["in_flight"], 0);
 }
