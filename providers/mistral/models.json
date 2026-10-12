@@ -159,7 +159,8 @@
     "batch_price_multiplier": 0.5,
     "trains_on_data": false,
     "retains_data": true,
-    "notes": "Public preview; model ID, capabilities and current promotional USD pricing from https://docs.mistral.ai/models/mistral-large-4-0 (2026-10-12). Account access is required for this public preview."
+    "notes": "Public preview; model ID, capabilities and current promotional USD pricing from https://docs.mistral.ai/models/mistral-large-4-0 (2026-10-12). Account access is required for this public preview.",
+    "reasoning_effort_value": "none"
   },
   {
     "slug": "mistral-medium-3-5",
