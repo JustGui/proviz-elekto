@@ -66,12 +66,10 @@ pub struct CompleteRequest {
     pub group_name: Option<String>,
     #[serde(default)]
     pub max_wait_ms: Option<u64>,
-    /// Restricts selection to models the source explicitly confirms don't train on submitted
-    /// data, and — since most providers (including OpenRouter) don't report per-model training
-    /// status at all — additionally injects OpenRouter's request-level `provider:
-    /// {data_collection: "deny", zdr: true}` opt-out into the outgoing payload regardless of
-    /// which brand gets selected (harmless no-op for providers that don't recognize the field).
-    /// See `SelectRequest.require_no_training`.
+    /// Requires confirmed no-training metadata for ordinary providers. OpenRouter
+    /// is eligible on this gateway-owned path because payload() enforces its
+    /// data_collection=deny and zdr=true request flags. Split-flow /select remains
+    /// strict about catalog metadata.
     #[serde(default)]
     pub require_no_training: bool,
     /// See `SelectRequest.cost_weight`/`latency_weight`/`quality_weight`.
@@ -319,8 +317,25 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
 
     for attempt in 0..MAX_PROVIDER_ATTEMPTS {
         let select_req = req.to_select_request(exclude_ids.clone());
-        let candidate = match select_with_wait(&state, select_req).await {
+        let candidate = match select_with_wait(&state, select_req, true).await {
             Ok(c) => c,
+            Err(
+                e @ proviz_elekto_core::error::ProvizError::AllModelsExhausted {
+                    retry_after_ms,
+                    ..
+                },
+            ) if retry_after_ms > 0 => return select_error_to_response(e),
+            Err(_) if attempt > 0 => {
+                // Exhaustion after a provider failure must preserve the useful cause,
+                // rather than looking like a model eligibility failure before a call.
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({
+                        "error": "all_providers_failed", "detail": last_error,
+                    })),
+                )
+                    .into_response();
+            }
             Err(e) => return select_error_to_response(e),
         };
 

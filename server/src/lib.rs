@@ -77,9 +77,14 @@ impl Drop for PendingSelection {
 async fn select_once(
     selector: Arc<Selector>,
     req: SelectRequest,
+    enforce_openrouter_privacy: bool,
 ) -> Result<ModelCandidate, ProvizError> {
     let mut pending = tokio::task::spawn_blocking(move || {
-        let result = Some(selector.select(&req));
+        let result = Some(if enforce_openrouter_privacy {
+            selector.select_for_complete(&req)
+        } else {
+            selector.select(&req)
+        });
         PendingSelection { selector, result }
     })
     .await
@@ -93,6 +98,7 @@ async fn select_once(
 pub(crate) async fn select_with_wait(
     state: &Arc<AppState>,
     req: SelectRequest,
+    enforce_openrouter_privacy: bool,
 ) -> Result<ModelCandidate, ProvizError> {
     let max_wait_ms = if req.pin_model.is_some() && !req.pin_wait {
         None
@@ -100,7 +106,12 @@ pub(crate) async fn select_with_wait(
         req.max_wait_ms
     };
 
-    let result = select_once(state.selector.clone(), req.clone()).await;
+    let result = select_once(
+        state.selector.clone(),
+        req.clone(),
+        enforce_openrouter_privacy,
+    )
+    .await;
 
     match result {
         Err(ProvizError::AllModelsExhausted {
@@ -115,7 +126,7 @@ pub(crate) async fn select_with_wait(
                 "all models exhausted — sleeping before retry"
             );
             tokio::time::sleep(Duration::from_millis(retry_after_ms)).await;
-            select_once(state.selector.clone(), req).await
+            select_once(state.selector.clone(), req, enforce_openrouter_privacy).await
         }
         other => other,
     }
@@ -139,7 +150,7 @@ async fn handle_select(
         "select request"
     );
 
-    match select_with_wait(&state, req).await {
+    match select_with_wait(&state, req, false).await {
         Ok(candidate) => {
             debug!(
                 peer = %peer,
