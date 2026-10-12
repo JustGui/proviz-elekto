@@ -302,3 +302,5 @@ See [the TypeSafe API](https://docs.typesafe.ai/api) and
 [model limits/pricing](https://docs.typesafe.ai/models),
 [OrcaRouter’s native System One API](https://www.orcarouter.ai/blog/jev-system-one),
 and [OpenRouter’s Decisions API](https://openrouter.ai/blog/tutorials/how-to-use-jev/).
+
+For `require_no_training=true`, `/complete` may select OpenRouter models with unknown training metadata because the gateway enforces `provider.data_collection="deny"` and `provider.zdr=true` on every outgoing OpenRouter request. `/select` still requires `trains_on_data=false`; other providers keep the same strict metadata filter.

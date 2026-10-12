@@ -201,3 +201,7 @@ counts and `response_time_ms` update persisted size-aware latency history.
 contains `model_id`, `model`, `brand_key_id`, `in_flight`, `rate_429` (fraction of
 successful/429 outcomes over the last five minutes), `learned_rpm`, and
 `latency_p50_ms`/`latency_p95_ms` (retained successful samples, null without data).
+
+For `require_no_training=true`, `/complete` may select OpenRouter models with unknown training metadata because the gateway enforces `provider.data_collection="deny"` and `provider.zdr=true` on every outgoing OpenRouter request. `/select` still requires `trains_on_data=false`; other providers keep the same strict metadata filter.
+
+`/complete` returns 409 for selection exhaustion before any provider attempt or transient quota exhaustion with a positive retry delay. If a provider fails and exhausting the remaining candidates ends the call, it returns 502 `all_providers_failed` with the last provider error in `detail`.
