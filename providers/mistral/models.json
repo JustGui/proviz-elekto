@@ -147,6 +147,21 @@
     "retains_data": true
   },
   {
+    "slug": "mistral-large-4",
+    "display_name": "Mistral Large 4",
+    "category": "text",
+    "max_context_tokens": 1048576,
+    "supports_function_calling": true,
+    "supports_json_mode": true,
+    "price_input_per_1m": 0.68,
+    "price_output_per_1m": 2.09,
+    "price_cached_input_per_1m": 0.07,
+    "batch_price_multiplier": 0.5,
+    "trains_on_data": false,
+    "retains_data": true,
+    "notes": "Public preview; model ID, capabilities and current promotional USD pricing from https://docs.mistral.ai/models/mistral-large-4-0 (2026-10-12). Account access is required for this public preview."
+  },
+  {
     "slug": "mistral-medium-3-5",
     "display_name": "Mistral Medium 3.5",
     "category": "text",
