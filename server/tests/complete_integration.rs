@@ -908,3 +908,121 @@ async fn cancelled_completion_releases_its_concurrency_slot() {
     assert!(task.await.unwrap_err().is_cancelled());
     assert_eq!(selector.model_metrics()["models"][0]["in_flight"], 0);
 }
+
+#[tokio::test]
+async fn complete_openrouter_unknown_training_enforces_privacy() {
+    use proviz_elekto_core::models::BrandApiKey;
+    const KEY: &str = "PROVIZ_TEST_OPENROUTER_PRIVACY_KEY";
+    std::env::set_var(KEY, "synthetic-key");
+    async fn privacy_provider(Json(body): Json<Value>) -> Json<Value> {
+        assert_eq!(body["provider"]["data_collection"], "deny");
+        assert_eq!(body["provider"]["zdr"], true);
+        Json(
+            json!({"choices":[{"message":{"content":"privacy protected"},"finish_reason":"stop"}],
+            "usage":{"prompt_tokens":1,"completion_tokens":1}}),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/chat/completions", post(privacy_provider)),
+        )
+        .await
+        .unwrap();
+    });
+    let selector = seed_typed_catalog(format!("http://{addr}/v1"), "openrouter", None);
+    let brand = selector.storage().load_brands().unwrap().remove(0);
+    selector
+        .storage()
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: KEY.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{url}/select"))
+        .json(&json!({
+            "step":"chat","estimated_tokens":1000,"require_no_training":true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+    let response = client
+        .post(format!("{url}/complete"))
+        .json(&json!({
+            "step":"chat","require_no_training":true,
+            "messages":[{"role":"user","content":"Synthetic test"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        response.json::<Value>().await.unwrap()["text"],
+        "privacy protected"
+    );
+}
+
+#[tokio::test]
+async fn complete_preserves_provider_error_when_pin_is_exhausted() {
+    use proviz_elekto_core::models::BrandApiKey;
+    const KEY: &str = "PROVIZ_TEST_PROVIDER_FAILURE_KEY";
+    std::env::set_var(KEY, "synthetic-key");
+    async fn forbidden() -> impl axum::response::IntoResponse {
+        (
+            reqwest::StatusCode::FORBIDDEN,
+            Json(json!({"error":{"message":"Regional routing requires account access"}})),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/v1/chat/completions", post(forbidden)),
+        )
+        .await
+        .unwrap();
+    });
+    let selector = seed_catalog(format!("http://{addr}/v1"));
+    let brand = selector.storage().load_brands().unwrap().remove(0);
+    selector
+        .storage()
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: KEY.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let response = reqwest::Client::new()
+        .post(format!("{url}/complete"))
+        .json(&json!({
+            "step":"chat","pin_model":"mockbrand/mock-7b",
+            "messages":[{"role":"user","content":"Synthetic test"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "all_providers_failed");
+    assert!(body["detail"]
+        .as_str()
+        .unwrap()
+        .contains("Regional routing requires account access"));
+}

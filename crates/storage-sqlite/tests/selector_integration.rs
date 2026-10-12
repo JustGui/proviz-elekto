@@ -1589,3 +1589,87 @@ fn changing_a_model_cap_preserves_group_membership() {
     );
     assert_eq!(db.load_all_group_members().unwrap().len(), 3);
 }
+
+#[test]
+fn accuracy_tiers_include_exact_measured_boundary_and_reject_below() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    for threshold in [0.75f32, 0.85, 0.90] {
+        for delta in [0.0, -0.001] {
+            let db = SqliteStorage::open_in_memory().unwrap();
+            let brand = make_brand("acme", 0);
+            let model = Model {
+                quality_score: Some(1.0),
+                ..make_model(brand.id, "acme-7b", 32_000)
+            };
+            db.insert_brand(&brand).unwrap();
+            db.insert_model(&model).unwrap();
+            db.insert_rule(&make_rule("chat", model.id, 0)).unwrap();
+            let measured = match threshold {
+                t if t == 0.75 => 0.75,
+                t if t == 0.85 => 0.85,
+                _ => 0.90,
+            } + delta;
+            db.upsert_step_quality(model.id, "chat", measured, 100)
+                .unwrap();
+            let result = selector(db).select(&SelectRequest {
+                quality_min: threshold,
+                ..base_req()
+            });
+            assert_eq!(
+                result.is_ok(),
+                delta == 0.0,
+                "threshold={threshold}, measured={measured}"
+            );
+        }
+    }
+}
+
+#[test]
+fn accuracy_selection_can_disable_both_group_speed_ceilings() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    let (db, sel, models, gid) = speed_world();
+    db.set_group_latency(gid, Some(5000), Some(2.0)).unwrap();
+    for (i, model) in models.iter().enumerate() {
+        db.upsert_step_quality(model.id, "chat", if i == 2 { 0.95 } else { 0.85 }, 100)
+            .unwrap();
+    }
+    let req = SelectRequest {
+        group_id: Some(gid),
+        quality_min: 0.85,
+        quality_weight: Some(1.0),
+        cost_weight: Some(0.0),
+        latency_weight: Some(0.0),
+        use_member_priority: false,
+        ..base_req()
+    };
+    assert_ne!(sel.select(&req).unwrap().model_id, models[2].id);
+    let accuracy_only = SelectRequest {
+        max_latency_ms: Some(0),
+        max_latency_ratio: Some(0.0),
+        ..req
+    };
+    assert_eq!(sel.select(&accuracy_only).unwrap().model_id, models[2].id);
+}
+
+#[test]
+fn completion_privacy_exemption_is_only_for_openrouter() {
+    use proviz_elekto_core::storage::CatalogStorage;
+    for brand_slug in ["openrouter", "requesty", "nousportal", "acme"] {
+        for training_status in [None, Some(true), Some(false)] {
+            let db = SqliteStorage::open_in_memory().unwrap();
+            let brand = make_brand(brand_slug, 0);
+            let mut model = make_model(brand.id, "synthetic-model", 32000);
+            model.trains_on_data = training_status;
+            db.insert_brand(&brand).unwrap();
+            db.insert_model(&model).unwrap();
+            let sel = selector(db);
+            let mut req = base_req();
+            req.require_no_training = true;
+            assert_eq!(sel.select(&req).is_ok(), training_status == Some(false));
+            assert_eq!(
+                sel.select_for_complete(&req).is_ok(),
+                brand_slug == "openrouter" || training_status == Some(false)
+            );
+        }
+    }
+}

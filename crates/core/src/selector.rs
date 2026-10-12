@@ -352,6 +352,20 @@ impl Selector {
     }
 
     pub fn select(&self, req: &SelectRequest) -> Result<ModelCandidate> {
+        self.select_inner(req, false)
+    }
+
+    /// For gateway-owned completion calls that enforce OpenRouter's
+    /// data_collection=deny and zdr=true on every outgoing request.
+    pub fn select_for_complete(&self, req: &SelectRequest) -> Result<ModelCandidate> {
+        self.select_inner(req, true)
+    }
+
+    fn select_inner(
+        &self,
+        req: &SelectRequest,
+        enforce_openrouter_privacy: bool,
+    ) -> Result<ModelCandidate> {
         self.ensure_cache()?;
         // Cheap check; spawns at most one background fetch per hour (single-flight).
         self.maybe_refresh_fx();
@@ -660,7 +674,9 @@ impl Selector {
                         debug!(model = %model.slug, "skipped: quality unknown, min required");
                         continue;
                     }
-                    Some(q) if q < req.quality_min as f64 => {
+                    // Compare at the request's f32 precision: widening 0.85f32 to
+                    // f64 would reject a measured score of exactly 0.85.
+                    Some(q) if (q as f32) < req.quality_min => {
                         debug!(model = %model.slug, quality = q, min = req.quality_min,
                             "skipped: quality below min");
                         continue;
@@ -670,10 +686,13 @@ impl Selector {
             }
 
             // Unlike languages/categories (no declared restriction = unrestricted), an unknown
-            // training status is treated as unverified, not safe — most providers (including
-            // OpenRouter) don't report this at all, so only a model the source explicitly
-            // confirms as Some(false) passes.
-            if req.require_no_training && model.trains_on_data != Some(false) {
+            // training status is treated as unverified, not safe. The gateway-owned
+            // completion path alone can admit OpenRouter, where it enforces no-training
+            // and ZDR flags on the actual upstream request.
+            if req.require_no_training
+                && model.trains_on_data != Some(false)
+                && !(enforce_openrouter_privacy && brand.slug == "openrouter")
+            {
                 debug!(model = %model.slug, trains_on_data = ?model.trains_on_data,
                     "skipped: no_training required, status unknown or true");
                 continue;
