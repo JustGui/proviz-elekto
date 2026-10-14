@@ -111,6 +111,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ProvidersCmd {
+    /// Sync the Cloudflare Workers AI catalogue (requires account ID and API key).
+    SyncCloudflare {
+        #[arg(long, default_value = "./providers")]
+        dir: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, default_value = proviz_elekto_core::cloudflare_sync::DEFAULT_BASE_URL)]
+        base_url: String,
+    },
     /// Load all providers from a directory (each subdir = one provider)
     Load {
         /// Root directory containing provider subdirectories
@@ -1337,6 +1346,38 @@ fn main() {
                         ),
                         Err(e) => {
                             eprintln!("orcarouter sync failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            ProvidersCmd::SyncCloudflare {
+                dir,
+                dry_run,
+                base_url,
+            } => {
+                if dry_run {
+                    match proviz_elekto_core::cloudflare_sync::fetch_preview(&base_url) {
+                        Ok(entries) => {
+                            println!("{}", serde_json::to_string_pretty(&entries).unwrap())
+                        }
+                        Err(e) => {
+                            eprintln!("cloudflare preview failed: {e}");
+                            std::process::exit(1);
+                        }
+                    }
+                } else {
+                    match proviz_elekto_core::cloudflare_sync::sync(
+                        storage.as_ref(),
+                        &dir,
+                        &base_url,
+                    ) {
+                        Ok(s) => println!(
+                            "cloudflare sync: {} models, {} added, {} updated, {} disabled",
+                            s.fetched, s.models_added, s.models_updated, s.models_disabled
+                        ),
+                        Err(e) => {
+                            eprintln!("cloudflare sync failed: {e}");
                             std::process::exit(1);
                         }
                     }

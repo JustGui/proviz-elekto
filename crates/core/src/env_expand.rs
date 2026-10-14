@@ -8,6 +8,27 @@
 //! (never baked into the DB), so the same committed catalog works for every deployment as long
 //! as the env var is set (e.g. in the Docker container).
 
+/// Resolve provider credentials/placeholders, accepting the historical CLOUDFARE spelling.
+/// Explicit correctly-spelled values win; other providers/custom key names are untouched.
+pub fn provider_env(name: &str) -> Result<String, std::env::VarError> {
+    provider_env_with(name, |key| std::env::var(key))
+}
+
+fn provider_env_with(
+    name: &str,
+    get: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> Result<String, std::env::VarError> {
+    match name {
+        "CLOUDFLARE_API_KEY" | "CLOUDFARE_API_KEY" => {
+            get("CLOUDFLARE_API_KEY").or_else(|_| get("CLOUDFARE_API_KEY"))
+        }
+        "CLOUDFLARE_ACCOUNT_ID" | "CLOUDFARE_ACCOUNT_ID" => {
+            get("CLOUDFLARE_ACCOUNT_ID").or_else(|_| get("CLOUDFARE_ACCOUNT_ID"))
+        }
+        _ => get(name),
+    }
+}
+
 /// Replace every `${VAR}` occurrence in `s` with the value of the environment variable `VAR`.
 /// An unset variable leaves the placeholder untouched, so a misconfiguration surfaces as a
 /// visibly broken URL rather than a silently truncated one.
@@ -23,7 +44,7 @@ pub fn expand_env_placeholders(s: &str) -> String {
         match after.find('}') {
             Some(end) => {
                 let name = &after[..end];
-                match std::env::var(name) {
+                match provider_env(name) {
                     Ok(val) => out.push_str(&val),
                     Err(_) => {
                         out.push_str("${");
@@ -53,6 +74,40 @@ pub fn expand_env_placeholders_opt(s: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloudflare_alias_fallback_and_precedence() {
+        for suffix in ["API_KEY", "ACCOUNT_ID"] {
+            let correct = format!("CLOUDFLARE_{suffix}");
+            let legacy = format!("CLOUDFARE_{suffix}");
+            for name in [&correct, &legacy] {
+                assert_eq!(
+                    provider_env_with(name, |k| if k == legacy {
+                        Ok("legacy".into())
+                    } else {
+                        Err(std::env::VarError::NotPresent)
+                    })
+                    .unwrap(),
+                    "legacy"
+                );
+                assert_eq!(
+                    provider_env_with(name, |k| Ok(if k == correct {
+                        "correct"
+                    } else {
+                        "legacy"
+                    }
+                    .into()))
+                    .unwrap(),
+                    "correct"
+                );
+                assert!(provider_env_with(name, |_| Err(std::env::VarError::NotPresent)).is_err());
+            }
+        }
+        assert_eq!(
+            provider_env_with("CUSTOM_KEY", |k| Ok(k.into())).unwrap(),
+            "CUSTOM_KEY"
+        );
+    }
 
     #[test]
     fn no_placeholder_is_passthrough() {

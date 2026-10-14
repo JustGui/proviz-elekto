@@ -1,0 +1,16 @@
+[
+  {
+    "slug": "typesafe/jev",
+    "display_name": "TypeSafe Jev on Cloudflare",
+    "category": "decision",
+    "max_context_tokens": 32000,
+    "supports_function_calling": false,
+    "supports_json_mode": true,
+    "price_input_per_1m": 0.042,
+    "price_output_per_1m": 0,
+    "price_cached_input_per_1m": 0,
+    "trains_on_data": false,
+    "retains_data": false,
+    "notes": "Documented native /ai/run decision model; not advertised by /ai/models/search. https://developers.cloudflare.com/ai/models/typesafe/jev/ https://developers.cloudflare.com/workers-ai/platform/privacy/ https://typesafe.ai/legal/privacy-policy"
+  }
+]

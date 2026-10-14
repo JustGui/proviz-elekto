@@ -183,6 +183,25 @@ pub fn load_from_dir(
     update_limits: bool,
     disable_missing: bool,
 ) -> StorageResult<LoadSummary> {
+    load_filtered(storage, providers_dir, update_limits, disable_missing, None)
+}
+
+/// Refresh one auto-synced provider without mutating any other provider's rows.
+pub fn load_provider_from_dir(
+    storage: &dyn CatalogStorage,
+    providers_dir: &str,
+    provider: &str,
+) -> StorageResult<LoadSummary> {
+    load_filtered(storage, providers_dir, true, true, Some(provider))
+}
+
+fn load_filtered(
+    storage: &dyn CatalogStorage,
+    providers_dir: &str,
+    update_limits: bool,
+    disable_missing: bool,
+    provider: Option<&str>,
+) -> StorageResult<LoadSummary> {
     let mut summary = LoadSummary {
         brands_added: 0,
         models_added: 0,
@@ -228,6 +247,9 @@ pub fn load_from_dir(
             continue;
         }
         let provider_name = entry.file_name().to_string_lossy().to_string();
+        if provider.is_some_and(|name| name != provider_name) {
+            continue;
+        }
         let path = entry.path();
 
         let brand_path = path.join("brand.json");

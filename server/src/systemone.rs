@@ -15,8 +15,36 @@ pub(super) fn url(brand: &str, base_url: &Option<String>) -> Option<String> {
             "{}/alpha/decisions",
             base.strip_suffix("/v1").unwrap_or(base)
         ))
+    } else if brand.split('-').next() == Some("cloudflare") {
+        Some(format!("{}/run", base.strip_suffix("/v1").unwrap_or(base)))
     } else {
         Some(format!("{base}/systemone"))
+    }
+}
+
+// Cloudflare wraps the same native System One input in `input`. Keep the finite-schema
+// translation and answer validation below shared with TypeSafe/OpenRouter/OrcaRouter.
+pub(super) fn wire_payload(brand: &str, mut native: Value) -> Value {
+    if brand.split('-').next() != Some("cloudflare") {
+        return native;
+    }
+    let model = native.as_object_mut().unwrap().remove("model").unwrap();
+    json!({"model": model, "input": native})
+}
+
+pub(super) fn parse_wire(
+    brand: &str,
+    body: &Value,
+    payload: &Value,
+) -> Result<ParsedCompletion, ProviderError> {
+    if brand.split('-').next() == Some("cloudflare") {
+        // The run API may return the standard Cloudflare envelope or the native result.
+        if body.get("success") == Some(&json!(false)) {
+            return Err(error("Cloudflare decision request failed"));
+        }
+        parse(body.get("result").unwrap_or(body), &payload["input"])
+    } else {
+        parse(body, payload)
     }
 }
 
@@ -171,6 +199,34 @@ mod tests {
         assert_eq!(parsed.prompt_tokens, 100);
         assert!(parsed.decision_probabilities.is_some());
     }
+    #[test]
+    fn cloudflare_wraps_native_input_and_preserves_choice_confidence() {
+        assert_eq!(
+            url("cloudflare", &Some("https://example.test/ai/v1".into())).unwrap(),
+            "https://example.test/ai/run"
+        );
+        let p = wire_payload("cloudflare", payload(&request(), "typesafe/jev").unwrap());
+        assert_eq!(p["model"], "typesafe/jev");
+        assert!(p.get("state").is_none());
+        assert_eq!(p["input"]["questions"]["next_step"]["type"], "choice");
+        let body = json!({"model":"jev-1.13.0", "answers":{
+            "next_step":{"type":"choice","choice":"option_1","confidence":0.87,"probabilities":{"option_0":0.1,"option_1":0.9}},
+            "enough_evidence":{"type":"noul","noul":0.8}},"usage":{"input_tokens":100,"output_tokens":6}});
+        for b in [body.clone(), json!({"success":true,"result":body})] {
+            let parsed = parse_wire("cloudflare", &b, &p).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&parsed.text).unwrap(),
+                json!({"next_step":"SEARCH","enough_evidence":true})
+            );
+            assert_eq!(
+                parsed.decision_probabilities.unwrap()["next_step"]["confidence"],
+                0.87
+            );
+            assert_eq!((parsed.prompt_tokens, parsed.completion_tokens), (100, 6));
+        }
+        assert!(parse_wire("cloudflare", &json!({"success":false}), &p).is_err());
+    }
+
     #[test]
     fn rejects_free_text_tools_and_unknown_choices() {
         let mut r = request();

@@ -77,6 +77,10 @@ struct Args {
     #[arg(long, env = "PROVIZ_TOKENHUB_SYNC_SECS", default_value = "3600")]
     tokenhub_sync_secs: u64,
 
+    /// Account-scoped Cloudflare catalogue sync; no-op without credentials or brand.json.
+    #[arg(long, env = "PROVIZ_CLOUDFLARE_SYNC_SECS", default_value = "3600")]
+    cloudflare_sync_secs: u64,
+
     /// Endpoint for FX rate lookups (currency -> USD, for per-brand `price_currency`
     /// normalisation). Frankfurter `base=USD` shape. Fetched once eagerly at startup, then
     /// lazily (at most hourly) whenever a selection finds the rates stale.
@@ -406,6 +410,45 @@ fn spawn_tokenhub_sync_task(selector: Arc<Selector>, providers_dir: String, inte
     });
 }
 
+fn spawn_cloudflare_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
+    if !std::path::Path::new(&providers_dir)
+        .join("cloudflare/brand.json")
+        .exists()
+        || proviz_elekto_core::env_expand::provider_env("CLOUDFLARE_API_KEY").is_err()
+        || proviz_elekto_core::env_expand::provider_env("CLOUDFLARE_ACCOUNT_ID").is_err()
+    {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            let dir = providers_dir.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let s = proviz_elekto_core::cloudflare_sync::sync(
+                    sel.storage().as_ref(),
+                    &dir,
+                    proviz_elekto_core::cloudflare_sync::DEFAULT_BASE_URL,
+                )?;
+                sel.reload().map_err(|e| e.to_string())?;
+                Ok::<_, String>(s)
+            })
+            .await;
+            match result {
+                Ok(Ok(s)) => info!(
+                    fetched = s.fetched,
+                    added = s.models_added,
+                    updated = s.models_updated,
+                    disabled = s.models_disabled,
+                    "cloudflare catalog synced"
+                ),
+                Ok(Err(e)) => error!("cloudflare sync failed: {e}"),
+                Err(_) => error!("cloudflare sync task panicked"),
+            }
+            tokio::time::sleep(Duration::from_secs(interval_secs.max(1))).await;
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
@@ -494,6 +537,12 @@ async fn main() {
         window_secs = args.batch_window_secs,
         max_size = args.batch_max_size,
         "batch queue started"
+    );
+
+    spawn_cloudflare_sync_task(
+        selector.clone(),
+        providers_dir.clone(),
+        args.cloudflare_sync_secs,
     );
 
     spawn_openrouter_sync_task(

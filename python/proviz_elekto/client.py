@@ -463,7 +463,13 @@ def _estimate_tokens(messages: list[dict]) -> int:
 # TokenHub (base_url https://us-api.tokenhub.com/v1) is the same situation — plain
 # OpenAI-compatible, no first-class litellm provider, no special headers/params needed (its
 # real per-request cost comes back as usage.cost, already handled by _extract_provider_cost).
-_OPENAI_COMPAT_BRANDS = {"infomaniak", "orcarouter", "tokenhub"}
+_OPENAI_COMPAT_BRANDS = {"infomaniak", "orcarouter", "tokenhub", "cloudflare"}
+
+
+def _provider_api_key(name: str) -> Optional[str]:
+    if name in ("CLOUDFLARE_API_KEY", "CLOUDFARE_API_KEY"):
+        return os.environ.get("CLOUDFLARE_API_KEY", os.environ.get("CLOUDFARE_API_KEY", "")) or None
+    return os.environ.get(name, "") or None
 
 
 def _litellm_target(candidate: "ModelCandidate") -> tuple[str, dict]:
@@ -1298,7 +1304,7 @@ class ProvizElekto:
             return litellm.completion(
                 model=model_id,
                 messages=messages,
-                api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                api_key=_provider_api_key(candidate.api_key_env or ""),
                 **target_kwargs,
                 **kwargs,
             )
@@ -1468,7 +1474,7 @@ class ProvizElekto:
                         messages=current_messages,
                         tools=tools,
                         tool_choice=tool_choice,
-                        api_key=os.environ.get(candidate.api_key_env or "", "") or None,
+                        api_key=_provider_api_key(candidate.api_key_env or ""),
                         **_tl_target_kwargs,
                         **iter_kwargs,
                     )
