@@ -264,6 +264,59 @@ except Exception:
 
 Apache-2.0
 
+### Cloudflare Workers AI
+
+Set `CLOUDFLARE_API_KEY` (a Bearer API token with Workers AI permissions) and
+`CLOUDFLARE_ACCOUNT_ID` on the proviz server. The historical spellings
+`CLOUDFARE_API_KEY` / `CLOUDFARE_ACCOUNT_ID` are also accepted; correctly spelled
+variables take precedence. URLs expand the account ID at request time, never in the DB.
+Cloudflare chat uses the [OpenAI-compatible API](https://developers.cloudflare.com/workers-ai/configuration/open-ai-compatibility/).
+Python `complete()` works without a provider SDK; `call_litellm*` supports Cloudflare
+chat using `openai/<model>` and the selected account URL. Native Jev decisions use
+`complete()` and the same `decision_probabilities` contract as other Jev providers.
+
+`proviz providers sync-cloudflare --dry-run` previews the account's catalogue;
+`proviz providers sync-cloudflare --dir ./providers` writes it and upserts Cloudflare
+rows only. The server syncs at startup, then every `PROVIZ_CLOUDFLARE_SYNC_SECS`
+(default 3600), when the credentials and `providers/cloudflare/brand.json` exist.
+The [model-search API](https://developers.cloudflare.com/api/resources/ai/subresources/models/methods/list/)
+provides task, context and token prices. Its `format=openrouter` response identifies
+chat models and per-model JSON/tool capabilities. Missing metadata stays unknown;
+non-chat/unverified endpoints are catalog-only. `supports_json_mode` does not promise
+`json_schema` support for every chat model. Empty, malformed, failed or suspiciously
+small syncs preserve the last-good catalogue. Disappeared API models are disabled.
+
+Cloudflare currently omits [TypeSafe Jev](https://developers.cloudflare.com/ai/models/typesafe/jev/)
+from model search. `providers/cloudflare/jev.json` is the explicit documented
+supplement, retained on each sync: `typesafe/jev`, category `decision`, 32,000-token
+context, $0.042/M input and zero output/cached-input price. It uses native `/ai/run`,
+with the shared Jev finite-schema adapter. A Cloudflare account balance is needed
+for third-party Jev calls; discovery does not prove billing readiness.
+
+Cloudflare models have `trains_on_data=false` under its [data-usage policy](https://developers.cloudflare.com/workers-ai/platform/privacy/).
+Jev also has `retains_data=false` under its model page's ZDR promise and TypeSafe's
+[privacy policy](https://typesafe.ai/legal/privacy-policy). Other models' retention
+stays unknown. No existing provider's privacy flags are changed.
+
+For an existing deployment, set the two credentials, run the sync against its
+catalogue, and reload (`proviz reload` or restart). Add the Cloudflare `typesafe/jev`
+model UUID to the `jev` group's `pz_group_members` through your normal catalogue
+provisioning (resolve by **brand and model slug**, since model slugs can collide).
+No schema migration is required. Python callers can use:
+
+```python
+result = pz.complete(
+    "ricochet_decide", [{"role": "user", "content": "Compare the supplied facts."}],
+    group_name="jev", categories=["decision"], require_no_training=True,
+    response_format={"type": "json_schema", "json_schema": {
+        "name": "decision", "strict": True, "schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"decision": {"type": "string", "enum": [
+                "distinct", "duplicate", "more_specific"]}}, "required": ["decision"]}}},
+)
+confidence = result.decision_probabilities["decision"]["confidence"]
+```
+
 ### Jev decisions across providers
 
 Jev is available through `POST /complete` with `categories: ["decision"]` and a
@@ -281,7 +334,7 @@ On an existing deployment, seed the new provider with `proviz seed --dir ./provi
 against the intended catalog, then reload it with `proviz reload` (or restart the server).
 RTFC defaults Ricochet navigation to the `jev` group with the explicit
 `decision` category on the `ricochet_decide` step. Populate the group with
-native Jev models: TypeSafe `jev-latest`, OrcaRouter
+native Jev models: Cloudflare `typesafe/jev`, TypeSafe `jev-latest`, OrcaRouter
 `typesafe/jev-1.13` and OpenRouter `typesafe/jev-1.13`. Use a `jev` group to keep
 selection inside that pool; normal quota-headroom scoring and 429 cooldown/fallback
 apply per provider/account. Configure account-specific RPM/RPS limits in the
@@ -289,7 +342,8 @@ catalog. Missing API keys are skipped. This does not guarantee independent
 upstream capacity when routers share TypeSafe infrastructure.
 
 OrcaRouter uses `/v1/systemone`; OpenRouter uses `/api/alpha/decisions`.
-The gateway preserves the native decision schema and probabilities on all three
+Cloudflare uses `/ai/run` with the native payload wrapped in `input`.
+The gateway preserves the native decision schema and probabilities on all four
 routes. Catalog loads and syncs classify these as `decision`, excluding them from
 ordinary chat. Requesty's Jev catalog entry is not enabled for this pool because
 its native decision endpoint has not been verified. RTFC supplies an idempotent

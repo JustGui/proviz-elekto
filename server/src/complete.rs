@@ -752,7 +752,12 @@ async fn call_provider(
             retry_after_ms,
             quota_scope_brand,
             is_rate_limit,
-            message: format!("HTTP {status}: {body}"),
+            message: if brand_slug.split('-').next() == Some("cloudflare") {
+                // Provider errors can echo customer input; keep it out of logs/responses.
+                format!("Cloudflare HTTP {status}")
+            } else {
+                format!("HTTP {status}: {body}")
+            },
         });
     }
 

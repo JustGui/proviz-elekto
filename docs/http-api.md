@@ -182,6 +182,16 @@ text or tool schemas return 422. Ordinary chat calls cannot select decision mode
 ```
 
 Set `TYPESAFE_API_KEY`, seed `providers/typesafe` into the existing catalog and reload.
+Cloudflare `typesafe/jev` uses this same contract, including native choice confidence
+and `decision_probabilities`, through `/ai/run` rather than chat completions. Set
+`CLOUDFLARE_API_KEY` and `CLOUDFLARE_ACCOUNT_ID` (legacy `CLOUDFARE_*` aliases
+accepted, correct spelling wins), run `proviz providers sync-cloudflare` and reload.
+Add that model's UUID to your `jev` group using the Cloudflare brand ID. It is
+eligible with `require_no_training=true`; its model page promises zero retention.
+Other Cloudflare models have no-training metadata and unknown retention. Chat uses
+the account's `/ai/v1/chat/completions`; JSON/tool capabilities vary by model.
+See [Cloudflare setup and sync](../README.md#cloudflare-workers-ai).
+
 Jev's choices must be supplied by the caller. It cannot synthesize final prose.
 
 ## Speed policy (0.24.0)

@@ -42,7 +42,19 @@ pub(super) fn parse_wire(
         if body.get("success") == Some(&json!(false)) {
             return Err(error("Cloudflare decision request failed"));
         }
-        parse(body.get("result").unwrap_or(body), &payload["input"])
+        let result = body.get("result").unwrap_or(body);
+        // Live /ai/run wraps third-party results in a completed execution envelope.
+        let result = if let Some(state) = result.get("state") {
+            if state != "Completed" {
+                return Err(error("Cloudflare decision execution did not complete"));
+            }
+            result
+                .get("result")
+                .ok_or_else(|| error("Cloudflare execution missing result"))?
+        } else {
+            result
+        };
+        parse(result, &payload["input"])
     } else {
         parse(body, payload)
     }
@@ -212,7 +224,11 @@ mod tests {
         let body = json!({"model":"jev-1.13.0", "answers":{
             "next_step":{"type":"choice","choice":"option_1","confidence":0.87,"probabilities":{"option_0":0.1,"option_1":0.9}},
             "enough_evidence":{"type":"noul","noul":0.8}},"usage":{"input_tokens":100,"output_tokens":6}});
-        for b in [body.clone(), json!({"success":true,"result":body})] {
+        for b in [
+            body.clone(),
+            json!({"success":true,"result":body.clone()}),
+            json!({"success":true,"result":{"state":"Completed","result":body}}),
+        ] {
             let parsed = parse_wire("cloudflare", &b, &p).unwrap();
             assert_eq!(
                 serde_json::from_str::<Value>(&parsed.text).unwrap(),
@@ -225,6 +241,12 @@ mod tests {
             assert_eq!((parsed.prompt_tokens, parsed.completion_tokens), (100, 6));
         }
         assert!(parse_wire("cloudflare", &json!({"success":false}), &p).is_err());
+        assert!(parse_wire(
+            "cloudflare",
+            &json!({"success":true,"result":{"state":"Failed"}}),
+            &p
+        )
+        .is_err());
     }
 
     #[test]

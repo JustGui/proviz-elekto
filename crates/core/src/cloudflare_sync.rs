@@ -134,7 +134,12 @@ fn fetch(
         .get(url)
         .bearer_auth(key)
         .send()
-        .map_err(|_| "cloudflare catalog network request failed".to_string())?
+        .map_err(|e| {
+            format!(
+                "cloudflare catalog network request failed: {:?}",
+                e.without_url()
+            )
+        })?
         .error_for_status()
         .map_err(|e| {
             format!(
