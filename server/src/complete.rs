@@ -382,7 +382,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
         };
 
         let api_key_env = candidate.api_key_env.clone().unwrap_or_default();
-        let api_key = match std::env::var(&api_key_env) {
+        let api_key = match proviz_elekto_core::env_expand::provider_env(&api_key_env) {
             Ok(k) if !k.is_empty() => k,
             _ => {
                 warn!(env = %api_key_env, "API key env var not set or empty");
@@ -409,7 +409,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
 
         let payload = if native_decision {
             match systemone::payload(&req, &candidate.model_slug) {
-                Ok(p) => p,
+                Ok(p) => systemone::wire_payload(&candidate.brand_slug, p),
                 Err(e) => {
                     reservation.candidate.take();
                     report(
@@ -752,7 +752,12 @@ async fn call_provider(
             retry_after_ms,
             quota_scope_brand,
             is_rate_limit,
-            message: format!("HTTP {status}: {body}"),
+            message: if brand_slug.split('-').next() == Some("cloudflare") {
+                // Provider errors can echo customer input; keep it out of logs/responses.
+                format!("Cloudflare HTTP {status}")
+            } else {
+                format!("HTTP {status}: {body}")
+            },
         });
     }
 
@@ -767,7 +772,7 @@ async fn call_provider(
         brand_slug,
         payload["model"].as_str().unwrap_or_default(),
     ) {
-        let mut parsed = systemone::parse(&body, payload)?;
+        let mut parsed = systemone::parse_wire(brand_slug, &body, payload)?;
         parsed.remaining_requests = remaining_requests;
         parsed.remaining_tokens = remaining_tokens;
         return Ok(parsed);

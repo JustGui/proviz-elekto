@@ -19,6 +19,7 @@ const AUTO_SYNCED_PROVIDERS: &[&str] = &[
     "nousportal",
     "orcarouter",
     "tokenhub",
+    "cloudflare",
 ];
 
 fn main() {

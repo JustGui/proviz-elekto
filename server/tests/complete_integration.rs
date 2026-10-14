@@ -1026,3 +1026,273 @@ async fn complete_preserves_provider_error_when_pin_is_exhausted() {
         .unwrap()
         .contains("Regional routing requires account access"));
 }
+
+#[tokio::test]
+async fn cloudflare_jev_group_accepts_no_training_and_preserves_native_probabilities() {
+    use proviz_elekto_core::{
+        builtin_providers::load_from_dir,
+        models::{Group, GroupMember},
+    };
+    let root = std::env::temp_dir().join(format!("proviz-cloudflare-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("cloudflare")).unwrap();
+    async fn run(Json(req): Json<Value>) -> Json<Value> {
+        assert_eq!(req["model"], "typesafe/jev");
+        assert!(req.get("messages").is_none());
+        assert!(req.get("questions").is_none());
+        assert_eq!(
+            req["input"]["questions"]["decision"]["criteria"]["option_1"]["value"],
+            "duplicate"
+        );
+        Json(
+            json!({"success":true,"result":{"state":"Completed","result":{"model":"jev-1.13.0","answers":{
+            "decision":{"type":"choice","choice":"option_1","confidence":0.96,
+                "probabilities":{"option_0":0.02,"option_1":0.97,"option_2":0.01}}},
+            "usage":{"input_tokens":200,"output_tokens":30}}}}),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, Router::new().route("/ai/run", post(run)))
+            .await
+            .unwrap();
+    });
+    const KEY: &str = "PROVIZ_TEST_CLOUDFLARE_JEV";
+    std::env::set_var(KEY, "synthetic-key");
+    std::fs::write(root.join("cloudflare/brand.json"), json!({"slug":"cloudflare","name":"Cloudflare", "api_key_env":KEY,"base_url":format!("http://{addr}/ai/v1")}).to_string()).unwrap();
+    std::fs::write(
+        root.join("cloudflare/models.json"),
+        include_str!("../../providers/cloudflare/jev.json"),
+    )
+    .unwrap();
+    let storage = Arc::new(SqliteStorage::open_in_memory().unwrap());
+    load_from_dir(storage.as_ref(), root.to_str().unwrap(), false, false).unwrap();
+    let model = storage.load_models().unwrap().remove(0);
+    assert_eq!(model.category.as_deref(), Some("decision"));
+    assert_eq!(model.trains_on_data, Some(false));
+    assert_eq!(model.retains_data, Some(false));
+    let group: Group = serde_json::from_value(json!({"id":Uuid::new_v4(),"slug":"cloudflare-jev", "name":"Cloudflare Jev","is_active":true,"created_at":Utc::now(),"sticky_model":false})).unwrap();
+    storage.insert_group(&group).unwrap();
+    storage
+        .insert_group_member(&GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id: model.id,
+            priority: 0,
+            is_enabled: true,
+        })
+        .unwrap();
+    let selector = Arc::new(Selector::new(storage));
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let client = reqwest::Client::new();
+    let req = json!({"step":"decision","group_name":"cloudflare-jev","categories":["decision"],"require_no_training":true,"requires_json_mode":true,
+        "messages":[{"role":"user","content":"Both synthetic statements describe the same fact."}],
+        "response_format":{"type":"json_schema","json_schema":{"name":"decision","strict":true,"schema":{
+            "type":"object","additionalProperties":false,"properties":{"decision":{"type":"string","enum":["distinct","duplicate","more_specific"]}},"required":["decision"]}}}});
+    let response = client
+        .post(format!("{url}/complete"))
+        .json(&req)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["brand"], "cloudflare");
+    assert_eq!(body["model"], "typesafe/jev");
+    assert_eq!(
+        serde_json::from_str::<Value>(body["text"].as_str().unwrap()).unwrap(),
+        json!({"decision":"duplicate"})
+    );
+    assert_eq!(
+        body["decision_probabilities"]["decision"]["confidence"],
+        0.96
+    );
+    assert_eq!(
+        body["decision_probabilities"]["decision"]["probabilities"]["option_1"],
+        0.97
+    );
+    assert!((body["cost_usd"].as_f64().unwrap() - 0.0000084).abs() < 1e-12);
+    let chat = client
+        .post(format!("{url}/complete"))
+        .json(&json!({"step":"chat","group_name":"cloudflare-jev","messages":[]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(chat.status(), reqwest::StatusCode::CONFLICT);
+    std::fs::remove_dir_all(root).unwrap();
+    std::env::remove_var(KEY);
+}
+
+#[tokio::test]
+async fn cloudflare_chat_uses_openai_payload_and_token_accounting() {
+    async fn chat(Json(req): Json<Value>) -> Json<Value> {
+        assert_eq!(req["model"], "mock-7b");
+        assert_eq!(req["messages"][0]["content"], "Say hello.");
+        assert!(req.get("input").is_none());
+        assert!(req.get("provider").is_none());
+        Json(
+            json!({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}),
+        )
+    }
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route("/ai/v1/chat/completions", post(chat)),
+        )
+        .await
+        .unwrap();
+    });
+    let selector = seed_typed_catalog(format!("http://{addr}/ai/v1"), "cloudflare", Some("text"));
+    let storage = selector.storage();
+    let mut model = storage.load_models().unwrap().remove(0);
+    model.trains_on_data = Some(false);
+    storage.insert_model(&model).unwrap();
+    const KEY: &str = "PROVIZ_TEST_CLOUDFLARE_CHAT";
+    storage
+        .insert_brand_api_key(&proviz_elekto_core::models::BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: model.brand_id,
+            api_key_env: KEY.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    std::env::set_var(KEY, "synthetic-key");
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let response = reqwest::Client::new().post(format!("{url}/complete")).json(&json!({"step":"chat","require_no_training":true,"messages":[{"role":"user","content":"Say hello."}]})).send().await.unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: Value = response.json().await.unwrap();
+    assert_eq!(body["text"], "hello");
+    assert_eq!(body["prompt_tokens"], 10);
+    assert_eq!(body["completion_tokens"], 2);
+    assert!(body.get("decision_probabilities").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cloudflare_sync_paginates_disables_missing_and_preserves_other_provider_flags() {
+    use axum::{
+        extract::{Query, State},
+        routing::get,
+    };
+    use std::{
+        collections::HashMap,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+    async fn models(
+        State(phase): State<Arc<AtomicUsize>>,
+        Query(q): Query<HashMap<String, String>>,
+    ) -> Json<Value> {
+        let n = match phase.load(Ordering::SeqCst) {
+            0 => 12,
+            1 => 11,
+            _ => 0,
+        };
+        if q.contains_key("format") {
+            return Json(
+                json!({"data":(0..n).map(|i| json!({"id":format!("@cf/test/chat-{i}"),"supported_features":["json_mode"]})).collect::<Vec<_>>()}),
+            );
+        }
+        // A deliberately inconsistent total_count matches the live API's account filtering.
+        let page = q.get("page").unwrap().parse::<usize>().unwrap();
+        let items: Vec<_> = if page == 1 {
+            (0..n.min(6)).collect()
+        } else if page == 2 {
+            (6..n).collect()
+        } else {
+            vec![]
+        };
+        Json(
+            json!({"success":true,"result":items.into_iter().map(|i| json!({"name":format!("@cf/test/chat-{i}"),"task":{"name":"Text Generation"},"properties":[{"property_id":"context_window","value":"32000"}]})).collect::<Vec<_>>(),"result_info":{"total_count":326}}),
+        )
+    }
+    let phase = Arc::new(AtomicUsize::new(0));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new()
+        .route("/ai/models/search", get(models))
+        .with_state(phase.clone());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let selector = seed_catalog("http://example.test/v1".into());
+    let storage = selector.storage();
+    let mut other = storage.load_models().unwrap().remove(0);
+    other.trains_on_data = Some(true);
+    storage.insert_model(&other).unwrap();
+    let root = std::env::temp_dir().join(format!("proviz-cf-sync-{}", Uuid::new_v4()));
+    std::fs::create_dir_all(root.join("cloudflare")).unwrap();
+    std::fs::create_dir_all(root.join("mockbrand")).unwrap();
+    std::fs::write(
+        root.join("cloudflare/brand.json"),
+        include_str!("../../providers/cloudflare/brand.json"),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("mockbrand/brand.json"),
+        json!({"slug":"mockbrand","name":"Mock"}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("mockbrand/models.json"),
+        json!([{"slug":"mock-7b","trains_on_data":false}]).to_string(),
+    )
+    .unwrap();
+    std::env::set_var("CLOUDFLARE_API_KEY", "synthetic-sync-key");
+    for phase_number in 0..3 {
+        phase.store(phase_number, Ordering::SeqCst);
+        let s = storage.clone();
+        let dir = root.to_str().unwrap().to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            proviz_elekto_core::cloudflare_sync::sync(
+                s.as_ref(),
+                &dir,
+                &format!("http://{addr}/ai"),
+            )
+        })
+        .await
+        .unwrap();
+        match phase_number {
+            0 => assert_eq!(result.unwrap().fetched, 13),
+            1 => assert_eq!(result.unwrap().models_disabled, 1),
+            _ => assert!(result.is_err()),
+        }
+    }
+    let models = storage.load_models().unwrap();
+    let missing = models
+        .iter()
+        .find(|m| m.slug == "@cf/test/chat-11")
+        .unwrap();
+    assert!(!missing.is_enabled);
+    let chat = models.iter().find(|m| m.slug == "@cf/test/chat-0").unwrap();
+    assert!(chat.is_enabled);
+    assert_eq!(chat.trains_on_data, Some(false));
+    assert_eq!(chat.retains_data, None);
+    assert_eq!(
+        models
+            .iter()
+            .find(|m| m.id == other.id)
+            .unwrap()
+            .trains_on_data,
+        Some(true)
+    );
+    assert_eq!(
+        models
+            .iter()
+            .find(|m| m.slug == "typesafe/jev")
+            .unwrap()
+            .category
+            .as_deref(),
+        Some("decision")
+    );
+    let last_good: Vec<Value> =
+        serde_json::from_slice(&std::fs::read(root.join("cloudflare/models.json")).unwrap())
+            .unwrap();
+    assert_eq!(last_good.len(), 12);
+    std::fs::remove_dir_all(root).unwrap();
+    std::env::remove_var("CLOUDFLARE_API_KEY");
+}

@@ -1,0 +1,10 @@
+{
+  "slug": "cloudflare",
+  "name": "Cloudflare Workers AI",
+  "api_key_env": "CLOUDFLARE_API_KEY",
+  "price_currency": "USD",
+  "base_url": "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/v1",
+  "endpoints": {
+    "chat": "/chat/completions"
+  }
+}
