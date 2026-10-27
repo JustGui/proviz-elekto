@@ -297,5 +297,39 @@
     "price_output_per_1m": 0.3,
     "trains_on_data": false,
     "retains_data": true
+  },
+  {
+    "slug": "voxtral-mini-transcribe-3",
+    "display_name": "Voxtral Mini Transcribe 3 (batch)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "price_input_per_1m": 0.0035,
+    "price_output_per_1m": 0.0,
+    "diarization": true,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": false,
+    "base_url": "https://api.mistral.ai",
+    "trains_on_data": false,
+    "retains_data": true
+  },
+  {
+    "slug": "voxtral-small-transcribe-3",
+    "display_name": "Voxtral Small Transcribe 3 (batch)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "price_input_per_1m": 0.004,
+    "price_output_per_1m": 0.0,
+    "diarization": true,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": false,
+    "base_url": "https://api.mistral.ai",
+    "trains_on_data": false,
+    "retains_data": true
   }
 ]

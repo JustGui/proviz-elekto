@@ -1296,3 +1296,41 @@ async fn cloudflare_sync_paginates_disables_missing_and_preserves_other_provider
     std::fs::remove_dir_all(root).unwrap();
     std::env::remove_var("CLOUDFLARE_API_KEY");
 }
+
+// Use the shipped Mistral catalog and an in-memory DB; no provider calls or keys.
+#[tokio::test]
+async fn voxtral3_batch_catalog_exposes_native_diarization_without_duplicate_v1() {
+    use proviz_elekto_core::builtin_providers::load_provider_from_dir;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers");
+    load_provider_from_dir(&storage, root.to_str().unwrap(), "mistral").unwrap();
+    let models = storage.load_models().unwrap();
+    for (slug, price) in [
+        ("voxtral-mini-transcribe-3", 0.0035),
+        ("voxtral-small-transcribe-3", 0.004),
+    ] {
+        let model = models.iter().find(|m| m.slug == slug).unwrap();
+        assert_eq!(model.price_input_per_1m, Some(price));
+        assert_eq!(model.category.as_deref(), Some("audio"));
+    }
+    let selector = Arc::new(Selector::new(Arc::new(storage)));
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    for slug in ["voxtral-mini-transcribe-3", "voxtral-small-transcribe-3"] {
+        let response = reqwest::Client::new()
+            .get(format!("{url}/stt/model-info"))
+            .query(&[("provider", format!("mistral/{slug}"))])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["base_url"], "https://api.mistral.ai");
+        assert_eq!(body["stt_path"], "/v1/audio/transcriptions");
+        assert_eq!(body["diarization"], true);
+        assert_eq!(body["http_batch"], true);
+        assert_eq!(body["streaming"], false);
+        assert_eq!(body["word_timestamps"], false);
+        assert_eq!(body["api_key_env"], "MISTRAL_API_KEY");
+    }
+}
