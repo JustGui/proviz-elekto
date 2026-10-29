@@ -12,6 +12,7 @@
     "avg_latency_ms": 300,
     "rps_limit": 80,
     "tpm_limit": 6000000,
-    "notes": "Finite enum/boolean decisions only via /complete JSON-schema adapter. 255 choices/question. Conservative 32k context for state plus longest question; aggregate provider limit 64k. Account limits: 100k tokens/s and 80 requests/s. Pricing: https://docs.typesafe.ai/models. Privacy status unspecified."
+    "trains_on_data": false,
+    "notes": "Finite enum/boolean decisions only via /complete JSON-schema adapter. 255 choices/question. Conservative 32k context for state plus longest question; aggregate provider limit 64k. Account limits: 100k tokens/s and 80 requests/s. Pricing: https://docs.typesafe.ai/models. Training disabled in account data settings (operator-confirmed 2026-10-30). Privacy policy: https://typesafe.ai/legal/privacy-policy."
   }
 ]
