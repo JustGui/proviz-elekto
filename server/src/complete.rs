@@ -206,6 +206,12 @@ impl CompleteRequest {
         let obj = body.as_object_mut().expect("payload is object");
         if let Some(t) = self.temperature {
             obj.insert("temperature".into(), json!(t));
+            // Greedy decoding: Mistral rejects temperature 0 unless top_p is exactly 1
+            // ("top_p must be 1 when using greedy sampling") and its default is lower.
+            // top_p 1 is the OpenAI-compatible default, so this is a no-op elsewhere.
+            if t == 0.0 {
+                obj.insert("top_p".into(), json!(1));
+            }
         }
         if let Some(mt) = self.max_tokens {
             obj.insert("max_tokens".into(), json!(mt));
@@ -779,7 +785,7 @@ async fn call_provider(
     }
     let message = &body["choices"][0]["message"];
     let finish_reason = normalize_finish_reason(body["choices"][0]["finish_reason"].as_str());
-    let text = message["content"].as_str().unwrap_or_default().to_string();
+    let text = content_text(&message["content"]);
     let tool_calls = match &message["tool_calls"] {
         Value::Null => None,
         v => Some(v.clone()),
@@ -1241,5 +1247,38 @@ mod finish_reason_tests {
         assert_eq!(n(Some("content_filter")).as_deref(), Some("content_filter"));
         assert_eq!(n(Some("  ")), None);
         assert_eq!(n(None), None);
+    }
+}
+
+/// `message.content` is a string for most providers; reasoning models (Mistral Large 4,
+/// Magistral) return an array of chunks `[{"type":"thinking",...},{"type":"text","text":...}]`.
+/// Only `text` chunks are the answer; reasoning chunks are dropped.
+fn content_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(chunks) => chunks
+            .iter()
+            .filter(|c| c["type"].as_str().is_none_or(|t| t == "text"))
+            .filter_map(|c| c["text"].as_str().or_else(|| c.as_str()))
+            .collect(),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod content_text_tests {
+    use super::content_text;
+    use serde_json::json;
+
+    #[test]
+    fn string_and_chunked_content() {
+        assert_eq!(content_text(&json!("{\"ok\": true}")), "{\"ok\": true}");
+        let chunked = json!([
+            {"type": "thinking", "thinking": [{"type": "text", "text": "reasoning..."}]},
+            {"type": "text", "text": "{\"ok\": "},
+            {"type": "text", "text": "true}"}
+        ]);
+        assert_eq!(content_text(&chunked), "{\"ok\": true}");
+        assert_eq!(content_text(&json!(null)), "");
     }
 }
