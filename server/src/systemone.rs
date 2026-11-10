@@ -66,6 +66,7 @@ fn error(message: &str) -> ProviderError {
         quota_scope_brand: false,
         message: message.into(),
         is_rate_limit: false,
+        reason: super::FailureReason::InvalidResponse,
     }
 }
 

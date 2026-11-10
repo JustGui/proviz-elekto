@@ -123,6 +123,17 @@ in-flight counts, a five-minute 429 fraction, learned RPM, and p50/p95 elapsed t
 from retained successful samples. Percentiles describe completed calls, not
 size-normalized predictions.
 
+`GET /metrics` is a Prometheus scrape endpoint with
+`proviz_provider_calls_total{brand,model,step,group,outcome}`,
+`proviz_provider_failures_total{brand,model,step,group,reason}` and
+`proviz_complete_requests_total{step,group,result}`. A failed upstream call is classified as
+`credits_exhausted` (HTTP 402 or billing wording), `quota`, `rate_limited`, `auth`,
+`bad_request`, `timeout`, `server`, `network`, `invalid_response` or `config`. The same reason
+appears as `reason` on `all_providers_failed` (502) and `all_models_exhausted` (409) bodies.
+Error `detail` carries only brand, status, reason and a token-shaped provider code: provider
+bodies can echo customer input and never leave the gateway. `credits_exhausted` backs the whole
+key off for the account-scoped cooldown, since every model behind an empty balance fails alike.
+
 Pinned benchmark calls fail fast by default, even with `max_wait_ms`. Enable
 `pin_wait: true` plus `max_wait_ms` to wait once when the retry hint fits the budget.
 

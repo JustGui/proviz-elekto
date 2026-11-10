@@ -1021,10 +1021,110 @@ async fn complete_preserves_provider_error_when_pin_is_exhausted() {
     assert_eq!(response.status(), reqwest::StatusCode::BAD_GATEWAY);
     let body: Value = response.json().await.unwrap();
     assert_eq!(body["error"], "all_providers_failed");
-    assert!(body["detail"]
-        .as_str()
+    assert_eq!(body["reason"], "auth");
+    // Status and reason survive; the provider body never leaves the gateway.
+    let detail = body["detail"].as_str().unwrap();
+    assert_eq!(detail, "mockbrand HTTP 403 (auth)");
+    assert!(!detail.contains("Regional routing"));
+}
+
+/// A 402 from the provider is classified `credits_exhausted`, blocks the sibling model on the
+/// same key (one call, not two), keeps the body out of the response, and is counted in
+/// `/metrics`.
+#[tokio::test]
+async fn credits_exhausted_is_classified_blocks_the_key_and_is_exported() {
+    use proviz_elekto_core::models::BrandApiKey;
+    const KEY: &str = "PROVIZ_TEST_CREDITS_KEY";
+    std::env::set_var(KEY, "synthetic-key");
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let provider = Router::new().route(
+        "/v1/chat/completions",
+        post(move || {
+            let count = count.clone();
+            async move {
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (
+                    axum::http::StatusCode::PAYMENT_REQUIRED,
+                    Json(json!({"error":{"code":"insufficient_credits",
+                        "message":"CANARY-BODY-7f3a balance empty"}})),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, provider).await.unwrap();
+    });
+    let selector = seed_typed_catalog(format!("http://{addr}/v1"), "creditbrand", None);
+    let storage = selector.storage();
+    let brand = storage.load_brands().unwrap().remove(0);
+    let mut sibling = storage.load_models().unwrap().remove(0);
+    sibling.id = Uuid::new_v4();
+    sibling.slug = "sibling".into();
+    storage.insert_model(&sibling).unwrap();
+    storage
+        .insert_rule(&SelectionRule {
+            id: Uuid::new_v4(),
+            step: "chat".into(),
+            model_id: sibling.id,
+            priority: 1,
+            max_ctx_tokens: None,
+            requires_fn_call: false,
+            is_enabled: true,
+        })
+        .unwrap();
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: KEY.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{url}/complete"))
+        .json(
+            &json!({"step":"chat","group_name":null,"estimated_tokens":100,
+            "messages":[{"role":"user","content":"Synthetic test"}]}),
+        )
+        .send()
+        .await
+        .unwrap();
+    let status = response.status();
+    let text = response.text().await.unwrap();
+    assert!(!text.contains("CANARY-BODY"), "{text}");
+    // The empty key is backed off for the Auth cooldown, so the sibling is not eligible and the
+    // caller gets the exhaustion 409 - still naming the cause.
+    assert_eq!(status, reqwest::StatusCode::CONFLICT, "{text}");
+    let body: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(body["error"], "all_models_exhausted");
+    assert_eq!(body["reason"], "credits_exhausted");
+    // The account-scoped block skipped the sibling behind the same empty key.
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let metrics = client
+        .get(format!("{url}/metrics"))
+        .send()
+        .await
         .unwrap()
-        .contains("Regional routing requires account access"));
+        .text()
+        .await
+        .unwrap();
+    assert!(metrics.contains(
+        "proviz_provider_failures_total{brand=\"creditbrand\",model=\"mock-7b\",step=\"chat\",group=\"none\",reason=\"credits_exhausted\"} 1"
+    ), "{metrics}");
+    assert!(metrics.contains(
+        "proviz_provider_calls_total{brand=\"creditbrand\",model=\"mock-7b\",step=\"chat\",group=\"none\",outcome=\"error\"} 1"
+    ), "{metrics}");
+    assert!(metrics.contains("proviz_complete_requests_total{step=\"chat\",group=\"none\",result=\"all_models_exhausted\"}"), "{metrics}");
+    assert!(!metrics.contains("CANARY-BODY"));
 }
 
 #[tokio::test]
