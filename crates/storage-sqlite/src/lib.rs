@@ -55,6 +55,7 @@ impl SqliteStorage {
         s.migrate_model_catalog_fields()?;
         s.migrate_privacy_fields()?;
         s.migrate_group_weights()?;
+        s.migrate_group_member_dates()?;
         s.migrate_price_currency()?;
         s.migrate_cached_input_price()?;
         s.migrate_speed_policy()?;
@@ -113,6 +114,24 @@ impl SqliteStorage {
                 "ALTER TABLE pz_groups ADD COLUMN sticky_model INTEGER NOT NULL DEFAULT 0;",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// When a model joined a group; NULL for memberships older than the column.
+    fn migrate_group_member_dates(&self) -> Result<(), StorageError> {
+        let conn = self.conn.lock().unwrap();
+        let exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('pz_group_members') WHERE name='created_at'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if !exists {
+            conn.execute_batch("ALTER TABLE pz_group_members ADD COLUMN created_at TEXT;")
+                .map_err(|e| StorageError::Database(e.to_string()))?;
         }
         Ok(())
     }
@@ -853,8 +872,8 @@ impl CatalogStorage for SqliteStorage {
     fn insert_group_member(&self, member: &GroupMember) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO pz_group_members (id,group_id,model_id,priority,is_enabled)
-             VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO pz_group_members (id,group_id,model_id,priority,is_enabled,created_at)
+             VALUES (?1,?2,?3,?4,?5,datetime('now'))
              ON CONFLICT(group_id,model_id) DO UPDATE SET
                priority=excluded.priority, is_enabled=excluded.is_enabled",
             params![
@@ -1164,6 +1183,7 @@ CREATE TABLE IF NOT EXISTS pz_group_members (
     model_id   TEXT NOT NULL REFERENCES pz_models(id) ON DELETE CASCADE,
     priority   INTEGER NOT NULL DEFAULT 0,
     is_enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
     UNIQUE(group_id, model_id)
 );
 
@@ -1262,6 +1282,66 @@ mod tests {
             retains_data: None,
             price_cached_input_per_1m: None,
         }
+    }
+
+    #[test]
+    fn group_membership_is_dated_once() {
+        let s = db();
+        let brand = make_brand("b");
+        s.insert_brand(&brand).unwrap();
+        let model = make_model(brand.id, "m", 8000);
+        s.insert_model(&model).unwrap();
+        let group = Group {
+            id: Uuid::new_v4(),
+            slug: "detector".into(),
+            name: "detector".into(),
+            description: None,
+            is_active: true,
+            created_at: Utc::now(),
+            cost_weight_override: None,
+            latency_weight_override: None,
+            quality_weight_override: None,
+            sticky_model: false,
+            max_latency_ms: None,
+            max_latency_ratio: None,
+        };
+        s.insert_group(&group).unwrap();
+        let mut member = GroupMember {
+            id: Uuid::new_v4(),
+            group_id: group.id,
+            model_id: model.id,
+            priority: 10,
+            is_enabled: true,
+        };
+        s.insert_group_member(&member).unwrap();
+        let read = |s: &SqliteStorage| -> Option<String> {
+            s.conn
+                .lock()
+                .unwrap()
+                .query_row("SELECT created_at FROM pz_group_members", [], |r| r.get(0))
+                .unwrap()
+        };
+        let first = read(&s).expect("a new membership is dated");
+        conn_backdate(&s);
+        member.priority = 20;
+        s.insert_group_member(&member).unwrap();
+        assert_eq!(
+            read(&s).as_deref(),
+            Some("2000-01-01 00:00:00"),
+            "an upsert keeps the original date"
+        );
+        assert!(!first.is_empty());
+    }
+
+    fn conn_backdate(s: &SqliteStorage) {
+        s.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE pz_group_members SET created_at='2000-01-01 00:00:00'",
+                [],
+            )
+            .unwrap();
     }
 
     fn make_rule(step: &str, model_id: Uuid, priority: i16) -> SelectionRule {
