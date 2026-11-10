@@ -48,6 +48,7 @@ impl PostgresStorage {
         s.migrate_model_catalog_fields()?;
         s.migrate_privacy_fields()?;
         s.migrate_group_weights()?;
+        s.migrate_group_member_dates()?;
         s.migrate_price_currency()?;
         s.migrate_cached_input_price()?;
         s.migrate_speed_policy()?;
@@ -122,6 +123,19 @@ impl PostgresStorage {
                  ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS latency_weight_override DOUBLE PRECISION;\
                  ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS quality_weight_override DOUBLE PRECISION;\
                  ALTER TABLE pz_groups ADD COLUMN IF NOT EXISTS sticky_model BOOLEAN NOT NULL DEFAULT FALSE;",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    /// When a model joined a group. Rows that existed before this column keep NULL (unknown);
+    /// an upsert of an existing membership never changes its date.
+    fn migrate_group_member_dates(&self) -> Result<(), StorageError> {
+        let mut client = self.connected_client()?;
+        client
+            .batch_execute(
+                "ALTER TABLE pz_group_members ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ;\
+                 ALTER TABLE pz_group_members ALTER COLUMN created_at SET DEFAULT NOW();",
             )
             .map_err(|e| StorageError::Database(e.to_string()))?;
         Ok(())
@@ -966,6 +980,7 @@ CREATE TABLE IF NOT EXISTS pz_group_members (
     model_id   UUID     NOT NULL REFERENCES pz_models(id) ON DELETE CASCADE,
     priority   SMALLINT NOT NULL DEFAULT 0,
     is_enabled BOOLEAN  NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (group_id, model_id)
 );
 
