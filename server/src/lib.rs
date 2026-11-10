@@ -24,6 +24,8 @@ use uuid::Uuid;
 
 pub mod batch;
 pub mod complete;
+pub mod failure;
+pub mod metrics;
 
 pub struct AppState {
     pub selector: Arc<Selector>,
@@ -43,6 +45,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/report", post(handle_report))
         .route("/complete", post(handle_complete))
         .route("/health", get(handle_health))
+        .route("/metrics", get(handle_prometheus_metrics))
         .route("/metrics/models", get(handle_model_metrics))
         .route("/catalog/reload", post(handle_reload))
         .route("/catalog/seed", post(handle_catalog_seed))
@@ -55,6 +58,17 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/fx/rates", get(handle_fx_rates))
         .with_state(state)
         .layer(tower_http::cors::CorsLayer::permissive())
+}
+
+/// Prometheus scrape endpoint: provider call/failure counters and `/complete` results.
+async fn handle_prometheus_metrics() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        metrics::METRICS.render(),
+    )
 }
 
 async fn handle_model_metrics(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {

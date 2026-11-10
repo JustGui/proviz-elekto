@@ -18,6 +18,8 @@ use serde_json::{json, Value};
 use tracing::{debug, warn};
 use uuid::Uuid;
 
+use crate::failure::{self, FailureReason};
+use crate::metrics::{CallLabels, CompleteResult, METRICS};
 use crate::{apply_report, select_with_wait, AppState};
 
 #[path = "systemone.rs"]
@@ -309,11 +311,33 @@ impl Drop for CompletionReservation {
 }
 
 /// Drive selection → provider call → report. On provider failure, the failed model is excluded
-/// and the next-best candidate is selected, up to `MAX_PROVIDER_ATTEMPTS`.
+/// and the next-best candidate is selected, up to `MAX_PROVIDER_ATTEMPTS`. Every request's final
+/// result is counted in `proviz_complete_requests_total`.
 pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::response::Response {
+    let step = req.step.clone();
+    let group = req.group_name.clone().unwrap_or_default();
+    let response = run_complete_inner(state, req).await;
+    let result = match response.status().as_u16() {
+        200 => CompleteResult::Ok,
+        409 => CompleteResult::AllModelsExhausted,
+        502 => CompleteResult::AllProvidersFailed,
+        404 => CompleteResult::GroupNotFound,
+        422 => CompleteResult::BadRequest,
+        _ => CompleteResult::Error,
+    };
+    METRICS.record_complete(&step, &group, result);
+    response
+}
+
+async fn run_complete_inner(
+    state: Arc<AppState>,
+    req: CompleteRequest,
+) -> axum::response::Response {
+    let group_label = req.group_name.as_deref().unwrap_or_default();
     let timeout = Duration::from_secs(req.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
     let mut exclude_ids = req.exclude_ids.clone();
     let mut last_error = String::from("no provider attempted");
+    let mut last_reason: Option<FailureReason> = None;
 
     for attempt in 0..MAX_PROVIDER_ATTEMPTS {
         let select_req = req.to_select_request(exclude_ids.clone());
@@ -324,7 +348,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     retry_after_ms,
                     ..
                 },
-            ) if retry_after_ms > 0 => return select_error_to_response(e),
+            ) if retry_after_ms > 0 => return select_error_to_response(e, last_reason),
             Err(_) if attempt > 0 => {
                 // Exhaustion after a provider failure must preserve the useful cause,
                 // rather than looking like a model eligibility failure before a call.
@@ -332,13 +356,20 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                     StatusCode::BAD_GATEWAY,
                     Json(json!({
                         "error": "all_providers_failed", "detail": last_error,
+                        "reason": last_reason.map(FailureReason::as_str),
                     })),
                 )
                     .into_response();
             }
-            Err(e) => return select_error_to_response(e),
+            Err(e) => return select_error_to_response(e, last_reason),
         };
 
+        let labels = CallLabels {
+            brand: &candidate.brand_slug,
+            model: &candidate.model_slug,
+            step: &req.step,
+            group: group_label,
+        };
         let mut reservation = CompletionReservation {
             selector: state.selector.clone(),
             candidate: Some(candidate.clone()),
@@ -376,6 +407,8 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
+                METRICS.record_failure(&labels, FailureReason::Config);
+                last_reason = Some(FailureReason::Config);
                 last_error = format!("no endpoint for brand '{}'", candidate.brand_slug);
                 continue;
             }
@@ -402,6 +435,8 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 )
                 .await;
                 exclude_ids.push(candidate.model_id);
+                METRICS.record_failure(&labels, FailureReason::Auth);
+                last_reason = Some(FailureReason::Auth);
                 last_error = format!("API key env var '{api_key_env}' not set");
                 continue;
             }
@@ -461,6 +496,7 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
             Ok(parsed) => {
                 let response_time_ms = Some(call_started.elapsed().as_millis() as u32);
                 reservation.candidate.take();
+                METRICS.record_success(&labels);
                 let cost = report(
                     &state,
                     &candidate,
@@ -516,15 +552,26 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
                 is_rate_limit,
                 retry_after_ms,
                 quota_scope_brand,
+                reason,
             }) => {
                 warn!(
                     model = %candidate.model_slug,
                     brand = %candidate.brand_slug,
+                    step = %req.step,
                     error = %message,
+                    reason = %reason,
                     is_rate_limit,
                     "complete: provider call failed — trying next candidate"
                 );
-                let (outcome, et) = if is_rate_limit {
+                METRICS.record_failure(&labels, reason);
+                last_reason = Some(reason);
+                // An empty balance fails every model behind the key the same way, so back the
+                // whole key off (Auth is account-scoped) instead of a per-model rate limit.
+                let credits = reason == FailureReason::CreditsExhausted;
+                let is_rate_limit = is_rate_limit && !credits;
+                let (outcome, et) = if credits {
+                    (ReportOutcome::Error, RateLimitErrorType::Auth)
+                } else if is_rate_limit {
                     (ReportOutcome::RateLimit, RateLimitErrorType::Rpm)
                 } else {
                     (ReportOutcome::Error, RateLimitErrorType::Other)
@@ -581,12 +628,18 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
         Json(json!({
             "error": "all_providers_failed",
             "detail": last_error,
+            "reason": last_reason.map(FailureReason::as_str),
         })),
     )
         .into_response()
 }
 
-fn select_error_to_response(e: proviz_elekto_core::error::ProvizError) -> axum::response::Response {
+/// `reason` is the failure of an earlier attempt in the same request, when there was one: it
+/// tells a caller that a 409 follows e.g. an empty balance rather than ordinary backpressure.
+fn select_error_to_response(
+    e: proviz_elekto_core::error::ProvizError,
+    reason: Option<FailureReason>,
+) -> axum::response::Response {
     use proviz_elekto_core::error::ProvizError;
     match e {
         ProvizError::AllModelsExhausted {
@@ -600,6 +653,7 @@ fn select_error_to_response(e: proviz_elekto_core::error::ProvizError) -> axum::
                 "step": step,
                 "tried": tried,
                 "retry_after_ms": retry_after_ms,
+                "reason": reason.map(FailureReason::as_str),
             })),
         )
             .into_response(),
@@ -686,8 +740,11 @@ fn parse_retry_after(value: &str) -> Option<u64> {
 struct ProviderError {
     retry_after_ms: Option<u64>,
     quota_scope_brand: bool,
+    /// Safe for logs and responses: status, reason and a token-shaped provider code, never a
+    /// provider body (bodies can echo customer input) or a URL (can carry an account id).
     message: String,
     is_rate_limit: bool,
+    reason: FailureReason,
 }
 
 async fn call_provider(
@@ -709,11 +766,19 @@ async fn call_provider(
     if brand_slug == "orcarouter" {
         builder = builder.header("X-OrcaRouter-Include-Cost", "true");
     }
-    let resp = builder.send().await.map_err(|e| ProviderError {
-        retry_after_ms: None,
-        quota_scope_brand: false,
-        is_rate_limit: false,
-        message: e.to_string(),
+    let resp = builder.send().await.map_err(|e| {
+        let reason = if e.is_timeout() {
+            FailureReason::Timeout
+        } else {
+            FailureReason::Network
+        };
+        ProviderError {
+            retry_after_ms: None,
+            quota_scope_brand: false,
+            is_rate_limit: false,
+            message: format!("{brand_slug} request failed ({reason})"),
+            reason,
+        }
     })?;
 
     let status = resp.status();
@@ -748,16 +813,15 @@ async fn call_provider(
             || (brand_slug.split('-').next() == Some("typesafe") && status.as_u16() == 529)
             || body.contains("rate_limit_exceeded")
             || body.contains("tokens per minute");
+        // Provider errors can echo customer input: the body is only classified, never kept.
+        let reason = failure::classify_http(brand_slug, status.as_u16(), &body);
+        let code = failure::provider_code(&body);
         return Err(ProviderError {
             retry_after_ms,
             quota_scope_brand,
             is_rate_limit,
-            message: if brand_slug.split('-').next() == Some("cloudflare") {
-                // Provider errors can echo customer input; keep it out of logs/responses.
-                format!("Cloudflare HTTP {status}")
-            } else {
-                format!("HTTP {status}: {body}")
-            },
+            message: failure::describe_http(brand_slug, status.as_u16(), reason, code.as_deref()),
+            reason,
         });
     }
 
@@ -765,7 +829,8 @@ async fn call_provider(
         retry_after_ms: None,
         quota_scope_brand: false,
         is_rate_limit: false,
-        message: format!("invalid JSON response: {e}"),
+        message: format!("{brand_slug} invalid JSON response: {}", e.without_url()),
+        reason: FailureReason::InvalidResponse,
     })?;
 
     if proviz_elekto_core::decision_models::uses_systemone(
