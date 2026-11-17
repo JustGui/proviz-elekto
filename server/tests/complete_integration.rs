@@ -1434,3 +1434,52 @@ async fn voxtral3_batch_catalog_exposes_native_diarization_without_duplicate_v1(
         assert_eq!(body["api_key_env"], "MISTRAL_API_KEY");
     }
 }
+
+// Use the shipped Gradium and ElevenLabs catalogs and an in-memory DB; no provider calls or keys.
+#[tokio::test]
+async fn gradium_stt_declares_its_own_wire_format_and_no_diarization() {
+    use proviz_elekto_core::builtin_providers::load_provider_from_dir;
+    let storage = SqliteStorage::open_in_memory().unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers");
+    for brand in ["gradium", "elevenlabs"] {
+        load_provider_from_dir(&storage, root.to_str().unwrap(), brand).unwrap();
+    }
+    let models = storage.load_models().unwrap();
+    let gradium: Vec<_> = models.iter().filter(|m| m.slug == "default").collect();
+    assert_eq!(gradium.len(), 2, "batch and streaming variants");
+    assert!(gradium
+        .iter()
+        .all(|m| m.category.as_deref() == Some("audio")
+            && m.diarization == Some(false)
+            && m.price_input_per_1m.is_none()));
+    let selector = Arc::new(Selector::new(Arc::new(storage)));
+    selector.reload().unwrap();
+    let url = spawn_proviz_server(selector).await;
+    let info = |provider: &'static str| {
+        let url = url.clone();
+        async move {
+            let response = reqwest::Client::new()
+                .get(format!("{url}/stt/model-info"))
+                .query(&[("provider", provider)])
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let body = info("gradium/default").await;
+    assert_eq!(body["base_url"], "https://api.gradium.ai");
+    assert_eq!(body["stt_path"], "/api/speech/asr");
+    assert_eq!(body["stt_format"], "gradium");
+    assert_eq!(body["openai_compatible"], false);
+    assert_eq!(body["diarization"], false);
+    assert_eq!(body["http_batch"], true);
+    assert_eq!(body["word_timestamps"], true);
+    assert_eq!(body["api_key_env"], "GRADIUM_API_KEY");
+
+    // A brand without `stt_format` keeps the path-inferred format.
+    let body = info("elevenlabs/scribe_v2").await;
+    assert_eq!(body["stt_format"], "elevenlabs");
+    assert_eq!(body["openai_compatible"], false);
+}

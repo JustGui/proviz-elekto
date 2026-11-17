@@ -1,0 +1,39 @@
+[
+  {
+    "slug": "default",
+    "display_name": "Gradium STT (batch)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": null,
+    "price_output_per_1m": null,
+    "diarization": false,
+    "streaming": false,
+    "http_batch": true,
+    "word_timestamps": true
+  },
+  {
+    "slug": "default",
+    "display_name": "Gradium STT (streaming)",
+    "category": "audio",
+    "max_context_tokens": null,
+    "supports_function_calling": false,
+    "supports_json_mode": false,
+    "rpm_limit": null,
+    "rpd_limit": null,
+    "tpm_limit": null,
+    "tpd_limit": null,
+    "price_input_per_1m": null,
+    "price_output_per_1m": null,
+    "diarization": false,
+    "streaming": true,
+    "http_batch": false,
+    "word_timestamps": true,
+    "base_url": "wss://api.gradium.ai"
+  }
+]

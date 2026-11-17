@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add Gradium STT (`gradium/default`, batch and streaming; no diarization, price unset) and an explicit `stt_format` on `/stt/model-info` (`openai_compatible` is now true only for `stt_format = "openai"`).
 - Classify provider failures (`credits_exhausted`, `quota`, `rate_limited`, `auth`, …) and return the reason on `/complete` 502/409 bodies.
 - Add Prometheus `GET /metrics` with per-brand/model/step/group call, failure-reason and `/complete` result counters.
 - Stop forwarding provider error bodies in `detail` or logs (status, reason and provider code only); stop logging request URLs on connection errors.
