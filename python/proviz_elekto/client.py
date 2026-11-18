@@ -868,8 +868,13 @@ class ProvizElekto:
         max_latency_ratio: Optional[float] = None,
         pin_model: Optional[str] = None,
         pin_wait: bool = False,
+        request_id: Optional[str] = None,
     ) -> CompleteResult:
         """Server-side select + provider call + report in a single round-trip.
+
+        request_id: the caller's id for this request. The server then finishes the call even
+        if this client gives up (its timeout), and keeps the cost of an answer nobody read
+        under that id (``POST /usage``), so a timed-out call can still be billed.
 
         Unlike `call_litellm`, the LLM call happens **inside proviz-server** — the caller needs no
         litellm or provider SDK. The server picks a model, POSTs to the provider's OpenAI-compatible
@@ -934,6 +939,8 @@ class ProvizElekto:
             if value is not None:
                 payload[name] = value
         payload["pin_wait"] = pin_wait
+        if request_id is not None:
+            payload["request_id"] = str(request_id)
         # /complete may block server-side for a provider call; relax the client read timeout.
         prev_timeout = self._timeout
         if timeout_secs is not None:

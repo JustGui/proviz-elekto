@@ -6,7 +6,7 @@ use proviz_elekto_core::{
         Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
         RateLimitErrorType, SelectionRule,
     },
-    storage::{CatalogStorage, StorageResult},
+    storage::{CallUsage, CatalogStorage, StorageResult, CALL_USAGE_RETENTION_DAYS},
 };
 use proviz_elekto_storage_common::{
     brand_api_key_from_row, brand_from_row, fx_rate_from_row, group_from_row,
@@ -1019,6 +1019,77 @@ impl CatalogStorage for SqliteStorage {
         Ok(())
     }
 
+    fn record_call_usage(&self, u: &CallUsage) -> StorageResult<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO pz_call_usage (request_id,step,brand,model,prompt_tokens,completion_tokens,
+                cost_usd,estimated_cost_usd,answered,finished_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                u.request_id.to_string(),
+                u.step,
+                u.brand,
+                u.model,
+                u.prompt_tokens,
+                u.completion_tokens,
+                u.cost_usd,
+                u.estimated_cost_usd,
+                u.answered,
+                u.finished_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_call_usage(&self, request_ids: &[Uuid]) -> StorageResult<Vec<CallUsage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT request_id,step,brand,model,prompt_tokens,completion_tokens,cost_usd,
+                        estimated_cost_usd,answered,finished_at FROM pz_call_usage WHERE request_id = ?1",
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for id in request_ids {
+            let row = stmt.query_row(params![id.to_string()], |r| {
+                Ok(CallUsage {
+                    request_id: *id,
+                    step: r.get(1)?,
+                    brand: r.get(2)?,
+                    model: r.get(3)?,
+                    prompt_tokens: r.get(4)?,
+                    completion_tokens: r.get(5)?,
+                    cost_usd: r.get(6)?,
+                    estimated_cost_usd: r.get(7)?,
+                    answered: r.get(8)?,
+                    finished_at: r
+                        .get::<_, String>(9)
+                        .ok()
+                        .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+                        .map(|t| t.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
+                })
+            });
+            match row {
+                Ok(u) => out.push(u),
+                Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                Err(e) => return Err(StorageError::Database(e.to_string())),
+            }
+        }
+        Ok(out)
+    }
+
+    fn purge_call_usage(&self) -> StorageResult<u64> {
+        let conn = self.conn.lock().unwrap();
+        let cutoff = (Utc::now() - chrono::Duration::days(CALL_USAGE_RETENTION_DAYS)).to_rfc3339();
+        conn.execute(
+            "DELETE FROM pz_call_usage WHERE finished_at < ?1",
+            params![cutoff],
+        )
+        .map(|n| n as u64)
+        .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
     fn log_rate_event(&self, model_id: Uuid, error_type: &RateLimitErrorType) -> StorageResult<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -1199,6 +1270,22 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at);
+
+CREATE TABLE IF NOT EXISTS pz_call_usage (
+    request_id         TEXT    PRIMARY KEY,
+    step               TEXT    NOT NULL,
+    brand              TEXT,
+    model              TEXT,
+    prompt_tokens      INTEGER NOT NULL DEFAULT 0,
+    completion_tokens  INTEGER NOT NULL DEFAULT 0,
+    cost_usd           REAL    NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL    NOT NULL DEFAULT 0,
+    answered           INTEGER NOT NULL DEFAULT 0,
+    finished_at        TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_pz_call_usage_finished
+    ON pz_call_usage(finished_at);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
     ON pz_models(brand_id, slug, streaming, http_batch);

@@ -97,6 +97,21 @@ struct Args {
 /// far more often than the other, hand-curated providers, so this is the one provider whose
 /// catalog can't just be edited by hand. No-op if the provider hasn't been onboarded
 /// (`providers/openrouter/brand.json` missing) — e.g. deployments that don't use OpenRouter.
+/// Hourly: drop `pz_call_usage` rows past their retention (callers reconcile within minutes).
+fn spawn_call_usage_purge(selector: Arc<Selector>) {
+    tokio::spawn(async move {
+        loop {
+            let sel = selector.clone();
+            match tokio::task::spawn_blocking(move || sel.storage().purge_call_usage()).await {
+                Ok(Ok(n)) if n > 0 => tracing::info!(rows = n, "purged old call usage"),
+                Ok(Err(e)) => tracing::warn!(error = %e, "call usage purge failed"),
+                _ => {}
+            }
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+}
+
 fn spawn_openrouter_sync_task(selector: Arc<Selector>, providers_dir: String, interval_secs: u64) {
     let brand_file = std::path::Path::new(&providers_dir)
         .join("openrouter")
@@ -538,6 +553,8 @@ async fn main() {
         max_size = args.batch_max_size,
         "batch queue started"
     );
+
+    spawn_call_usage_purge(selector.clone());
 
     spawn_cloudflare_sync_task(
         selector.clone(),

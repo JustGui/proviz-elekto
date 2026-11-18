@@ -118,6 +118,55 @@ pub struct CompleteRequest {
     /// Per-call provider HTTP timeout (seconds). Defaults to `DEFAULT_TIMEOUT_SECS`.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    /// Caller's id for this request. When set, the call runs to completion even if the
+    /// caller disconnects (its own timeout), and the usage of an answer the caller never
+    /// read is stored in `pz_call_usage` under this id (see `CallUsage`).
+    #[serde(default)]
+    pub request_id: Option<Uuid>,
+}
+
+/// What one request spent, across its attempts.
+#[derive(Debug, Default, Clone)]
+pub struct CallTally {
+    pub brand: Option<String>,
+    pub model: Option<String>,
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    /// Provider usage of the answer (or its price-table estimate), excluding `estimated_usd`.
+    pub answer_usd: f64,
+    /// Input tokens of attempts that timed out at the provider: the provider processed (and
+    /// usually bills) the prompt, but no usage ever came back. Output is unknown and not
+    /// counted.
+    pub estimated_usd: f64,
+    pub answered: bool,
+}
+
+impl CallTally {
+    pub fn total_usd(&self) -> f64 {
+        self.answer_usd + self.estimated_usd
+    }
+}
+
+/// Rough prompt size of a request (4 characters per token), for a timed-out attempt.
+fn estimated_prompt_tokens(req: &CompleteRequest) -> u64 {
+    let chars = req
+        .messages
+        .iter()
+        .map(|m| {
+            m.content.len()
+                + m.tool_calls
+                    .as_ref()
+                    .map(|t| t.to_string().len())
+                    .unwrap_or(0)
+        })
+        .sum::<usize>()
+        + req
+            .tools
+            .as_ref()
+            .and_then(|t| serde_json::to_string(t).ok())
+            .map(|s| s.len())
+            .unwrap_or(0);
+    (chars as u64).div_ceil(4)
 }
 
 fn default_estimated_tokens() -> u32 {
@@ -319,10 +368,14 @@ impl Drop for CompletionReservation {
 /// Drive selection → provider call → report. On provider failure, the failed model is excluded
 /// and the next-best candidate is selected, up to `MAX_PROVIDER_ATTEMPTS`. Every request's final
 /// result is counted in `proviz_complete_requests_total`.
-pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::response::Response {
+pub async fn run_complete(
+    state: Arc<AppState>,
+    req: CompleteRequest,
+) -> (axum::response::Response, CallTally) {
     let step = req.step.clone();
     let group = req.group_name.clone().unwrap_or_default();
-    let response = run_complete_inner(state, req).await;
+    let mut tally = CallTally::default();
+    let response = run_complete_inner(state, req, &mut tally).await;
     let result = match response.status().as_u16() {
         200 => CompleteResult::Ok,
         409 => CompleteResult::AllModelsExhausted,
@@ -332,12 +385,13 @@ pub async fn run_complete(state: Arc<AppState>, req: CompleteRequest) -> axum::r
         _ => CompleteResult::Error,
     };
     METRICS.record_complete(&step, &group, result);
-    response
+    (response, tally)
 }
 
 async fn run_complete_inner(
     state: Arc<AppState>,
     req: CompleteRequest,
+    tally: &mut CallTally,
 ) -> axum::response::Response {
     let group_label = req.group_name.as_deref().unwrap_or_default();
     let timeout = Duration::from_secs(req.timeout_secs.unwrap_or(DEFAULT_TIMEOUT_SECS));
@@ -536,6 +590,19 @@ async fn run_complete_inner(
                         parsed.cached_tokens,
                     )
                 });
+                tally.brand = Some(candidate.brand_slug.clone());
+                tally.model = Some(candidate.model_slug.clone());
+                tally.prompt_tokens = parsed.prompt_tokens;
+                tally.completion_tokens = parsed.completion_tokens;
+                tally.answer_usd = cost_usd.unwrap_or(0.0);
+                tally.answered = true;
+                // Earlier attempts that timed out at the provider are part of this request's
+                // spend, so they ride on the answer's cost.
+                let cost_usd = if tally.estimated_usd > 0.0 {
+                    Some(tally.total_usd())
+                } else {
+                    cost_usd
+                };
                 return (
                     StatusCode::OK,
                     Json(CompleteResponse {
@@ -571,6 +638,28 @@ async fn run_complete_inner(
                 );
                 METRICS.record_failure(&labels, reason);
                 last_reason = Some(reason);
+                if reason == FailureReason::Timeout {
+                    let fx = state.selector.fx();
+                    let price_in = candidate
+                        .price_input_per_1m
+                        .map(|p| fx.to_usd(p, &candidate.price_currency));
+                    if let Some(c) = compute_cost(
+                        price_in,
+                        Some(0.0),
+                        None,
+                        estimated_prompt_tokens(&req),
+                        0,
+                        0,
+                    ) {
+                        tally.estimated_usd += c;
+                        tally
+                            .brand
+                            .get_or_insert_with(|| candidate.brand_slug.clone());
+                        tally
+                            .model
+                            .get_or_insert_with(|| candidate.model_slug.clone());
+                    }
+                }
                 // An empty balance fails every model behind the key the same way, so back the
                 // whole key off (Auth is account-scoped) instead of a per-model rate limit.
                 let credits = reason == FailureReason::CreditsExhausted;
@@ -1058,6 +1147,7 @@ mod payload_tests {
             tools: None,
             tool_choice: None,
             timeout_secs: None,
+            request_id: None,
         }
     }
 

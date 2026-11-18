@@ -1483,3 +1483,125 @@ async fn gradium_stt_declares_its_own_wire_format_and_no_diarization() {
     assert_eq!(body["stt_format"], "elevenlabs");
     assert_eq!(body["openai_compatible"], false);
 }
+
+/// Mock provider that answers after `delay_ms`.
+async fn spawn_slow_provider(delay_ms: u64) -> String {
+    let app = Router::new().route(
+        "/v1/chat/completions",
+        post(move || async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            mock_chat_completions().await
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}/v1")
+}
+
+fn with_api_key(selector: &Arc<Selector>, env: &str) {
+    use proviz_elekto_core::models::BrandApiKey;
+    let storage = selector.storage();
+    let brand = storage
+        .load_brands()
+        .unwrap()
+        .into_iter()
+        .find(|b| b.slug == "mockbrand")
+        .unwrap();
+    storage
+        .insert_brand_api_key(&BrandApiKey {
+            id: Uuid::new_v4(),
+            brand_id: brand.id,
+            api_key_env: env.into(),
+            priority: 0,
+            is_active: true,
+            created_at: Utc::now(),
+        })
+        .unwrap();
+    selector.reload().unwrap();
+}
+
+async fn usage(server_url: &str, id: Uuid) -> Vec<Value> {
+    let body: Value = reqwest::Client::new()
+        .post(format!("{server_url}/usage"))
+        .json(&json!({"request_ids": [id]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    body["usage"].as_array().cloned().unwrap_or_default()
+}
+
+#[tokio::test]
+async fn caller_timeout_does_not_cancel_the_call_and_its_cost_is_kept() {
+    std::env::set_var("PROVIZ_TEST_SLOW_KEY", "secret-test-key");
+    let selector = seed_catalog(spawn_slow_provider(600).await);
+    with_api_key(&selector, "PROVIZ_TEST_SLOW_KEY");
+    let server_url = spawn_proviz_server(selector).await;
+    let id = Uuid::new_v4();
+    let sent = reqwest::Client::new()
+        .post(format!("{server_url}/complete"))
+        .timeout(std::time::Duration::from_millis(150))
+        .json(&json!({"step":"chat","request_id":id,"messages":[{"role":"user","content":"say hello"}]}))
+        .send()
+        .await;
+    assert!(sent.is_err(), "the caller gave up first");
+    assert!(
+        usage(&server_url, id).await.is_empty(),
+        "nothing before the provider answers"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let rows = usage(&server_url, id).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["answered"], true);
+    assert_eq!(rows[0]["prompt_tokens"], 11);
+    assert!((rows[0]["cost_usd"].as_f64().unwrap() - 25.0 / 1_000_000.0).abs() < 1e-12);
+    assert_eq!(rows[0]["estimated_cost_usd"], 0.0);
+}
+
+#[tokio::test]
+async fn a_read_answer_is_not_stored() {
+    std::env::set_var("PROVIZ_TEST_FAST_KEY", "secret-test-key");
+    let selector = seed_catalog(spawn_mock_provider().await);
+    with_api_key(&selector, "PROVIZ_TEST_FAST_KEY");
+    let server_url = spawn_proviz_server(selector).await;
+    let id = Uuid::new_v4();
+    let resp = reqwest::Client::new()
+        .post(format!("{server_url}/complete"))
+        .json(&json!({"step":"chat","request_id":id,"messages":[{"role":"user","content":"say hello"}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::OK);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(usage(&server_url, id).await.is_empty());
+}
+
+#[tokio::test]
+async fn provider_timeout_is_charged_at_estimated_input_cost() {
+    std::env::set_var("PROVIZ_TEST_HANG_KEY", "secret-test-key");
+    let selector = seed_catalog(spawn_slow_provider(3000).await);
+    with_api_key(&selector, "PROVIZ_TEST_HANG_KEY");
+    let server_url = spawn_proviz_server(selector).await;
+    let id = Uuid::new_v4();
+    // 4000 characters ~ 1000 prompt tokens at $1/M input = $0.001.
+    let resp = reqwest::Client::new()
+        .post(format!("{server_url}/complete"))
+        .json(&json!({"step":"chat","request_id":id,"timeout_secs":1,
+            "messages":[{"role":"user","content":"x".repeat(4000)}]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let rows = usage(&server_url, id).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["answered"], false);
+    let est = rows[0]["estimated_cost_usd"].as_f64().unwrap();
+    assert!((est - 0.001).abs() < 1e-9, "estimate was {est}");
+    assert_eq!(rows[0]["cost_usd"].as_f64().unwrap(), est);
+}
