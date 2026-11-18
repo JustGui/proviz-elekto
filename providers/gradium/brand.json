@@ -1,0 +1,10 @@
+{
+  "slug": "gradium",
+  "name": "Gradium",
+  "api_key_env": "GRADIUM_API_KEY",
+  "base_url": "https://api.gradium.ai",
+  "endpoints": {
+    "stt": "/api/speech/asr",
+    "stt_format": "gradium"
+  }
+}

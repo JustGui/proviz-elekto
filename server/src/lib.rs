@@ -632,12 +632,32 @@ struct SttModelInfoResponse {
     base_url: String,
     stt_path: String,
     api_key_env: Option<String>,
-    /// False for ElevenLabs (own request format + auth header); true for all OAI-compatible brands.
+    /// Request/response wire format: "openai", "elevenlabs" or a brand's own (e.g. "gradium").
+    /// From the brand's `endpoints.stt_format`, else inferred from the STT path.
+    stt_format: String,
+    /// True only for `stt_format == "openai"`. Kept for listeners that predate `stt_format`.
     openai_compatible: bool,
     diarization: bool,
     streaming: bool,
     http_batch: bool,
     word_timestamps: bool,
+}
+
+/// A brand's STT wire format: its declared `endpoints.stt_format`, else "elevenlabs" for the
+/// ElevenLabs path and "openai" for everything else (the rule before the field existed).
+fn stt_format(endpoints: Option<&serde_json::Value>, stt_path: &str) -> String {
+    endpoints
+        .and_then(|e| e.get("stt_format"))
+        .and_then(|f| f.as_str())
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if stt_path == "/v1/speech-to-text" {
+                "elevenlabs".to_string()
+            } else {
+                "openai".to_string()
+            }
+        })
 }
 
 async fn handle_stt_model_info(
@@ -681,7 +701,8 @@ async fn handle_stt_model_info(
             .unwrap_or("/audio/transcriptions")
             .to_string();
 
-        let openai_compatible = stt_path != "/v1/speech-to-text";
+        let stt_format = stt_format(brand.endpoints.as_ref(), &stt_path);
+        let openai_compatible = stt_format == "openai";
 
         let base_url = model
             .base_url
@@ -718,6 +739,7 @@ async fn handle_stt_model_info(
             base_url,
             stt_path,
             api_key_env,
+            stt_format,
             openai_compatible,
             diarization: model.diarization.unwrap_or(false),
             streaming: model.streaming.unwrap_or(false),
