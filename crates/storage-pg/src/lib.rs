@@ -7,7 +7,7 @@ use proviz_elekto_core::{
         Brand, BrandApiKey, Group, GroupMember, Model, ModelCatalogEntry, ModelStepQuality,
         RateLimitErrorType, SelectionRule,
     },
-    storage::{CatalogStorage, StorageResult},
+    storage::{CallUsage, CatalogStorage, StorageResult, CALL_USAGE_RETENTION_DAYS},
 };
 use proviz_elekto_storage_common::{
     brand_api_key_from_row, brand_from_row, fx_rate_from_row, group_from_row,
@@ -836,6 +836,62 @@ impl CatalogStorage for PostgresStorage {
         Ok(())
     }
 
+    fn record_call_usage(&self, u: &CallUsage) -> StorageResult<()> {
+        let mut client = self.connected_client()?;
+        client
+            .execute(
+                "INSERT INTO pz_call_usage (request_id,step,brand,model,prompt_tokens,completion_tokens,
+                    cost_usd,estimated_cost_usd,answered,finished_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+                 ON CONFLICT (request_id) DO NOTHING",
+                &[&u.request_id, &u.step, &u.brand, &u.model, &u.prompt_tokens, &u.completion_tokens,
+                  &u.cost_usd, &u.estimated_cost_usd, &u.answered, &u.finished_at],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_call_usage(&self, request_ids: &[Uuid]) -> StorageResult<Vec<CallUsage>> {
+        if request_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut client = self.connected_client()?;
+        let rows = client
+            .query(
+                "SELECT request_id,step,brand,model,prompt_tokens,completion_tokens,cost_usd,
+                        estimated_cost_usd,answered,finished_at
+                   FROM pz_call_usage WHERE request_id = ANY($1)",
+                &[&request_ids],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|r| CallUsage {
+                request_id: r.get(0),
+                step: r.get(1),
+                brand: r.get(2),
+                model: r.get(3),
+                prompt_tokens: r.get(4),
+                completion_tokens: r.get(5),
+                cost_usd: r.get(6),
+                estimated_cost_usd: r.get(7),
+                answered: r.get(8),
+                finished_at: r.get(9),
+            })
+            .collect())
+    }
+
+    fn purge_call_usage(&self) -> StorageResult<u64> {
+        let mut client = self.connected_client()?;
+        let cutoff = Utc::now() - chrono::Duration::days(CALL_USAGE_RETENTION_DAYS);
+        client
+            .execute(
+                "DELETE FROM pz_call_usage WHERE finished_at < $1",
+                &[&cutoff],
+            )
+            .map_err(|e| StorageError::Database(e.to_string()))
+    }
+
     fn recent_rate_events(
         &self,
         model_id: Uuid,
@@ -996,6 +1052,22 @@ CREATE TABLE IF NOT EXISTS pz_rate_events (
 
 CREATE INDEX IF NOT EXISTS idx_pz_rate_events_model_time
     ON pz_rate_events(model_id, occurred_at DESC);
+
+CREATE TABLE IF NOT EXISTS pz_call_usage (
+    request_id         UUID             PRIMARY KEY,
+    step               TEXT             NOT NULL,
+    brand              TEXT,
+    model              TEXT,
+    prompt_tokens      BIGINT           NOT NULL DEFAULT 0,
+    completion_tokens  BIGINT           NOT NULL DEFAULT 0,
+    cost_usd           DOUBLE PRECISION NOT NULL DEFAULT 0,
+    estimated_cost_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+    answered           BOOLEAN          NOT NULL DEFAULT FALSE,
+    finished_at        TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_pz_call_usage_finished
+    ON pz_call_usage(finished_at);
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_pz_models_brand_slug
     ON pz_models(brand_id, slug, streaming, http_batch);

@@ -44,6 +44,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/select", post(handle_select))
         .route("/report", post(handle_report))
         .route("/complete", post(handle_complete))
+        .route("/usage", post(handle_usage))
         .route("/health", get(handle_health))
         .route("/metrics", get(handle_prometheus_metrics))
         .route("/metrics/models", get(handle_model_metrics))
@@ -324,7 +325,85 @@ async fn handle_complete(
         messages = req.messages.len(),
         "complete request"
     );
-    complete::run_complete(state, req).await
+    let Some(request_id) = req.request_id else {
+        return complete::run_complete(state, req).await.0;
+    };
+    // Detached: a caller that gives up (its own timeout) drops this handler, but the provider
+    // call goes on and is billed all the same - so it finishes, and what nobody read is
+    // stored for the caller to reconcile by `request_id`.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let step = req.step.clone();
+    tokio::spawn(async move {
+        let (response, tally) = complete::run_complete(state.clone(), req).await;
+        let delivered = tx.send(response).is_ok();
+        if unread_spend(delivered, &tally) {
+            let usage = proviz_elekto_core::storage::CallUsage {
+                request_id,
+                step,
+                brand: tally.brand.clone(),
+                model: tally.model.clone(),
+                prompt_tokens: tally.prompt_tokens as i64,
+                completion_tokens: tally.completion_tokens as i64,
+                cost_usd: tally.total_usd(),
+                estimated_cost_usd: tally.estimated_usd,
+                answered: tally.answered && !delivered,
+                finished_at: chrono::Utc::now(),
+            };
+            let sel = state.selector.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Err(e) = sel.storage().record_call_usage(&usage) {
+                    tracing::warn!(error = %e, "record_call_usage failed");
+                }
+            })
+            .await;
+        }
+    });
+    match rx.await {
+        Ok(response) => response,
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "complete task failed"})),
+        )
+            .into_response(),
+    }
+}
+
+/// Spend the caller will not see in a response: an answer it never read, or attempts that
+/// timed out at the provider when no answer came at all.
+fn unread_spend(delivered: bool, tally: &complete::CallTally) -> bool {
+    if !delivered {
+        return tally.answered || tally.estimated_usd > 0.0;
+    }
+    !tally.answered && tally.estimated_usd > 0.0
+}
+
+/// `POST /usage {"request_ids": [...]}`: usage of calls whose answer the caller never read
+/// (see `CallUsage`). Unknown ids are simply absent.
+#[derive(Deserialize)]
+struct UsageRequest {
+    request_ids: Vec<Uuid>,
+}
+
+async fn handle_usage(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<UsageRequest>,
+) -> impl IntoResponse {
+    let ids: Vec<Uuid> = req.request_ids.into_iter().take(500).collect();
+    let sel = state.selector.clone();
+    match tokio::task::spawn_blocking(move || sel.storage().load_call_usage(&ids)).await {
+        Ok(Ok(rows)) => Json(json!({"usage": rows.iter().map(|u| json!({
+            "request_id": u.request_id, "step": u.step, "brand": u.brand, "model": u.model,
+            "prompt_tokens": u.prompt_tokens, "completion_tokens": u.completion_tokens,
+            "cost_usd": u.cost_usd, "estimated_cost_usd": u.estimated_cost_usd,
+            "answered": u.answered, "finished_at": u.finished_at.to_rfc3339(),
+        })).collect::<Vec<_>>()}))
+        .into_response(),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "usage lookup failed"})),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Serialize)]

@@ -11,6 +11,29 @@ use crate::{
 
 pub type StorageResult<T> = std::result::Result<T, StorageError>;
 
+/// What one `/complete` request cost when its caller could not read the answer: the caller
+/// disconnected (its own timeout) before the provider finished, or every attempt failed
+/// after at least one provider timed out. Keyed by the caller's `request_id` so the caller
+/// can bill it later. `estimated_cost_usd` is the part of `cost_usd` that is an estimate
+/// (input tokens of attempts that timed out at the provider); the rest is provider usage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallUsage {
+    pub request_id: Uuid,
+    pub step: String,
+    pub brand: Option<String>,
+    pub model: Option<String>,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cost_usd: f64,
+    pub estimated_cost_usd: f64,
+    /// The provider returned an answer (that the caller never read).
+    pub answered: bool,
+    pub finished_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Unread-call usage is kept this long: callers reconcile within minutes.
+pub const CALL_USAGE_RETENTION_DAYS: i64 = 7;
+
 pub trait CatalogStorage: Send + Sync {
     fn load_brands(&self) -> StorageResult<Vec<Brand>>;
     fn load_models(&self) -> StorageResult<Vec<Model>>;
@@ -102,6 +125,12 @@ pub trait CatalogStorage: Send + Sync {
         model_id: Uuid,
         window_secs: u64,
     ) -> StorageResult<Vec<(chrono::DateTime<chrono::Utc>, RateLimitErrorType)>>;
+
+    // Usage of calls whose caller never read the answer (see `CallUsage`).
+    fn record_call_usage(&self, usage: &CallUsage) -> StorageResult<()>;
+    fn load_call_usage(&self, request_ids: &[Uuid]) -> StorageResult<Vec<CallUsage>>;
+    /// Drop rows older than `CALL_USAGE_RETENTION_DAYS`; returns how many.
+    fn purge_call_usage(&self) -> StorageResult<u64>;
 
     // Schema init - called at startup
     fn init_schema(&self) -> StorageResult<()>;
