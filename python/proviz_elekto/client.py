@@ -123,6 +123,9 @@ class CompleteResult:
     # the limit), "tool_calls", ... None when the provider did not say.
     finish_reason: Optional[str] = None
     decision_probabilities: Optional[dict] = None
+    # Id of the model that answered (the value exclude_ids takes), so a caller can retry an
+    # unusable answer on ANOTHER model. None from a server older than this field.
+    model_id: Optional[str] = None
 
 
 def _error_retry_after_ms(exc: Exception) -> Optional[int]:
@@ -961,6 +964,7 @@ class ProvizElekto:
             cached_tokens=r.get("cached_tokens", 0) or 0,
             finish_reason=r.get("finish_reason"),
             decision_probabilities=r.get("decision_probabilities"),
+            model_id=r.get("model_id"),
         )
         _logger.debug(
             "complete: model=%s/%s prompt=%d completion=%d cost_usd=%s",

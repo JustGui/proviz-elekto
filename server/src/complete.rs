@@ -198,6 +198,11 @@ pub struct CompleteResponse {
     /// Native calibrated probabilities for decision-only providers.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub decision_probabilities: Option<Value>,
+    /// Id of the model that answered, the value `exclude_ids` takes: a caller whose answer
+    /// is unusable (unparsable, wrong format) can ask again of ANOTHER model. Without it a
+    /// caller's retry could only exclude nothing and usually got the same model back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<Uuid>,
 }
 
 impl CompleteRequest {
@@ -616,6 +621,7 @@ async fn run_complete_inner(
                         cost_usd,
                         finish_reason: parsed.finish_reason,
                         decision_probabilities: parsed.decision_probabilities,
+                        model_id: Some(candidate.model_id),
                     }),
                 )
                     .into_response();

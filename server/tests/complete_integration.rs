@@ -216,6 +216,26 @@ async fn complete_selects_calls_and_reports() {
     let cost = body["cost_usd"].as_f64().expect("cost present");
     assert!((cost - 25.0 / 1_000_000.0).abs() < 1e-12, "cost was {cost}");
     assert!(body["tool_calls"].is_null());
+
+    // model_id is the value exclude_ids takes: excluding it leaves no model (one in the catalog)
+    let model_id = body["model_id"].as_str().expect("model_id present");
+    Uuid::parse_str(model_id).expect("model_id is a uuid");
+    let again = client
+        .post(format!("{server_url}/complete"))
+        .json(&json!({
+            "step": "chat",
+            "estimated_tokens": 50,
+            "exclude_ids": [model_id],
+            "messages": [{ "role": "user", "content": "say hello" }]
+        }))
+        .send()
+        .await
+        .expect("request sent");
+    assert_ne!(
+        again.status(),
+        reqwest::StatusCode::OK,
+        "the excluded model answered again"
+    );
 }
 
 /// Mock provider that reports a prompt-cache hit the way Nous Portal / OpenAI do:
